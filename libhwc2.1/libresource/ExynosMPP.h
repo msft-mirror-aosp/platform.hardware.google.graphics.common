@@ -125,39 +125,39 @@ class Allocator;
 using namespace android;
 
 enum {
-    eMPPSaveCapability            =     1 << 0,
-    eMPPStrideCrop                =     1 << 1,
-    eMPPUnsupportedRotation       =     1 << 2,
-    eMPPHWBusy                    =     1 << 3,
-    eMPPExeedSrcCropMax           =     1 << 4,
-    eMPPUnsupportedDegamma        =     1 << 5,
-    eMPPUnsupportedBlending       =     1 << 6,
-    eMPPUnsupportedFormat         =     1 << 7,
-    eMPPNotAlignedDstSize         =     1 << 8,
-    eMPPNotAlignedSrcCropPosition =     1 << 9,
-    eMPPNotAlignedHStride         =     1 << 10,
-    eMPPNotAlignedVStride         =     1 << 11,
-    eMPPExceedHStrideMaximum      =     1 << 12,
-    eMPPExceedVStrideMaximum      =     1 << 13,
-    eMPPExeedMaxDownScale         =     1 << 14,
-    eMPPExeedMaxDstWidth          =     1 << 15,
-    eMPPExeedMaxDstHeight         =     1 << 16,
-    eMPPExeedMinSrcWidth          =     1 << 17,
-    eMPPExeedMinSrcHeight         =     1 << 18,
-    eMPPExeedMaxUpScale           =     1 << 19,
-    eMPPExeedSrcWCropMax          =     1 << 20,
-    eMPPExeedSrcHCropMax          =     1 << 21,
-    eMPPExeedSrcWCropMin          =     1 << 22,
-    eMPPExeedSrcHCropMin          =     1 << 23,
-    eMPPNotAlignedCrop            =     1 << 24,
-    eMPPNotAlignedOffset          =     1 << 25,
-    eMPPExeedMinDstWidth          =     1 << 26,
-    eMPPExeedMinDstHeight         =     1 << 27,
-    eMPPUnsupportedCompression    =     1 << 28,
-    eMPPUnsupportedCSC            =     1 << 29,
-    eMPPUnsupportedDIMLayer       =     1 << 30,
-    eMPPUnsupportedDRM            =     1 << 31,
-    eMPPUnsupportedDynamicMeta    =     1 << 32,
+    eMPPSaveCapability            =     1ULL << 0,
+    eMPPStrideCrop                =     1ULL << 1,
+    eMPPUnsupportedRotation       =     1ULL << 2,
+    eMPPHWBusy                    =     1ULL << 3,
+    eMPPExeedSrcCropMax           =     1ULL << 4,
+    eMPPUnsupportedColorTransform =     1ULL << 5,
+    eMPPUnsupportedBlending       =     1ULL << 6,
+    eMPPUnsupportedFormat         =     1ULL << 7,
+    eMPPNotAlignedDstSize         =     1ULL << 8,
+    eMPPNotAlignedSrcCropPosition =     1ULL << 9,
+    eMPPNotAlignedHStride         =     1ULL << 10,
+    eMPPNotAlignedVStride         =     1ULL << 11,
+    eMPPExceedHStrideMaximum      =     1ULL << 12,
+    eMPPExceedVStrideMaximum      =     1ULL << 13,
+    eMPPExeedMaxDownScale         =     1ULL << 14,
+    eMPPExeedMaxDstWidth          =     1ULL << 15,
+    eMPPExeedMaxDstHeight         =     1ULL << 16,
+    eMPPExeedMinSrcWidth          =     1ULL << 17,
+    eMPPExeedMinSrcHeight         =     1ULL << 18,
+    eMPPExeedMaxUpScale           =     1ULL << 19,
+    eMPPExeedSrcWCropMax          =     1ULL << 20,
+    eMPPExeedSrcHCropMax          =     1ULL << 21,
+    eMPPExeedSrcWCropMin          =     1ULL << 22,
+    eMPPExeedSrcHCropMin          =     1ULL << 23,
+    eMPPNotAlignedCrop            =     1ULL << 24,
+    eMPPNotAlignedOffset          =     1ULL << 25,
+    eMPPExeedMinDstWidth          =     1ULL << 26,
+    eMPPExeedMinDstHeight         =     1ULL << 27,
+    eMPPUnsupportedCompression    =     1ULL << 28,
+    eMPPUnsupportedCSC            =     1ULL << 29,
+    eMPPUnsupportedDIMLayer       =     1ULL << 30,
+    eMPPUnsupportedDRM            =     1ULL << 31,
+    eMPPUnsupportedDynamicMeta    =     1ULL << 32,
 };
 
 enum {
@@ -582,7 +582,6 @@ public:
     virtual bool isSupportedTransform(struct exynos_image &src);
     bool isSupportedCapability(ExynosDisplay &display, struct exynos_image &src);
     bool isSupportedDRM(struct exynos_image &src);
-    bool isSupportedDegamma(struct exynos_image &src);
     virtual bool isSupportedHStrideCrop(struct exynos_image &src);
     virtual uint32_t getMaxDownscale(ExynosDisplay &display, struct exynos_image &src, struct exynos_image &dst);
     virtual uint32_t getMaxUpscale(struct exynos_image &src, struct exynos_image &dst);
@@ -621,6 +620,8 @@ public:
     uint32_t getDstYOffsetAlign(struct exynos_image &dst);
     uint32_t getOutBufAlign();
     virtual bool isDstFormatSupported(struct exynos_image &dst);
+    int32_t isSupportLayerColorTransform(
+            struct exynos_image &src, struct exynos_image &dst);
     uint32_t getSrcMaxBlendingNum(struct exynos_image &src, struct exynos_image &dst);
     uint32_t getAssignedSourceNum();
 

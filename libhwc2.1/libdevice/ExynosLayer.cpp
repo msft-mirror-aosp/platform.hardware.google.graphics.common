@@ -61,7 +61,6 @@ ExynosLayer::ExynosLayer(ExynosDisplay* display)
     mZOrder(0),
     mDataSpace(HAL_DATASPACE_UNKNOWN),
     mLayerFlag(0x0),
-    mNeedDegamma(false),
     mIsHdrLayer(false),
     mBufferHasMetaParcel(false),
     mMetaParcelFd(-1)
@@ -131,7 +130,6 @@ int32_t ExynosLayer::doPreProcess()
 {
     overlay_priority priority = ePriorityLow;
     mIsHdrLayer = false;
-    mNeedDegamma = false;
     mBufferHasMetaParcel = false;
     mLayerFlag = 0x0;
 
@@ -572,7 +570,8 @@ int32_t ExynosLayer::setLayerPerFrameMetadata(uint32_t numElements,
     if (allocMetaParcel() != NO_ERROR)
         return -1;
     unsigned int multipliedVal = 50000;
-    mMetaParcel->eType = VIDEO_INFO_TYPE_HDR_STATIC;
+    mMetaParcel->eType =
+        static_cast<ExynosVideoInfoType>(mMetaParcel->eType | VIDEO_INFO_TYPE_HDR_STATIC);
     for (uint32_t i = 0; i < numElements; i++) {
         HDEBUGLOGD(eDebugLayer, "HWC2: setLayerPerFrameMetadata key(%d), value(%7.5f)",
                 keys[i], metadata[i]);
@@ -637,15 +636,16 @@ int32_t ExynosLayer::setLayerPerFrameMetadata(uint32_t numElements,
 int32_t ExynosLayer::setLayerPerFrameMetadataBlobs(uint32_t numElements, const int32_t* keys, const uint32_t* sizes,
         const uint8_t* metadata)
 {
-
+    const uint8_t *metadata_start = metadata;
     for (uint32_t i = 0; i < numElements; i++) {
         HDEBUGLOGD(eDebugLayer, "HWC2: setLayerPerFrameMetadataBlobs key(%d)", keys[i]);
         switch (keys[i]) {
         case HWC2_HDR10_PLUS_SEI:
             if (allocMetaParcel() == NO_ERROR) {
-                mMetaParcel->eType = VIDEO_INFO_TYPE_HDR_DYNAMIC;
+                mMetaParcel->eType =
+                    static_cast<ExynosVideoInfoType>(mMetaParcel->eType | VIDEO_INFO_TYPE_HDR_DYNAMIC);
                 ExynosHdrDynamicInfo *info = &(mMetaParcel->sHdrDynamicInfo);
-                Exynos_parsing_user_data_registered_itu_t_t35(info, (void *)&metadata[i]);
+                Exynos_parsing_user_data_registered_itu_t_t35(info, (void *)metadata_start);
             } else {
                 ALOGE("Layer has no metaParcel!");
                 return HWC2_ERROR_UNSUPPORTED;
@@ -654,8 +654,20 @@ int32_t ExynosLayer::setLayerPerFrameMetadataBlobs(uint32_t numElements, const i
         default:
             return HWC2_ERROR_BAD_PARAMETER;
         }
+        metadata_start += sizes[i];
     }
     return HWC2_ERROR_NONE;
+}
+
+int32_t ExynosLayer::setLayerColorTransform(const float* matrix)
+{
+    mLayerColorTransform.enable = true;
+    for (uint32_t i = 0; i < TRANSFORM_MAT_SIZE; i++)
+    {
+        mLayerColorTransform.mat[i] = matrix[i];
+    }
+
+    return 0;
 }
 
 void ExynosLayer::resetValidateData()
@@ -759,7 +771,8 @@ int32_t ExynosLayer::setSrcExynosImage(exynos_image *src_img)
     } else {
         src_img->hasMetaParcel = false;
     }
-    src_img->needDegamma = mNeedDegamma;
+
+    src_img->needColorTransform = mLayerColorTransform.enable;
 
     return NO_ERROR;
 }
@@ -831,7 +844,6 @@ int32_t ExynosLayer::setDstExynosImage(exynos_image *dst_img)
     } else {
         dst_img->hasMetaParcel = false;
     }
-    dst_img->needDegamma = false;
 
     return NO_ERROR;
 }
@@ -875,10 +887,11 @@ void ExynosLayer::dump(String8& result)
     result.appendFormat("|  %8p | %d, %d, %d | 0x%2x |   %1d  | 0x%8x | %s | 0x%4x  |    %1.3f    |    %d   | 0x%2x, 0x%2x, 0x%2x, 0x%2x |  %2d |    %2d    |    %d               |\n",
             mLayerBuffer, fd, fd1, fd2, mTransform, mCompressed, mDataSpace, getFormatStr(format).string(),
             mBlending, mPlaneAlpha, mZOrder, mColor.r, mColor.g, mColor.b, mColor.a, mFps, mOverlayPriority, mWindowIndex);
-    result.appendFormat("|               +------------+------+------+------+-----+-----------+--------++-----+------+-----+--+-----------+------------++----+----------+--------------------+ \n");
-    result.appendFormat("|               |            sourceCrop           |          dispFrame       | type | exynosType | validateType | overlayInfo | supportedMPPFlag                   |\n");
-    result.appendFormat("|               +---------------------------------+--------------------------+------+------------+--------------+-------------+------------------------------------+ \n");
-    result.appendFormat("|               | %7.1f,%7.1f,%7.1f,%7.1f | %5d,%5d,%5d,%5d  |  %2d  |     %2d     |      %2d      |  0x%8x |    0x%8x                      |\n",
+    result.appendFormat("|---------------+------------+------+------+------+-----+-----------+--------++-----+------+-----+--+-----------+------------++----+----------+--------------------+ \n");
+    result.appendFormat("|    colorTr    |            sourceCrop           |          dispFrame       | type | exynosType | validateType | overlayInfo | supportedMPPFlag                   |\n");
+    result.appendFormat("|---------------+---------------------------------+--------------------------+------+------------+--------------+-------------+------------------------------------+ \n");
+    result.appendFormat("|            %2d | %7.1f,%7.1f,%7.1f,%7.1f | %5d,%5d,%5d,%5d  |  %2d  |     %2d     |      %2d      |  0x%8x |    0x%8x                      |\n",
+            mLayerColorTransform.enable,
             mPreprocessedInfo.sourceCrop.left, mPreprocessedInfo.sourceCrop.top, mPreprocessedInfo.sourceCrop.right, mPreprocessedInfo.sourceCrop.bottom,
             mPreprocessedInfo.displayFrame.left, mPreprocessedInfo.displayFrame.top, mPreprocessedInfo.displayFrame.right, mPreprocessedInfo.displayFrame.bottom,
             mCompositionType, mExynosCompositionType, mValidateCompositionType, mOverlayInfo, mSupportedMPPFlag);

@@ -49,7 +49,9 @@ using namespace android;
 int ExynosMPP::mainDisplayWidth = 0;
 int ExynosMPP::mainDisplayHeight = 0;
 extern struct exynos_hwc_control exynosHWCControl;
+#ifndef USE_MODULE_ATTR
 extern feature_support_t feature_table[];
+#endif
 
 void dumpExynosMPPImgInfo(uint32_t type, exynos_mpp_img_info &imgInfo)
 {
@@ -436,16 +438,6 @@ bool ExynosMPP::checkCSCRestriction(struct exynos_image &src, struct exynos_imag
     return true;
 }
 
-bool ExynosMPP::isSupportedDegamma(struct exynos_image &src)
-{
-    if (!src.needDegamma)
-        return true;
-
-    if (mAttr & MPP_ATTR_DEGAMMA)
-        return true;
-
-    return false;
-}
 bool ExynosMPP::isDimLayerSupported()
 {
     if (mAttr & MPP_ATTR_DIM)
@@ -770,6 +762,18 @@ uint32_t ExynosMPP::getOutBufAlign()
         return 16;
     else
         return 1;
+}
+
+int32_t ExynosMPP::isSupportLayerColorTransform(
+        struct exynos_image &src, struct exynos_image __unused &dst)
+{
+    if (src.needColorTransform == false)
+        return true;
+
+    if (mAttr & MPP_ATTR_LAYER_TRANSFORM)
+        return true;
+
+    return false;
 }
 
 bool ExynosMPP::ResourceManageThread::threadLoop()
@@ -1330,19 +1334,6 @@ int32_t ExynosMPP::setupDst(exynos_mpp_img_info *dstImgInfo)
             dataspace = HAL_DATASPACE_V0_BT601_625;
     }
 
-    /* HDR degamma operation here */
-    if ((mLogicalType == MPP_LOGICAL_G2D_RGB) && isComposition) {
-        size_t sourceNum = mAssignedSources.size();
-        for (size_t i = 0; i < sourceNum; i++) {
-            if(mAssignedSources[i]->mSrcImg.needDegamma) {
-                MPP_LOGD(eDebugMPP, "HWC2: degamma here %p",
-                        private_handle_t::dynamicCast(mSrcImgs[i].bufferHandle));
-                dataspace = HAL_DATASPACE_BT2020_PQ;
-                break;
-            }
-        }
-    }
-
     bufFds[0] = dstHandle->fd;
     bufFds[1] = dstHandle->fd1;
     bufFds[2] = dstHandle->fd2;
@@ -1793,6 +1784,8 @@ int32_t ExynosMPP::getDstImageInfo(exynos_image *img)
             img->y = mAssignedSources[0]->mMidImg.y;
             img->w = mAssignedSources[0]->mMidImg.w;
             img->h = mAssignedSources[0]->mMidImg.h;
+            img->needColorTransform =
+                mAssignedSources[0]->mMidImg.needColorTransform;
         }
 
         img->format = mDstImgs[mCurrentDstBuf].format;
@@ -2083,8 +2076,6 @@ int64_t ExynosMPP::isSupported(ExynosDisplay &display, struct exynos_image &src,
         return -eMPPExeedMaxUpScale;
     else if (!isSupportedDRM(src))
         return -eMPPUnsupportedDRM;
-    else if (!isSupportedDegamma(src))
-        return -eMPPUnsupportedDegamma;
     else if (!isSupportedHStrideCrop(src))
         return -eMPPStrideCrop;
     else if (src.fullWidth > maxSrcWidth)
@@ -2115,6 +2106,9 @@ int64_t ExynosMPP::isSupported(ExynosDisplay &display, struct exynos_image &src,
 
     if (!isSupportedCompression(src))
         return -eMPPUnsupportedCompression;
+
+    if (!isSupportLayerColorTransform(src,dst))
+        return -eMPPUnsupportedColorTransform;
 
     return NO_ERROR;
 }
@@ -2789,9 +2783,15 @@ void ExynosMPP::closeFences()
 
 void ExynosMPP::updateAttr()
 {
-    for (int i = 0; i < MPP_P_TYPE_MAX; i++) {
-        if (feature_table[i].hwType == mPhysicalType)
-            mAttr = feature_table[i].attr;
+    MPP_LOGD(eDebugAttrSetting, "updateAttr::mPhysicalType(%d), mAttr(0x%" PRIx64 ")",
+            mPhysicalType, mAttr);
+
+    if (mResourceManager == NULL) return;
+
+    auto iter = mResourceManager->mMPPAttrs.find(mPhysicalType);
+    if (iter != mResourceManager->mMPPAttrs.end()) {
+        mAttr = iter->second;
+        MPP_LOGD(eDebugAttrSetting, "After mAttr(0x%" PRIx64 ")", mAttr);
     }
 }
 

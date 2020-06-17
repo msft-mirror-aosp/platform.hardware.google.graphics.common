@@ -20,11 +20,9 @@
 
 #define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
 #include <cutils/properties.h>
-#include <system/graphics.h>
 #include <unordered_set>
 #include "ExynosResourceManager.h"
 #include "ExynosMPPModule.h"
-#include "ExynosResourceRestriction.h"
 #include "ExynosLayer.h"
 #include "ExynosHWCDebug.h"
 #include "ExynosHWCHelper.h"
@@ -34,6 +32,7 @@
 #include "ExynosExternalDisplay.h"
 #include "ExynosDeviceInterface.h"
 
+#ifndef USE_MODULE_ATTR
 /* Basic supported features */
 feature_support_t feature_table[] =
 {
@@ -76,6 +75,7 @@ feature_support_t feature_table[] =
         MPP_ATTR_HDR10 | MPP_ATTR_USE_CAPA
     }
 };
+#endif
 
 using namespace android;
 
@@ -1157,7 +1157,6 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
 
     /* Copy origin source HDR metadata */
     dst_img.metaParcel = src_img.metaParcel;
-    dst_img.needDegamma = false; //Dst side need not degamma
 
     uint32_t dstW = dst_img.w;
     uint32_t dstH = dst_img.h;
@@ -1319,6 +1318,21 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
         image_lists[index++] = dst_img;
     }
 
+    /*
+     * image_lists[] would be src of otfMPP.
+     * Layer color transform should be addressed
+     * with dataspace conversion.
+     * It should be addressed by m2mMPP if m2mMPP converts dataspace.
+     * In other cases, m2mMPP ignores color transform setting and
+     * otfMPP addresses layer color transform if it is necessary.
+     */
+    for (uint32_t i = 0; i < index; i++) {
+        if (image_lists[i].dataSpace == src_img.dataSpace)
+            image_lists[i].needColorTransform = src_img.needColorTransform;
+        else
+            image_lists[i].needColorTransform = false;
+    }
+
     if (*imageNum < index)
         return -EINVAL;
     else {
@@ -1423,12 +1437,20 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
                     for (uint32_t outImg = 0; outImg < imageNum; outImg++)
                     {
                         dumpExynosImage(eDebugResourceManager, image_lists[outImg]);
+                        exynos_image m2m_src_img = src_img;
                         otf_src_img = image_lists[outImg];
                         /* transform is already handled by m2mMPP */
                         otf_src_img.transform = 0;
                         otf_dst_img.transform = 0;
 
-                        if ((isSupported = mM2mMPPs[j]->isSupported(*display, src_img, otf_src_img)) != NO_ERROR)
+                        /*
+                         * This is the case that layer color transform should be
+                         * addressed by otfMPP not m2mMPP
+                         */
+                        if (otf_src_img.needColorTransform)
+                            m2m_src_img.needColorTransform = false;
+
+                        if ((isSupported = mM2mMPPs[j]->isSupported(*display, m2m_src_img, otf_src_img)) != NO_ERROR)
                         {
                             HDEBUGLOGD(eDebugResourceManager, "\t\t\t check %s: supportedBit(0x%" PRIx64 ")",
                                     mM2mMPPs[j]->mName.string(), -isSupported);
@@ -1872,16 +1894,6 @@ int32_t ExynosResourceManager::preProcessLayer(ExynosDisplay * display)
         if (layer->mIsHdrLayer) hasHdrLayer = true;
         if ((layer->mLayerBuffer != NULL) && (getDrmMode(layer->mLayerBuffer) != NO_DRM))
             hasDrmLayer = true;
-    }
-
-    /* Check to need degamma */
-    if ((display->mDisplayId == HWC_DISPLAY_EXTERNAL) &&
-            (((ExynosExternalDisplay *)display)->mExternalHdrSupported) && (hasHdrLayer)) {
-        for (uint32_t i = 0; i < display->mLayers.size(); i++) {
-            ExynosLayer *layer = display->mLayers[i];
-            if(!layer->mIsHdrLayer)
-                layer->mNeedDegamma = true;
-        }
     }
 
     // Re-align layer priority for max overlay resources

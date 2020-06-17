@@ -68,12 +68,12 @@ enum {
     MPP_ATTR_WINDOW_UPDATE          = 0x00000002,
     MPP_ATTR_BLOCK_MODE             = 0x00000004,
     MPP_ATTR_USE_CAPA               = 0x00000008,
-    MPP_ATTR_DEGAMMA                = 0x00000010,
     MPP_ATTR_FLIP_H                 = 0x00000020,
     MPP_ATTR_FLIP_V                 = 0x00000040,
     MPP_ATTR_ROT_90                 = 0x00000080,
     MPP_ATTR_SCALE                  = 0x00000800,
     MPP_ATTR_DIM                    = 0x00001000,
+    MPP_ATTR_LAYER_TRANSFORM        = 0x00002000,
 
     MPP_ATTR_WCG                    = 0x00100000,
     MPP_ATTR_HDR10                  = 0x00200000,
@@ -103,19 +103,6 @@ typedef struct dpu_attr_map {
     uint32_t dpp_attr;
     uint32_t hwc_attr = 0;
 } dpu_attr_map_t;
-
-const dpu_attr_map_t dpu_attr_map_table [] =
-{
-    {DPP_ATTR_AFBC, MPP_ATTR_AFBC},
-    {DPP_ATTR_BLOCK, MPP_ATTR_BLOCK_MODE},
-    {DPP_ATTR_FLIP, MPP_ATTR_FLIP_H | MPP_ATTR_FLIP_V},
-    {DPP_ATTR_ROT, MPP_ATTR_ROT_90},
-    {DPP_ATTR_SCALE, MPP_ATTR_SCALE},
-    {DPP_ATTR_HDR, MPP_ATTR_HDR10},
-    {DPP_ATTR_C_HDR, MPP_ATTR_HDR10},
-    {DPP_ATTR_C_HDR10_PLUS, MPP_ATTR_HDR10PLUS},
-    {DPP_ATTR_WCG, MPP_ATTR_WCG},
-};
 
 typedef struct dpp_channel_map {
     mpp_phycal_type_t type;
