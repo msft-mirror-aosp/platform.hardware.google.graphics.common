@@ -1135,13 +1135,8 @@ int32_t ExynosResourceManager::validateLayer(uint32_t index, ExynosDisplay *disp
 }
 
 int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *display,
-        ExynosLayer *layer, uint32_t *imageNum, exynos_image *image_lists)
+        ExynosLayer *layer, std::vector<exynos_image> &image_lists)
 {
-    uint32_t listSize = *imageNum;
-    if (listSize != M2M_MPP_OUT_IMAGS_COUNT)
-        return -EINVAL;
-
-    uint32_t index = 0;
     exynos_image src_img;
     exynos_image dst_img;
     layer->setSrcExynosImage(&src_img);
@@ -1207,7 +1202,8 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
                 dst_scale_img.h = pixel_align(src_img.h, srcCropHeightAlign);
             }
 
-            HDEBUGLOGD(eDebugResourceManager, "index[%d], w: %d, h: %d, ratio(type: %d, %d, %d)", index, dst_scale_img.w, dst_scale_img.h,
+            HDEBUGLOGD(eDebugResourceManager, "scale up w: %d, h: %d, ratio(type: %d, %d, %d)",
+                    dst_scale_img.w, dst_scale_img.h,
                     otfMppForScale->mLogicalType, upScaleRatio, downScaleRatio);
             if (dst_scale_img.w * upScaleRatio < dst_img.w) {
                 dst_scale_img.w = pixel_align((uint32_t)ceilf((float)dst_img.w/(float)upScaleRatio), srcCropWidthAlign);
@@ -1219,7 +1215,16 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
                     src_img.x, src_img.y, src_img.w, src_img.h,
                     dst_img.x, dst_img.y, dst_img.w, dst_img.h,
                     dst_scale_img.x, dst_scale_img.y, dst_scale_img.w, dst_scale_img.h);
-            image_lists[index++] = dst_scale_img;
+            image_lists.push_back(dst_scale_img);
+
+            if (isFormatSBWC(dst_scale_img.format)) {
+                /*
+                 * SBWC format could not be supported in specific dst size
+                 * Add uncompressed YUV format to cover this size
+                 */
+                dst_scale_img.format = DEFAULT_MPP_DST_UNCOMP_YUV_FORMAT;
+                image_lists.push_back(dst_scale_img);
+            }
         }
     }
 
@@ -1264,7 +1269,15 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
         }
     }
 
-    image_lists[index++] = dst_img;
+    image_lists.push_back(dst_img);
+    if (isFormatSBWC(dst_img.format)) {
+        /*
+         * SBWC format could not be supported in specific dst size
+         * Add uncompressed YUV format to cover this size
+         */
+        dst_img.format = DEFAULT_MPP_DST_UNCOMP_YUV_FORMAT;
+        image_lists.push_back(dst_img);
+    }
 
     /* For G2D HDR case */
     if (hasHdrInfo(src_img)) {
@@ -1301,7 +1314,7 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
          * because G2D is used only for HDR on exernal display
          */
         if (!(isExternalPlugged && (display->mDisplayId == HWC_DISPLAY_PRIMARY))) {
-            image_lists[index++] = dst_img;
+            image_lists.push_back(dst_img);
         }
     }
 
@@ -1315,7 +1328,7 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
             /* Covert data space */
             dst_img.dataSpace = colorModeToDataspace(display->mColorMode);
         }
-        image_lists[index++] = dst_img;
+        image_lists.push_back(dst_img);
     }
 
     /*
@@ -1326,19 +1339,15 @@ int32_t ExynosResourceManager::getCandidateM2mMPPOutImages(ExynosDisplay *displa
      * In other cases, m2mMPP ignores color transform setting and
      * otfMPP addresses layer color transform if it is necessary.
      */
-    for (uint32_t i = 0; i < index; i++) {
-        if (image_lists[i].dataSpace == src_img.dataSpace)
-            image_lists[i].needColorTransform = src_img.needColorTransform;
+    for (auto &image: image_lists) {
+        if (image.dataSpace == src_img.dataSpace)
+            image.needColorTransform = src_img.needColorTransform;
         else
-            image_lists[i].needColorTransform = false;
+            image.needColorTransform = false;
+
     }
 
-    if (*imageNum < index)
-        return -EINVAL;
-    else {
-        *imageNum = index;
-        return (uint32_t)listSize;
-    }
+    return static_cast<int32_t>(image_lists.size());
 }
 
 int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *layer, uint32_t layer_index,
@@ -1412,33 +1421,29 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
                 continue;
             }
 
-            isAssignable = mM2mMPPs[j]->isAssignable(display, src_img, dst_img);
+            bool isAssignableState = mM2mMPPs[j]->isAssignableState(display, src_img, dst_img);
 
-            HDEBUGLOGD(eDebugResourceManager, "\t\t check %s: supportedBit(%d), isAssignable(%d)",
+            HDEBUGLOGD(eDebugResourceManager, "\t\t check %s: supportedBit(%d), isAssignableState(%d)",
                     mM2mMPPs[j]->mName.string(),
-                    (layer->mSupportedMPPFlag & mM2mMPPs[j]->mLogicalType), isAssignable);
+                    (layer->mSupportedMPPFlag & mM2mMPPs[j]->mLogicalType), isAssignableState);
 
-            if (isAssignable) {
+            if (isAssignableState) {
                 if ((mM2mMPPs[j]->mLogicalType != MPP_LOGICAL_G2D_RGB) &&
                     (mM2mMPPs[j]->mLogicalType != MPP_LOGICAL_G2D_COMBO)) {
-                    exynos_image otf_src_img = dst_img;
                     exynos_image otf_dst_img = dst_img;
 
                     otf_dst_img.format = DEFAULT_MPP_DST_FORMAT;
 
-                    exynos_image image_lists[M2M_MPP_OUT_IMAGS_COUNT];
-                    uint32_t imageNum = M2M_MPP_OUT_IMAGS_COUNT;
-                    if ((ret = getCandidateM2mMPPOutImages(display, layer, &imageNum, image_lists)) < 0)
+                    std::vector<exynos_image> image_lists;
+                    if ((ret = getCandidateM2mMPPOutImages(display, layer, image_lists)) < 0)
                     {
                         HWC_LOGE(display, "Fail getCandidateM2mMPPOutImages (%d)", ret);
                         return ret;
                     }
-                    HDEBUGLOGD(eDebugResourceManager, "candidate M2mMPPOutImage num: %d", imageNum);
-                    for (uint32_t outImg = 0; outImg < imageNum; outImg++)
-                    {
-                        dumpExynosImage(eDebugResourceManager, image_lists[outImg]);
+                    HDEBUGLOGD(eDebugResourceManager, "candidate M2mMPPOutImage num: %zu", image_lists.size());
+                    for (auto &otf_src_img : image_lists) {
+                        dumpExynosImage(eDebugResourceManager, otf_src_img);
                         exynos_image m2m_src_img = src_img;
-                        otf_src_img = image_lists[outImg];
                         /* transform is already handled by m2mMPP */
                         otf_src_img.transform = 0;
                         otf_dst_img.transform = 0;
@@ -1450,10 +1455,11 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
                         if (otf_src_img.needColorTransform)
                             m2m_src_img.needColorTransform = false;
 
-                        if ((isSupported = mM2mMPPs[j]->isSupported(*display, m2m_src_img, otf_src_img)) != NO_ERROR)
+                        if (((isSupported = mM2mMPPs[j]->isSupported(*display, m2m_src_img, otf_src_img)) != NO_ERROR) ||
+                            ((isAssignable = mM2mMPPs[j]->hasEnoughCapa(display, m2m_src_img, otf_src_img)) == false))
                         {
-                            HDEBUGLOGD(eDebugResourceManager, "\t\t\t check %s: supportedBit(0x%" PRIx64 ")",
-                                    mM2mMPPs[j]->mName.string(), -isSupported);
+                            HDEBUGLOGD(eDebugResourceManager, "\t\t\t check %s: supportedBit(0x%" PRIx64 "), hasEnoughCapa(%d)",
+                                    mM2mMPPs[j]->mName.string(), -isSupported, isAssignable);
                             continue;
                         }
 
@@ -1475,9 +1481,13 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
                         }
                     }
                 } else {
-                    if (layer->mSupportedMPPFlag & mM2mMPPs[j]->mLogicalType) {
+                    if ((layer->mSupportedMPPFlag & mM2mMPPs[j]->mLogicalType) &&
+                        ((isAssignable = mM2mMPPs[j]->hasEnoughCapa(display, src_img, dst_img) == true))) {
                         *m2mMPP = mM2mMPPs[j];
                         return HWC2_COMPOSITION_EXYNOS;
+                    } else {
+                        HDEBUGLOGD(eDebugResourceManager, "\t\t\t check %s: layer's mSupportedMPPFlag(0x%8x), hasEnoughCapa(%d)",
+                                mM2mMPPs[j]->mName.string(), layer->mSupportedMPPFlag, isAssignable);
                     }
                 }
             }
@@ -1720,7 +1730,8 @@ int32_t ExynosResourceManager::updateSupportedMPPFlag(ExynosDisplay * display)
             if (ret < 0) {
                 HDEBUGLOGD(eDebugResourceManager, "\t%s: unsupported flag(0x%" PRIx64 ")", mOtfMPPs[j]->mName.string(), -ret);
                 uint64_t checkFlag = 0x0;
-                if (layer->mCheckMPPFlag.count(mOtfMPPs[j]->mLogicalType) != 0) {
+                if (layer->mCheckMPPFlag.find(mOtfMPPs[j]->mLogicalType) !=
+                        layer->mCheckMPPFlag.end()) {
                     checkFlag = layer->mCheckMPPFlag.at(mOtfMPPs[j]->mLogicalType);
                 }
                 checkFlag |= (-ret);
@@ -1743,7 +1754,8 @@ int32_t ExynosResourceManager::updateSupportedMPPFlag(ExynosDisplay * display)
             if (ret < 0) {
                 HDEBUGLOGD(eDebugResourceManager, "\t%s: unsupported flag(0x%" PRIx64 ")", mM2mMPPs[j]->mName.string(), -ret);
                 uint64_t checkFlag = 0x0;
-                if (layer->mCheckMPPFlag.count(mM2mMPPs[j]->mLogicalType) != 0) {
+                if (layer->mCheckMPPFlag.find(mM2mMPPs[j]->mLogicalType) !=
+                        layer->mCheckMPPFlag.end()) {
                     checkFlag = layer->mCheckMPPFlag.at(mM2mMPPs[j]->mLogicalType);
                 }
                 checkFlag |= (-ret);
@@ -2039,6 +2051,9 @@ int32_t ExynosResourceManager::deliverPerformanceInfo()
                             mppSource->mSrcImg.w, mppSource->mSrcImg.h,
                             mppSource->mSrcImg.format);
 
+                    if (mppSource->mSrcImg.compressed == 1)
+                        frame->setAttribute(j, AcrylicCanvas::ATTR_COMPRESSED);
+
                     hwc_rect_t src_area;
                     src_area.left = mppSource->mSrcImg.x;
                     src_area.top = mppSource->mSrcImg.y;
@@ -2249,7 +2264,8 @@ void ExynosResourceManager::makeAcrylRestrictions(mpp_phycal_type_t type){
     for (uint32_t i = 0; i < FORMAT_MAX_CNT; i++) {
         if (cap->isFormatSupported(exynos_format_desc[i].halFormat)) {
             /* Not add same hal pixel format */
-            if (supportedHalFormats.count(exynos_format_desc[i].halFormat))
+            if (supportedHalFormats.find(exynos_format_desc[i].halFormat) !=
+                    supportedHalFormats.end())
                 continue;
             restriction_key_t queried_format;
             queried_format.hwType = type;
@@ -2329,7 +2345,8 @@ void ExynosResourceManager::updateRestrictions() {
     if (mDevice->mDeviceInterface->getUseQuery() == true) {
         std::unordered_set<uint32_t> checkDuplicateMPP;
         for (const auto unit: AVAILABLE_M2M_MPP_UNITS) {
-            if (checkDuplicateMPP.count(unit.physicalType) == 0)  {
+            if (checkDuplicateMPP.find(unit.physicalType) ==
+                    checkDuplicateMPP.end())  {
                 makeAcrylRestrictions(static_cast<mpp_phycal_type_t>(unit.physicalType));
                 checkDuplicateMPP.insert(unit.physicalType);
             }
@@ -2386,4 +2403,26 @@ bool ExynosResourceManager::hasHDR10PlusMPP() {
     }
 
     return false;
+}
+
+float ExynosResourceManager::getAssignedCapacity(uint32_t physicalType)
+{
+    float totalCapacity = 0;
+
+    for (size_t i = 0; i < mM2mMPPs.size(); i++) {
+        if (mM2mMPPs[i]->mPhysicalType == physicalType)
+            totalCapacity += mM2mMPPs[i]->getAssignedCapacity();
+    }
+    return totalCapacity;
+}
+
+float ExynosResourceManager::getM2MCapa(uint32_t physicalType)
+{
+    float ret = 0;
+    for (size_t i = 0; i < mM2mMPPs.size(); i++) {
+        if (mM2mMPPs[i]->mPhysicalType == physicalType)
+            return mM2mMPPs[i]->mCapacity;
+    }
+
+    return ret;
 }

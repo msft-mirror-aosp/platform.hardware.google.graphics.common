@@ -25,6 +25,7 @@
 #include "ExynosMPP.h"
 #include "ExynosResourceRestriction.h"
 #include <hardware/hwcomposer_defs.h>
+#include <math.h>
 #ifdef GRALLOC_VERSION1
 #include "gralloc1_priv.h"
 #else
@@ -177,7 +178,6 @@ ExynosMPP::ExynosMPP(ExynosResourceManager* resourceManager,
         }
         /* Capacity means time(ms) that can be used for operation */
         mCapacity = MPP_G2D_CAPACITY;
-
         mAcrylicHandle = AcrylicFactory::createAcrylic("default_compositor");
         if (mAcrylicHandle == NULL) {
             MPP_LOGE("Fail to allocate acrylic handle");
@@ -197,7 +197,7 @@ ExynosMPP::ExynosMPP(ExynosResourceManager* resourceManager,
         /* To do
         * Capacity should be set
         */
-        mCapacity = -1;
+        mCapacity = MPP_MSC_CAPACITY;
         mAcrylicHandle = AcrylicFactory::createAcrylic("default_scaler");
         if (mAcrylicHandle == NULL) {
             MPP_LOGE("Fail to allocate acrylic handle");
@@ -708,6 +708,10 @@ uint32_t ExynosMPP::getDstMinWidth(struct exynos_image &dst)
     if ((mNeedSolidColorLayer == false) && mNeedCompressedTarget)
         return 16;
 
+    if ((mPhysicalType == MPP_G2D) && (mNeedSolidColorLayer == false) &&
+            isFormatSBWC(dst.format))
+        return 32;
+
     uint32_t idx = getRestrictionClassification(dst);
     return mDstSizeRestrictions[idx].minCropWidth;
 }
@@ -715,6 +719,10 @@ uint32_t ExynosMPP::getDstMinHeight(struct exynos_image &dst)
 {
     if ((mNeedSolidColorLayer == false) && mNeedCompressedTarget)
         return 16;
+
+    if ((mPhysicalType == MPP_G2D) && (mNeedSolidColorLayer == false) &&
+            isFormatSBWC(dst.format))
+        return 8;
 
     uint32_t idx = getRestrictionClassification(dst);
     return mDstSizeRestrictions[idx].minCropHeight;
@@ -729,6 +737,10 @@ uint32_t ExynosMPP::getDstWidthAlign(struct exynos_image &dst)
     if ((mNeedSolidColorLayer == false) && mNeedCompressedTarget)
         return 16;
 
+    if ((mPhysicalType == MPP_G2D) && (mNeedSolidColorLayer == false) &&
+            isFormatSBWC(dst.format))
+        return 32;
+
     uint32_t idx = getRestrictionClassification(dst);
     return mDstSizeRestrictions[idx].cropWidthAlign;
 }
@@ -736,6 +748,10 @@ uint32_t ExynosMPP::getDstHeightAlign(struct exynos_image &dst)
 {
     if ((mNeedSolidColorLayer == false) && mNeedCompressedTarget)
         return 16;
+
+    if ((mPhysicalType == MPP_G2D) && (mNeedSolidColorLayer == false) &&
+            isFormatSBWC(dst.format))
+        return 8;
 
     uint32_t idx = getRestrictionClassification(dst);
     return mDstSizeRestrictions[idx].cropHeightAlign;
@@ -745,6 +761,10 @@ uint32_t ExynosMPP::getDstXOffsetAlign(struct exynos_image &dst)
     if ((mNeedSolidColorLayer == false) && mNeedCompressedTarget)
         return 16;
 
+    if ((mPhysicalType == MPP_G2D) && (mNeedSolidColorLayer == false) &&
+            isFormatSBWC(dst.format))
+        return 32;
+
     uint32_t idx = getRestrictionClassification(dst);
     return mDstSizeRestrictions[idx].cropXAlign;
 }
@@ -752,6 +772,10 @@ uint32_t ExynosMPP::getDstYOffsetAlign(struct exynos_image &dst)
 {
     if ((mNeedSolidColorLayer == false) && mNeedCompressedTarget)
         return 16;
+
+    if ((mPhysicalType == MPP_G2D) && (mNeedSolidColorLayer == false) &&
+            isFormatSBWC(dst.format))
+        return 8;
 
     uint32_t idx = getRestrictionClassification(dst);
     return mDstSizeRestrictions[idx].cropYAlign;
@@ -2318,7 +2342,7 @@ bool ExynosMPP::isAssignable(ExynosDisplay *display,
         struct exynos_image &src, struct exynos_image &dst)
 {
     bool isAssignable = isAssignableState(display, src, dst);
-    return (isAssignable & hasEnoughCapa(display, src, dst));
+    return (isAssignable && hasEnoughCapa(display, src, dst));
 }
 
 bool ExynosMPP::hasEnoughCapa(ExynosDisplay *display, struct exynos_image &src, struct exynos_image &dst)
@@ -2341,7 +2365,7 @@ bool ExynosMPP::hasEnoughCapa(ExynosDisplay *display, struct exynos_image &src, 
     if (mCapacity >= (totalUsedCapacity + requiredCapacity))
         return true;
     else if ((hasHdrInfo(src)) &&
-             (totalUsedCapacity == 0)) {
+             (totalUsedCapacity == 0) && (requiredCapacity < (mCapacity * 1.2))) {
         /* HDR video will be excepted from G2D capa calculation */
         /* if DRM has assigned before, totalUsedCapacity will be non-zero */
         return true;
@@ -2349,21 +2373,32 @@ bool ExynosMPP::hasEnoughCapa(ExynosDisplay *display, struct exynos_image &src, 
         return false;
 }
 
-void ExynosMPP:: getPPCIndex(struct exynos_image &src, struct exynos_image &dst,
-        uint32_t &formatIndex, uint32_t &rotIndex, uint32_t &scaleIndex)
+void ExynosMPP::getPPCIndex(const struct exynos_image &src,
+        const struct exynos_image &dst,
+        uint32_t &formatIndex, uint32_t &rotIndex, uint32_t &scaleIndex,
+        const struct exynos_image &criteria)
 {
     formatIndex = 0;
     rotIndex = 0;
     scaleIndex = 0;
 
-    if (isFormat10BitYUV420(src.format))
+    /* Compare SBWC and 10bitYUV420 first! because can be overlapped with other format */
+    if (isFormatSBWC(criteria.format) && hasPPC(mPhysicalType, PPC_FORMAT_SBWC, PPC_ROT_NO))
+        formatIndex = PPC_FORMAT_SBWC;
+    else if (isFormatP010(criteria.format) && hasPPC(mPhysicalType, PPC_FORMAT_P010, PPC_ROT_NO))
+        formatIndex = PPC_FORMAT_P010;
+    else if (isFormatYUV8_2(criteria.format) && hasPPC(mPhysicalType, PPC_FORMAT_YUV8_2, PPC_ROT_NO))
         formatIndex = PPC_FORMAT_YUV8_2;
-    else if (isFormatYUV420(src.format))
-        formatIndex = PPC_FORMAT_YUV2P;
+    else if (isFormatYUV420(criteria.format) && hasPPC(mPhysicalType, PPC_FORMAT_YUV420, PPC_ROT_NO))
+        formatIndex = PPC_FORMAT_YUV420;
+    else if (isFormatYUV422(criteria.format) && hasPPC(mPhysicalType, PPC_FORMAT_YUV422, PPC_ROT_NO))
+        formatIndex = PPC_FORMAT_YUV422;
+    else if ((src.compressed == 1) && hasPPC(mPhysicalType, PPC_FORMAT_AFBC, PPC_ROT_NO))
+        formatIndex = PPC_FORMAT_AFBC;
     else
         formatIndex = PPC_FORMAT_RGB32;
 
-    if (((src.transform & HAL_TRANSFORM_ROT_90) != 0) ||
+    if (((criteria.transform & HAL_TRANSFORM_ROT_90) != 0) ||
         (mRotatedSrcCropBW > 0))
         rotIndex = PPC_ROT;
     else
@@ -2372,69 +2407,131 @@ void ExynosMPP:: getPPCIndex(struct exynos_image &src, struct exynos_image &dst,
     uint32_t srcResolution = src.w * src.h;
     uint32_t dstResolution = dst.w * dst.h;
 
-    if (srcResolution == dstResolution) {
-        scaleIndex = PPC_SCALE_NO;
-    } else if (dstResolution > srcResolution) {
-        /* scale up case */
-        if (dstResolution >= (srcResolution * 4))
-            scaleIndex = PPC_SCALE_UP_4_;
-        else
-            scaleIndex = PPC_SCALE_UP_1_4;
-    } else {
-        /* scale down case */
-        if ((dstResolution * 16) <= srcResolution)
-            scaleIndex = PPC_SCALE_DOWN_16_;
-        else if (((dstResolution * 9) <= srcResolution) &&
-                 (srcResolution < (dstResolution * 16)))
-            scaleIndex = PPC_SCALE_DOWN_9_16;
-        else if (((dstResolution * 4) <= srcResolution) &&
-                 (srcResolution < (dstResolution * 9)))
-            scaleIndex = PPC_SCALE_DOWN_4_9;
-        else
-            scaleIndex = PPC_SCALE_DOWN_1_4;
-    }
+    if (mPhysicalType == MPP_G2D) {
+        if (srcResolution == dstResolution) {
+            scaleIndex = PPC_SCALE_NO;
+        } else if (dstResolution > srcResolution) {
+            /* scale up case */
+            if (dstResolution >= (srcResolution * 4))
+                scaleIndex = PPC_SCALE_UP_4_;
+            else
+                scaleIndex = PPC_SCALE_UP_1_4;
+        } else {
+            /* scale down case */
+            if ((dstResolution * 16) <= srcResolution)
+                scaleIndex = PPC_SCALE_DOWN_16_;
+            else if (((dstResolution * 9) <= srcResolution) &&
+                    (srcResolution < (dstResolution * 16)))
+                scaleIndex = PPC_SCALE_DOWN_9_16;
+            else if (((dstResolution * 4) <= srcResolution) &&
+                    (srcResolution < (dstResolution * 9)))
+                scaleIndex = PPC_SCALE_DOWN_4_9;
+            else
+                scaleIndex = PPC_SCALE_DOWN_1_4;
+        }
+    } else scaleIndex = 0; /* MSC doesn't refer scale Index */
 }
 
-float ExynosMPP::getPPC(struct exynos_image &src, struct exynos_image &dst)
+float ExynosMPP::getPPC(const struct exynos_image &src,
+        const struct exynos_image &dst, const struct exynos_image &criteria,
+        const struct exynos_image *assignCheckSrc,
+        const struct exynos_image *assignCheckDst)
 {
     float PPC = 0;
     uint32_t formatIndex = 0;
     uint32_t rotIndex = 0;
     uint32_t scaleIndex = 0;
 
-    getPPCIndex(src, dst, formatIndex, rotIndex, scaleIndex);
-    PPC = G2D_PPCs[formatIndex][rotIndex].ppcList[scaleIndex];
+    getPPCIndex(src, dst, formatIndex, rotIndex, scaleIndex, criteria);
 
-    MPP_LOGD(eDebugCapacity, "srcW(%d), srcH(%d), dstW(%d), dstH(%d), rot(%d), "
-            "formatIndex(%d), rotIndex(%d), scaleIndex(%d)",
-            src.w, src.h, dst.w, dst.h, src.transform,
-            formatIndex, rotIndex, scaleIndex);
-
-    return PPC;
-}
-
-float ExynosMPP::getPPC(struct exynos_image &src, struct exynos_image &dst,
-         struct exynos_image &assignCheckSrc, struct exynos_image __unused &assignCheckDst)
-{
-    float PPC = 0;
-    uint32_t formatIndex = 0;
-    uint32_t rotIndex = 0;
-    uint32_t scaleIndex = 0;
-
-    getPPCIndex(src, dst, formatIndex, rotIndex, scaleIndex);
-
-    if ((rotIndex == PPC_ROT_NO) &&
-        ((assignCheckSrc.transform & HAL_TRANSFORM_ROT_90) != 0)) {
+    if ((rotIndex == PPC_ROT_NO) && (assignCheckSrc != NULL) &&
+        ((assignCheckSrc->transform & HAL_TRANSFORM_ROT_90) != 0)) {
         rotIndex = PPC_ROT;
     }
 
-    PPC = G2D_PPCs[formatIndex][rotIndex].ppcList[scaleIndex];
+    if (mPhysicalType == MPP_G2D || mPhysicalType == MPP_MSC) {
+        if (hasPPC(mPhysicalType, formatIndex, rotIndex)) {
+            PPC = ppc_table_map.at(PPC_IDX(mPhysicalType, formatIndex, rotIndex)).ppcList[scaleIndex];
+        }
+    }
 
-    MPP_LOGD(eDebugCapacity, "srcW(%d), srcH(%d), dstW(%d), dstH(%d), rot(%d), assignCheckSrc.rot(%d)"
-            "formatIndex(%d), rotIndex(%d), scaleIndex(%d)",
-            src.w, src.h, dst.w, dst.h, src.transform, assignCheckSrc.transform,
-            formatIndex, rotIndex, scaleIndex);
+    if (PPC == 0) {
+        MPP_LOGE("%s:: mPhysicalType(%d), formatIndex(%d), rotIndex(%d), scaleIndex(%d), PPC(%f) is not valid",
+                __func__, mPhysicalType, formatIndex, rotIndex, scaleIndex, PPC);
+        PPC = 0.000001;  /* It means can't use mPhysicalType H/W  */
+    }
+
+    MPP_LOGD(eDebugCapacity, "srcW(%d), srcH(%d), dstW(%d), dstH(%d), rot(%d)"
+            "formatIndex(%d), rotIndex(%d), scaleIndex(%d), PPC(%f)",
+            src.w, src.h, dst.w, dst.h, src.transform,
+            formatIndex, rotIndex, scaleIndex, PPC);
     return PPC;
+}
+
+float ExynosMPP::getAssignedCapacity()
+{
+    float capacity = 0;
+    float baseCycles = 0;
+    uint32_t rotIndex = 0;
+
+    if (mPhysicalType != MPP_G2D)
+        return 0;
+
+    /*
+     * Client target is assigned to m2mMPP
+     * even if capacity is not enough
+     */
+    if ((mAssignedDisplay != NULL) &&
+        (mAssignedDisplay->mType == HWC_DISPLAY_VIRTUAL))
+        return 0;
+
+
+    for (uint32_t i = 0; i < mAssignedSources.size(); i++) {
+        if ((mAssignedSources[i]->mSrcImg.transform & HAL_TRANSFORM_ROT_90) != 0)
+            rotIndex = PPC_ROT;
+    }
+
+    MPP_LOGD(eDebugCapacity, "Check all of assigned layers cycles");
+    /* PPC of layers that were added before should be changed */
+    /* Check cycles of all assigned layers again */
+    if ((mAssignedDisplay != NULL) && (mMaxSrcLayerNum > 1)) {
+        baseCycles += ((mAssignedDisplay->mXres * mAssignedDisplay->mYres) / G2D_BASE_PPC_COLORFILL);
+        MPP_LOGD(eDebugCapacity, "colorfill cycles: %f, total cycles: %f",
+                ((mAssignedDisplay->mXres * mAssignedDisplay->mYres) / G2D_BASE_PPC_COLORFILL), baseCycles);
+    }
+
+    for (uint32_t i = 0; i < mAssignedSources.size(); i++) {
+        float srcCycles = 0;
+        uint32_t srcResolution = mAssignedSources[i]->mSrcImg.w * mAssignedSources[i]->mSrcImg.h;
+        uint32_t dstResolution = mAssignedSources[i]->mMidImg.w * mAssignedSources[i]->mMidImg.h;
+        uint32_t maxResolution = max(srcResolution, dstResolution);
+        float PPC = 0;
+
+        if (mAssignedSources[i]->mSrcImg.layerFlags & EXYNOS_HWC_DIM_LAYER) {
+            PPC = G2D_BASE_PPC_COLORFILL;
+        } else {
+            PPC = getPPC(mAssignedSources[i]->mSrcImg, mAssignedSources[i]->mMidImg, mAssignedSources[i]->mSrcImg,
+                    &mAssignedSources[i]->mSrcImg, &mAssignedSources[i]->mMidImg);
+        }
+        srcCycles = maxResolution/PPC;
+
+        /* Hdr and drm layer is exception */
+        if ((hasHdrInfo(mAssignedSources[i]->mSrcImg) ||
+            (getDrmMode(mAssignedSources[i]->mSrcImg.usageFlags) != NO_DRM))) {
+            MPP_LOGD(eDebugCapacity, "Src[%d] is skipped(drm or hdr), cycles: %f, PPC: %f, srcResolution: %d, dstResolution: %d, rot(%d)",
+                    i, srcCycles, PPC, srcResolution, dstResolution, mAssignedSources[i]->mSrcImg.transform);
+            continue;
+        }
+
+        baseCycles += srcCycles;
+
+        MPP_LOGD(eDebugCapacity, "Src[%d] cycles: %f, total cycles: %f, PPC: %f, srcResolution: %d, dstResolution: %d, rot(%d)",
+                i, srcCycles, baseCycles, PPC, srcResolution, dstResolution, mAssignedSources[i]->mSrcImg.transform);
+    }
+
+    capacity = baseCycles/getMPPClock();
+
+    return capacity;
 }
 
 float ExynosMPP::getRequiredCapacity(ExynosDisplay *display, struct exynos_image &src,
@@ -2446,9 +2543,9 @@ float ExynosMPP::getRequiredCapacity(ExynosDisplay *display, struct exynos_image
         /* Initialize value with the cycles that were already assigned */
         float baseCycles = mUsedBaseCycles;
         float srcCycles = 0;
-        uint32_t srcResolution = 0;
-        uint32_t dstResolution = 0;
-        uint32_t maxResolution = 0;
+        uint32_t srcResolution = src.w * src.h;
+        uint32_t dstResolution = dst.w * dst.h;
+        uint32_t maxResolution = max(srcResolution, dstResolution);
         float curBaseCycles = 0;
         float PPC = 0;
 
@@ -2479,25 +2576,22 @@ float ExynosMPP::getRequiredCapacity(ExynosDisplay *display, struct exynos_image
                         ((display->mXres * display->mYres) / G2D_BASE_PPC_COLORFILL), cycles);
             }
 
-            maxResolution = max(srcResolution, dstResolution);
             for (uint32_t i = 0; i < mAssignedSources.size(); i++) {
-                float srcCycles = 0;
-                uint32_t srcResolution = mAssignedSources[i]->mSrcImg.w * mAssignedSources[i]->mSrcImg.h;
-                uint32_t dstResolution = mAssignedSources[i]->mMidImg.w * mAssignedSources[i]->mMidImg.h;
-                uint32_t maxResolution = max(srcResolution, dstResolution);
-                float PPC = getPPC(mAssignedSources[i]->mSrcImg, mAssignedSources[i]->mMidImg,
-                        src, dst);
+                float assignedSrcCycles = 0;
+                uint32_t assignedSrcResolution = mAssignedSources[i]->mSrcImg.w * mAssignedSources[i]->mSrcImg.h;
+                uint32_t assignedDstResolution = mAssignedSources[i]->mMidImg.w * mAssignedSources[i]->mMidImg.h;
+                uint32_t assignedMaxResolution = max(assignedSrcResolution, assignedDstResolution);
+                float assignedPPC = getPPC(mAssignedSources[i]->mSrcImg, mAssignedSources[i]->mMidImg,
+                        mAssignedSources[i]->mSrcImg, &src, &dst);
 
-                srcCycles = maxResolution/PPC;
-                baseCycles += srcCycles;
+                assignedSrcCycles = assignedMaxResolution/assignedPPC;
+                baseCycles += assignedSrcCycles;
 
                 MPP_LOGD(eDebugCapacity, "Src[%d] cycles: %f, total cycles: %f, PPC: %f, srcResolution: %d, dstResolution: %d, rot(%d)",
-                        i, srcCycles, baseCycles, PPC, srcResolution, dstResolution, mAssignedSources[i]->mSrcImg.transform);
+                        i, assignedSrcCycles, baseCycles, assignedPPC, assignedSrcResolution, assignedDstResolution, mAssignedSources[i]->mSrcImg.transform);
             }
-            srcResolution = src.w * src.h;
-            dstResolution = dst.w * dst.h;
-            maxResolution = max(srcResolution, dstResolution);
-            PPC = getPPC(src, dst, src, dst);
+
+            PPC = getPPC(src, dst, src, &src, &dst);
 
             srcCycles = maxResolution/PPC;
             baseCycles += srcCycles;
@@ -2510,6 +2604,18 @@ float ExynosMPP::getRequiredCapacity(ExynosDisplay *display, struct exynos_image
 
         MPP_LOGD(eDebugCapacity, "baseCycles: %f, capacity: %f",
                 baseCycles, capacity);
+    } else if (mPhysicalType == MPP_MSC) {
+        /* Initialize value with the capacity that were already assigned */
+        capacity = mUsedCapacity;
+
+        /* Just add capacity for current layer */
+        float srcPPC = getPPC(src, dst, src);
+        float dstPPC = getPPC(src, dst, dst);
+        float srcCapacity = ((float)(src.w*src.h))/(getMPPClock()*srcPPC);
+        float dstCapacity = ((float)(dst.w*dst.h))/(getMPPClock()*dstPPC);
+
+        capacity += max(srcCapacity, dstCapacity);
+
     }
 
     return capacity;
@@ -2524,85 +2630,101 @@ float ExynosMPP::getRequiredBaseCycles(struct exynos_image &src, struct exynos_i
     uint32_t dstResolution = dst.w * dst.h;
     uint32_t maxResolution = max(srcResolution, dstResolution);
 
-    return maxResolution/(float)getPPC(src, dst);
+    return maxResolution/(float)getPPC(src, dst, src);
 }
 
 bool ExynosMPP::addCapacity(ExynosMPPSource* mppSource)
 {
-    if ((mppSource == NULL) || (mPhysicalType != MPP_G2D))
+    if ((mppSource == NULL) || mCapacity == -1)
         return false;
 
-    bool needUpdateCapacity = true;
-    if ((mAssignedSources.size() == 0) ||
-        (mRotatedSrcCropBW != 0) ||
-        ((mRotatedSrcCropBW == 0) &&
-         ((mppSource->mSrcImg.transform & HAL_TRANSFORM_ROT_90) == 0))) {
-        needUpdateCapacity = false;
-    }
-
-    if (needUpdateCapacity)
-        return true;
-
-    if ((mMaxSrcLayerNum > 1) &&
-        (mAssignedSources.size() == 0)) {
-        if (mAssignedDisplay != NULL) {
-            /* This will be the first mppSource that is assigned to the ExynosMPP */
-            /* Add capacity for background */
-            mUsedBaseCycles += ((mAssignedDisplay->mXres * mAssignedDisplay->mYres) / G2D_BASE_PPC_COLORFILL);
-            MPP_LOGD(eDebugCapacity, "\tcolorfill cycles: %f, total cycles: %f",
-                    ((mAssignedDisplay->mXres * mAssignedDisplay->mYres) / G2D_BASE_PPC_COLORFILL), mUsedBaseCycles);
-        } else {
-            MPP_LOGE("mAssignedDisplay is null");
+    if (mPhysicalType == MPP_G2D) {
+        bool needUpdateCapacity = true;
+        if ((mAssignedSources.size() == 0) ||
+            (mRotatedSrcCropBW != 0) ||
+            ((mRotatedSrcCropBW == 0) &&
+             ((mppSource->mSrcImg.transform & HAL_TRANSFORM_ROT_90) == 0))) {
+            needUpdateCapacity = false;
         }
+
+        if (needUpdateCapacity)
+            return true;
+
+        if ((mMaxSrcLayerNum > 1) &&
+            (mAssignedSources.size() == 0)) {
+            if (mAssignedDisplay != NULL) {
+                /* This will be the first mppSource that is assigned to the ExynosMPP */
+                /* Add capacity for background */
+                mUsedBaseCycles += ((mAssignedDisplay->mXres * mAssignedDisplay->mYres) / G2D_BASE_PPC_COLORFILL);
+                MPP_LOGD(eDebugCapacity, "\tcolorfill cycles: %f, total cycles: %f",
+                        ((mAssignedDisplay->mXres * mAssignedDisplay->mYres) / G2D_BASE_PPC_COLORFILL), mUsedBaseCycles);
+            } else {
+                MPP_LOGE("mAssignedDisplay is null");
+            }
+        }
+
+        float baseCycles = getRequiredBaseCycles(mppSource->mSrcImg, mppSource->mMidImg);
+        mUsedBaseCycles += baseCycles;
+
+        uint32_t srcResolution = mppSource->mSrcImg.w * mppSource->mSrcImg.h;
+        uint32_t dstResolution = mppSource->mMidImg.w * mppSource->mMidImg.h;
+        if ((mppSource->mSrcImg.transform & HAL_TRANSFORM_ROT_90) == 0)
+            mNoRotatedSrcCropBW += srcResolution;
+        else
+            mRotatedSrcCropBW += srcResolution;
+
+        mUsedCapacity = mUsedBaseCycles/getMPPClock();
+
+        MPP_LOGD(eDebugCapacity, "src num: %zu base cycle is added: %f, mUsedBaseCycles: %f, mUsedCapacity(%f), srcResolution: %d, dstResolution: %d, rot: %d, mNoRotatedSrcCropBW(%d), mRotatedSrcCropBW(%d)",
+                mAssignedSources.size(),
+                baseCycles, mUsedBaseCycles, mUsedCapacity, srcResolution, dstResolution,
+                mppSource->mSrcImg.transform, mNoRotatedSrcCropBW, mRotatedSrcCropBW);
+    } else if (mPhysicalType == MPP_MSC) {
+        mUsedCapacity = getRequiredCapacity(NULL, mppSource->mSrcImg, mppSource->mMidImg);
     }
-
-    float baseCycles = getRequiredBaseCycles(mppSource->mSrcImg, mppSource->mMidImg);
-    mUsedBaseCycles += baseCycles;
-
-    uint32_t srcResolution = mppSource->mSrcImg.w * mppSource->mSrcImg.h;
-    uint32_t dstResolution = mppSource->mMidImg.w * mppSource->mMidImg.h;
-    if ((mppSource->mSrcImg.transform & HAL_TRANSFORM_ROT_90) == 0)
-        mNoRotatedSrcCropBW += srcResolution;
-    else
-        mRotatedSrcCropBW += srcResolution;
-
-    mUsedCapacity = mUsedBaseCycles/getMPPClock();
-
-    MPP_LOGD(eDebugCapacity, "src num: %zu base cycle is added: %f, mUsedBaseCycles: %f, mUsedCapacity(%f), srcResolution: %d, dstResolution: %d, rot: %d, mNoRotatedSrcCropBW(%d), mRotatedSrcCropBW(%d)",
-            mAssignedSources.size(),
-            baseCycles, mUsedBaseCycles, mUsedCapacity, srcResolution, dstResolution,
-            mppSource->mSrcImg.transform, mNoRotatedSrcCropBW, mRotatedSrcCropBW);
 
     return false;
 }
 
 bool ExynosMPP::removeCapacity(ExynosMPPSource* mppSource)
 {
-    if ((mppSource == NULL) || (mPhysicalType != MPP_G2D))
+    if ((mppSource == NULL) || (mCapacity == -1))
         return false;
 
-    uint32_t srcResolution = mppSource->mSrcImg.w * mppSource->mSrcImg.h;
-    uint32_t dstResolution = mppSource->mDstImg.w * mppSource->mDstImg.h;
+    if (mPhysicalType == MPP_G2D) {
+        uint32_t srcResolution = mppSource->mSrcImg.w * mppSource->mSrcImg.h;
+        uint32_t dstResolution = mppSource->mDstImg.w * mppSource->mDstImg.h;
 
-    uint32_t prevRotatedSrcCropBW = mRotatedSrcCropBW;
+        uint32_t prevRotatedSrcCropBW = mRotatedSrcCropBW;
 
-    if (mppSource->mSrcImg.transform == 0)
-        mNoRotatedSrcCropBW -= srcResolution;
-    else
-        mRotatedSrcCropBW -= srcResolution;
+        if (mppSource->mSrcImg.transform == 0)
+            mNoRotatedSrcCropBW -= srcResolution;
+        else
+            mRotatedSrcCropBW -= srcResolution;
 
-    if ((prevRotatedSrcCropBW > 0) && (mRotatedSrcCropBW == 0))
-        return true;
+        if ((prevRotatedSrcCropBW > 0) && (mRotatedSrcCropBW == 0))
+            return true;
 
-    float baseCycles = getRequiredBaseCycles(mppSource->mSrcImg, mppSource->mMidImg);
-    mUsedBaseCycles -= baseCycles;
+        float baseCycles = getRequiredBaseCycles(mppSource->mSrcImg, mppSource->mMidImg);
+        mUsedBaseCycles -= baseCycles;
 
-    mUsedCapacity = mUsedBaseCycles/getMPPClock();
+        mUsedCapacity = mUsedBaseCycles/getMPPClock();
 
-    MPP_LOGD(eDebugCapacity, "src num: %zu, base cycle is removed: %f, mUsedBaseCycles: %f, mUsedCapacity(%f), srcResolution: %d, dstResolution: %d, rot: %d, mNoRotatedSrcCropBW(%d), mRotatedSrcCropBW(%d)",
-            mAssignedSources.size(),
-            baseCycles, mUsedBaseCycles, mUsedCapacity, srcResolution, dstResolution,
-            mppSource->mSrcImg.transform, mNoRotatedSrcCropBW, mRotatedSrcCropBW);
+        MPP_LOGD(eDebugCapacity, "src num: %zu, base cycle is removed: %f, mUsedBaseCycles: %f, mUsedCapacity(%f), srcResolution: %d, dstResolution: %d, rot: %d, mNoRotatedSrcCropBW(%d), mRotatedSrcCropBW(%d)",
+                mAssignedSources.size(),
+                baseCycles, mUsedBaseCycles, mUsedCapacity, srcResolution, dstResolution,
+                mppSource->mSrcImg.transform, mNoRotatedSrcCropBW, mRotatedSrcCropBW);
+    } else if (mPhysicalType == MPP_MSC) {
+        exynos_image &src = mppSource->mSrcImg;
+        exynos_image &dst = mppSource->mDstImg;
+        uint32_t srcResolution = src.w * src.h;
+        uint32_t dstResolution = dst.w * dst.h;
+
+        float srcCapacity = (float)srcResolution / getPPC(src, dst, src);
+        float dstCapacity  = (float)dstResolution  / getPPC(src, dst, dst);
+
+        mUsedCapacity -= max(srcCapacity, dstCapacity);
+    }
 
     return false;
 }
@@ -2638,24 +2760,28 @@ int32_t ExynosMPP::updateUsedCapacity()
                     ((mAssignedDisplay->mXres * mAssignedDisplay->mYres) / G2D_BASE_PPC_COLORFILL), cycles);
         }
         for (uint32_t i = 0; i < mAssignedSources.size(); i++) {
-            float srcCycles = 0;
             uint32_t srcResolution = mAssignedSources[i]->mSrcImg.w * mAssignedSources[i]->mSrcImg.h;
-            uint32_t dstResolution = mAssignedSources[i]->mMidImg.w * mAssignedSources[i]->mMidImg.h;
-            uint32_t maxResolution = max(srcResolution, dstResolution);
-            float PPC = getPPC(mAssignedSources[i]->mSrcImg, mAssignedSources[i]->mMidImg);
-
-            srcCycles = maxResolution/PPC;
-            cycles += srcCycles;
-
             if ((mAssignedSources[i]->mSrcImg.transform & HAL_TRANSFORM_ROT_90) == 0)
                 mNoRotatedSrcCropBW += srcResolution;
             else
                 mRotatedSrcCropBW += srcResolution;
+        }
+        MPP_LOGD(eDebugCapacity, "mNoRotatedSrcCropBW(%d), mRotatedSrcCropBW(%d)",
+                mNoRotatedSrcCropBW, mRotatedSrcCropBW);
+        for (uint32_t i = 0; i < mAssignedSources.size(); i++) {
+            float srcCycles = 0;
+            uint32_t srcResolution = mAssignedSources[i]->mSrcImg.w * mAssignedSources[i]->mSrcImg.h;
+            uint32_t dstResolution = mAssignedSources[i]->mMidImg.w * mAssignedSources[i]->mMidImg.h;
+            uint32_t maxResolution = max(srcResolution, dstResolution);
+            float PPC = getPPC(mAssignedSources[i]->mSrcImg, mAssignedSources[i]->mMidImg, mAssignedSources[i]->mSrcImg);
+            srcCycles = maxResolution/PPC;
+            cycles += srcCycles;
 
             MPP_LOGD(eDebugCapacity, "Src[%d] cycles: %f, total cycles: %f, PPC: %f, srcResolution: %d, dstResolution: %d, rot(%d)",
                     i, srcCycles, cycles, PPC, srcResolution, dstResolution, mAssignedSources[i]->mSrcImg.transform);
         }
 
+        mUsedBaseCycles = cycles;
         capacity = cycles/getMPPClock();
 
         mUsedCapacity = capacity;
@@ -2670,6 +2796,8 @@ uint32_t ExynosMPP::getMPPClock()
 {
     if (mPhysicalType == MPP_G2D)
         return G2D_CLOCK;
+    else if (mPhysicalType == MPP_MSC)
+        return MSC_CLOCK;
     else
         return 0;
 }

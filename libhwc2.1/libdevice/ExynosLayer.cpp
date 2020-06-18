@@ -152,6 +152,9 @@ int32_t ExynosLayer::doPreProcess()
         return NO_ERROR;
     }
 
+    mPreprocessedInfo.mUsePrivateFormat = false;
+    mPreprocessedInfo.mPrivateFormat = mLayerBuffer->format;
+
     if (isFormatYUV(mLayerBuffer->format)) {
         mPreprocessedInfo.sourceCrop.top = (int)mSourceCrop.top;
         mPreprocessedInfo.sourceCrop.left = (int)mSourceCrop.left;
@@ -160,9 +163,8 @@ int32_t ExynosLayer::doPreProcess()
         mPreprocessedInfo.preProcessed = true;
     }
 
-    if ((mLayerBuffer->format == HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M) ||
-        (mLayerBuffer->format == HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M) ||
-        (isFormat10BitYUV420(mLayerBuffer->format))) {
+    if (isFormatYUV(mLayerBuffer->format)) {
+
         ExynosVideoMeta *metaData = NULL;
         int priv_fd = -1;
 
@@ -183,7 +185,7 @@ int32_t ExynosLayer::doPreProcess()
                 mBufferHasMetaParcel = true;
                 if (metaData->eType == VIDEO_INFO_TYPE_INVALID) {
                     if (isFormat10BitYUV420(mLayerBuffer->format))
-                        HWC_LOGE(mDisplay, "Video metadata has invalid type!!");
+                        ALOGV("Video metadata has invalid type.");
                 } else {
                     if ((metaData->eType & VIDEO_INFO_TYPE_HDR_STATIC) ||
                             (metaData->eType & VIDEO_INFO_TYPE_HDR_DYNAMIC)) {
@@ -216,6 +218,10 @@ int32_t ExynosLayer::doPreProcess()
                             mPreprocessedInfo.sourceCrop.top = (int)(mSourceCrop.top)/2;
                             mPreprocessedInfo.sourceCrop.bottom = (int)(mSourceCrop.bottom)/2;
                         }
+                    }
+                    if (metaData->eType & VIDEO_INFO_TYPE_CHECK_PIXEL_FORMAT) {
+                        mPreprocessedInfo.mUsePrivateFormat = true;
+                        mPreprocessedInfo.mPrivateFormat = metaData->nPixelFormat;
                     }
                 }
                 munmap(metaData, sizeof(ExynosVideoMeta));
@@ -728,7 +734,10 @@ int32_t ExynosLayer::setSrcExynosImage(exynos_image *src_img)
             src_img->fullWidth = handle->stride;
             src_img->fullHeight = handle->vstride;
         }
-        src_img->format = handle->format;
+        if (!mPreprocessedInfo.mUsePrivateFormat)
+            src_img->format = handle->format;
+        else
+            src_img->format = mPreprocessedInfo.mPrivateFormat;
 #ifdef GRALLOC_VERSION1
         src_img->usageFlags = handle->producer_usage;
 #else

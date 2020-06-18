@@ -1197,7 +1197,10 @@ int32_t ExynosDisplay::configureHandle(ExynosLayer &layer, int fence_fd, exynos_
         return ret;
     }
 
-    cfg.format = handle->format;
+    if (!layer.mPreprocessedInfo.mUsePrivateFormat)
+        cfg.format = handle->format;
+    else
+        cfg.format = layer.mPreprocessedInfo.mPrivateFormat;
 
     cfg.fd_idma[0] = handle->fd;
     cfg.fd_idma[1] = handle->fd1;
@@ -1363,7 +1366,7 @@ int32_t ExynosDisplay::configureHandle(ExynosLayer &layer, int fence_fd, exynos_
     uint64_t bufSize = handle->size * formatToBpp(handle->format);
     uint64_t srcSize = cfg.src.f_w * cfg.src.f_h * formatToBpp(cfg.format);
 
-    if (bufSize < srcSize) {
+    if (!isFormatLossy(handle->format) && (bufSize < srcSize)) {
         DISPLAY_LOGE("%s:: buffer size is smaller than source size, buf(size: %d, format: %d), src(w: %d, h: %d, format: %d)",
                 __func__, handle->size, handle->format, cfg.src.f_w, cfg.src.f_h, cfg.format);
         return -EINVAL;
@@ -1572,7 +1575,7 @@ int32_t ExynosDisplay::configureOverlay(ExynosCompositionInfo &compositionInfo)
 
     uint64_t bufSize = handle->size * formatToBpp(handle->format);
     uint64_t srcSize = config.src.f_w * config.src.f_h * formatToBpp(config.format);
-    if (bufSize < srcSize) {
+    if (!isFormatLossy(handle->format) && (bufSize < srcSize)) {
         DISPLAY_LOGE("%s:: buffer size is smaller than source size, buf(size: %d, format: %d), src(w: %d, h: %d, format: %d)",
                 __func__, handle->size, handle->format, config.src.f_w, config.src.f_h, config.format);
         return -EINVAL;
@@ -3210,6 +3213,14 @@ int32_t ExynosDisplay::startPostProcessing()
 {
     int ret = NO_ERROR;
     String8 errString;
+
+    float assignedCapacity = mResourceManager->getAssignedCapacity(MPP_G2D);
+
+    if (assignedCapacity > (mResourceManager->getM2MCapa(MPP_G2D) * MPP_CAPA_OVER_THRESHOLD)) {
+        errString.appendFormat("Assigned capacity for exynos composition is over restriction (%f)",
+                assignedCapacity);
+        goto err;
+    }
 
     if ((ret = doExynosComposition()) != NO_ERROR) {
         errString.appendFormat("exynosComposition fail (%d)\n", ret);

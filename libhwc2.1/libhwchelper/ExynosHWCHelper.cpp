@@ -25,6 +25,7 @@
 #include "exynos_sync.h"
 #include <linux/videodev2_exynos_media.h>
 #include "VendorVideoAPI.h"
+#include "ExynosResourceRestriction.h"
 
 #define AFBC_MAGIC  0xafbc
 
@@ -176,11 +177,39 @@ bool isFormatYUV(int format)
     return true;
 }
 
+bool isFormatSBWC(int format)
+{
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+        if (exynos_format_desc[i].halFormat == format) {
+            if ((exynos_format_desc[i].type & SBWC) ||
+                    (exynos_format_desc[i].type & SBWC_LOSSY))
+                return true;
+            else
+                return false;
+        }
+    }
+    return false;
+}
+
 bool isFormatYUV420(int format)
 {
     for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
         if (exynos_format_desc[i].halFormat == format) {
             if (exynos_format_desc[i].type & YUV420)
+                return true;
+            else
+                return false;
+        }
+    }
+    return false;
+}
+
+bool isFormatYUV8_2(int format)
+{
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+        if (exynos_format_desc[i].halFormat == format) {
+            if ((exynos_format_desc[i].type & YUV420) &&
+                (exynos_format_desc[i].type & BIT8_2))
                 return true;
             else
                 return false;
@@ -203,14 +232,48 @@ bool isFormat10BitYUV420(int format)
     return false;
 }
 
-bool isFormatYUV422(int __unused format)
+bool isFormatYUV422(int format)
 {
-    // Might add support later
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+        if (exynos_format_desc[i].halFormat == format) {
+            if (exynos_format_desc[i].type & YUV422)
+                return true;
+            else
+                return false;
+        }
+    }
     return false;
 }
+
+bool isFormatP010(int format)
+{
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+        if (exynos_format_desc[i].halFormat == format) {
+            if (exynos_format_desc[i].type & P010)
+                return true;
+            else
+                return false;
+        }
+    }
+    return false;
+}
+
 bool isFormatYCrCb(int format)
 {
     return format == HAL_PIXEL_FORMAT_EXYNOS_YV12_M;
+}
+
+bool isFormatLossy(int format)
+{
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+        if (exynos_format_desc[i].halFormat == format) {
+            if (exynos_format_desc[i].type & SBWC_LOSSY)
+                return true;
+            else
+                return false;
+        }
+    }
+    return false;
 }
 
 bool formatHasAlphaChannel(int format)
@@ -299,7 +362,9 @@ int halFormatToDrmFormat(int format, uint32_t compressType)
         const uint32_t compType = exynos_format_desc[i].getCompression();
 
         if ((halFormat == format) &&
-            ((compType == COMP_ANY) || (compType == compressType))) {
+            ((compType == COMP_ANY) ||
+             (compressType == COMP_ANY) ||
+             (compType == compressType))) {
                 return exynos_format_desc[i].drmFormat;
         }
     }
@@ -580,35 +645,11 @@ uint32_t getBufferNumOfFormat(int format)
 
 uint32_t getPlaneNumOfFormat(int format)
 {
-    if (isFormatRgb(format))
-        return 1;
-    switch (format) {
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_TILED:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M_FULL:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_PRIV:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_TILED:
-        case HAL_PIXEL_FORMAT_YCrCb_420_SP:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_S10B:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_S10B:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_P010_M:
-        case HAL_PIXEL_FORMAT_YCBCR_P010:
-        case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP:
-        case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP_10B:
-            return 2;
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_P_M:
-        case HAL_PIXEL_FORMAT_EXYNOS_YV12_M:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_P:
-        case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_PN:
-        case HAL_PIXEL_FORMAT_YV12:
-            return 3;
-        /* Not supported format */
-        default:
-            return 0;
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+        if (exynos_format_desc[i].halFormat == format)
+            return exynos_format_desc[i].planeNum;
     }
+    return 0;
 }
 
 void setFenceName(int fenceFd, hwc_fence_type fenceType)
@@ -661,6 +702,26 @@ uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
         return 2 * __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP:
         return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L50:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L75:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_SBWC_L50:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_SBWC_L75:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M_SBWC:
+        return SBWC_8B_Y_SIZE(width, height) +
+            SBWC_8B_Y_HEADER_SIZE(width, height);
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC_L40:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC_L60:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC_L80:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC_L40:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC_L60:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC_L80:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M_10B_SBWC:
+        return SBWC_10B_Y_SIZE(width, height) +
+            SBWC_10B_Y_HEADER_SIZE(width, height);
     }
 
     return NV12M_Y_SIZE(width, height) + ((width % 128) == 0 ? 0 : 256);
@@ -689,6 +750,26 @@ uint32_t getExynosBufferCbCrLength(uint32_t width, uint32_t height, int format)
         return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP:
         return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8) / 2;
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L50:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L75:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_SBWC_L50:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_SBWC_L75:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M_SBWC:
+        return SBWC_8B_CBCR_SIZE(width, height) +
+            SBWC_8B_CBCR_HEADER_SIZE(width, height);
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC_L40:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC_L60:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_10B_SBWC_L80:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC_L40:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC_L60:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN_10B_SBWC_L80:
+    case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M_10B_SBWC:
+        return SBWC_10B_CBCR_SIZE(width, height) +
+            SBWC_10B_CBCR_HEADER_SIZE(width, height);
     }
 
     return NV12M_CBCR_SIZE(width, height);
@@ -1143,4 +1224,12 @@ String8 getMPPStr(int typeId) {
     String8 result;
     result.appendFormat("? %08x", typeId);
     return result;
+}
+
+bool hasPPC(uint32_t physicalType, uint32_t formatIndex, uint32_t rotIndex) {
+    if (ppc_table_map.find(PPC_IDX(physicalType, formatIndex, rotIndex)) !=
+            ppc_table_map.end()) {
+        return true;
+    }
+    return false;
 }
