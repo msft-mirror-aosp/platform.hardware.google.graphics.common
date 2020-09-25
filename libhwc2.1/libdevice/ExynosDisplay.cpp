@@ -252,8 +252,6 @@ ExynosDisplay::ExynosDisplay(uint32_t type, ExynosDevice *device)
     mXdpi(25400),
     mYdpi(25400),
     mVsyncPeriod(16666666),
-    mDSCHSliceNum(1),
-    mDSCYSliceSize(mYres),
     mDevice(device),
     mDisplayId(HWC_DISPLAY_PRIMARY),
     mDisplayName(android::String8("PrimaryDisplay")),
@@ -283,7 +281,6 @@ ExynosDisplay::ExynosDisplay(uint32_t type, ExynosDevice *device)
     mNumMaxPriorityAllowed(1),
     mCursorIndex(-1),
     mColorTransformHint(HAL_COLOR_TRANSFORM_IDENTITY),
-    mHdrTypeNum(0),
     mMaxLuminance(0),
     mMaxAverageLuminance(0),
     mMinLuminance(0),
@@ -1895,11 +1892,7 @@ int ExynosDisplay::deliverWinConfigData() {
     }
 
     for (size_t i = 0; i < mDpuData.configs.size(); i++) {
-        if (i == DECON_WIN_UPDATE_IDX) {
-            DISPLAY_LOGD(eDebugWinConfig|eDebugSkipStaicLayer, "window update config[%zu]", i);
-        } else {
-            DISPLAY_LOGD(eDebugWinConfig|eDebugSkipStaicLayer, "deliver config[%zu]", i);
-        }
+        DISPLAY_LOGD(eDebugWinConfig|eDebugSkipStaicLayer, "deliver config[%zu]", i);
         dumpConfig(mDpuData.configs[i]);
     }
 
@@ -3061,7 +3054,7 @@ int32_t ExynosDisplay::setPowerMode(
 int32_t ExynosDisplay::setVsyncEnabled(
         int32_t /*hwc2_vsync_t*/ enabled) {
 
-    __u32 val = 0;
+    uint32_t val = 0;
 
 //    ALOGD("HWC2 : %s : %d %d", __func__, __LINE__, enabled);
 
@@ -3976,45 +3969,23 @@ int ExynosDisplay::handleWindowUpdate()
         }
     }
 
-    if (mergedRect.left != (int32_t)mXres || mergedRect.right != 0 ||
-        mergedRect.top != (int32_t)mYres || mergedRect.bottom != 0) {
-        DISPLAY_LOGD(eDebugWindowUpdate, "Partial(origin) : %d, %d, %d, %d",
-                mergedRect.left, mergedRect.top, mergedRect.right, mergedRect.bottom);
-    } else {
+    if (mergedRect.left == (int32_t)mXres && mergedRect.right == 0 &&
+        mergedRect.top == (int32_t)mYres && mergedRect.bottom == 0) {
+        DISPLAY_LOGD(eDebugWindowUpdate, "Partial canceled, All layer skiped" );
         return 0;
     }
 
-    unsigned int blockWidth, blockHeight;
+    DISPLAY_LOGD(eDebugWindowUpdate, "Partial(origin) : %d, %d, %d, %d",
+            mergedRect.left, mergedRect.top, mergedRect.right, mergedRect.bottom);
 
-    if (mDSCHSliceNum != 0 && mDSCYSliceSize != 0) {
-        blockWidth = mXres/mDSCHSliceNum;
-        blockHeight = mDSCYSliceSize;
-    } else {
-        blockWidth = 2;
-        blockHeight = 2;
-    }
-
-    DISPLAY_LOGD(eDebugWindowUpdate, "DSC block size (for align) : %d, %d", blockWidth, blockHeight);
-
-    if (mergedRect.left%blockWidth != 0)
-        mergedRect.left = pixel_align_down(mergedRect.left, blockWidth);
     if (mergedRect.left < 0) mergedRect.left = 0;
-
-    if (mergedRect.right%blockWidth != 0)
-        mergedRect.right = pixel_align(mergedRect.right, blockWidth);
     if (mergedRect.right > (int32_t)mXres) mergedRect.right = mXres;
-
-    if (mergedRect.top%blockHeight != 0)
-        mergedRect.top = pixel_align_down(mergedRect.top, blockHeight);
     if (mergedRect.top < 0) mergedRect.top = 0;
-
-    if (mergedRect.bottom%blockHeight != 0)
-        mergedRect.bottom = pixel_align(mergedRect.bottom, blockHeight);
     if (mergedRect.bottom > (int32_t)mYres) mergedRect.bottom = mYres;
 
     if (mergedRect.left == 0 && mergedRect.right == (int32_t)mXres &&
-            mergedRect.top == 0 && mergedRect.bottom == (int32_t)mYres) {
-        DISPLAY_LOGD(eDebugWindowUpdate, "Partial(aligned) : Full size");
+        mergedRect.top == 0 && mergedRect.bottom == (int32_t)mYres) {
+        DISPLAY_LOGD(eDebugWindowUpdate, "Partial : Full size");
         mDpuData.enable_win_update = true;
         mDpuData.win_update_region.x = 0;
         mDpuData.win_update_region.w = mXres;
@@ -4024,20 +3995,11 @@ int ExynosDisplay::handleWindowUpdate()
         return 0;
     }
 
-    if (mergedRect.left != (int32_t)mXres && mergedRect.right != 0 &&
-            mergedRect.top != (int32_t)mYres && mergedRect.bottom != 0) {
-        DISPLAY_LOGD(eDebugWindowUpdate, "Partial(aligned) : %d, %d, %d, %d",
-                mergedRect.left, mergedRect.top, mergedRect.right, mergedRect.bottom);
-
-        mDpuData.enable_win_update = true;
-        mDpuData.win_update_region.x = mergedRect.left;
-        mDpuData.win_update_region.w = WIDTH(mergedRect);
-        mDpuData.win_update_region.y = mergedRect.top;
-        mDpuData.win_update_region.h = HEIGHT(mergedRect);
-    }
-    else {
-        DISPLAY_LOGD(eDebugWindowUpdate, "Partial canceled, All layer skiped" );
-    }
+    mDpuData.enable_win_update = true;
+    mDpuData.win_update_region.x = mergedRect.left;
+    mDpuData.win_update_region.w = WIDTH(mergedRect);
+    mDpuData.win_update_region.y = mergedRect.top;
+    mDpuData.win_update_region.h = HEIGHT(mergedRect);
 
     DISPLAY_LOGD(eDebugWindowUpdate, "window update end ------------------");
     return 0;
@@ -4292,20 +4254,19 @@ int32_t ExynosDisplay::getHdrCapabilities(uint32_t* outNumTypes,
             return HWC2_ERROR_BAD_CONFIG;
     }
 
-    *outMaxLuminance = mHdrTypeNum;
+    *outMaxLuminance = mMaxLuminance;
     *outMaxAverageLuminance = mMaxAverageLuminance;
     *outMinLuminance = mMinLuminance;
 
-    if (outTypes == NULL)
-        *outNumTypes = mHdrTypeNum;
-
-    if (outTypes != NULL) {
-        if (*outNumTypes != mHdrTypeNum) {
-            ALOGE("%s:: Invalid parameter (outNumTypes: %d, mHdrTypeNum: %d",
-                    __func__, *outNumTypes, mHdrTypeNum);
+    if (outTypes == NULL) {
+        *outNumTypes = mHdrTypes.size();
+    } else {
+        if (*outNumTypes != mHdrTypes.size()) {
+            ALOGE("%s:: Invalid parameter (outNumTypes: %d, mHdrTypes size: %zu",
+                    __func__, *outNumTypes, mHdrTypes.size());
             return HWC2_ERROR_BAD_PARAMETER;
         }
-        for(uint32_t i = 0; i < mHdrTypeNum; i++) {
+        for(uint32_t i = 0; i < *outNumTypes; i++) {
             outTypes[i] = mHdrTypes[i];
         }
     }
