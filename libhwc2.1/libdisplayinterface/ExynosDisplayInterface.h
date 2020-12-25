@@ -28,7 +28,6 @@ using namespace android;
 class ExynosDisplayInterface {
     protected:
         ExynosDisplay *mExynosDisplay = NULL;
-        uint32_t mActiveConfig = 0;
     public:
         virtual ~ExynosDisplayInterface();
         virtual void init(ExynosDisplay* __unused exynosDisplay) {};
@@ -36,9 +35,6 @@ class ExynosDisplayInterface {
         virtual int32_t setLowPowerMode() { return HWC2_ERROR_UNSUPPORTED; };
         virtual bool isDozeModeAvailable() const { return false; };
         virtual int32_t setVsyncEnabled(uint32_t __unused enabled) {return NO_ERROR;};
-        virtual int32_t getDisplayAttribute(
-                hwc2_config_t __unused config,
-                int32_t __unused attribute, int32_t* __unused outValue) {return NO_ERROR;};
         virtual int32_t getDisplayConfigs(
                 uint32_t* outNumConfigs,
                 hwc2_config_t* outConfigs);
@@ -48,7 +44,11 @@ class ExynosDisplayInterface {
                 int32_t* outModes);
         virtual int32_t setColorMode(int32_t __unused mode) {return NO_ERROR;};
         virtual int32_t setActiveConfig(hwc2_config_t __unused config) {return NO_ERROR;};
-        virtual int32_t getActiveConfig(hwc2_config_t* outConfig);
+        virtual int32_t setActiveConfigWithConstraints(
+                hwc2_config_t __unused config, bool __unused test = false)
+        {return NO_ERROR;};
+        virtual int32_t getDisplayVsyncPeriod(hwc2_vsync_period_t* outVsyncPeriod);
+        virtual int32_t getConfigChangeDuration() {return 0;};
         virtual int32_t setCursorPositionAsync(uint32_t __unused x_pos,
                 uint32_t __unused y_pos) {return NO_ERROR;};
         virtual int32_t updateHdrCapabilities();
@@ -70,6 +70,9 @@ class ExynosDisplayInterface {
                 uint32_t* __unused outDataSize, uint8_t* __unused outData) {return 0;}
 
         bool isPrimary();
+        /* For HWC 2.4 APIs */
+        virtual int32_t getVsyncAppliedTime(hwc2_config_t __unused config, int64_t* __unused actualChangeTime) {return NO_ERROR;}
+
     public:
         uint32_t mType = INTERFACE_TYPE_NONE;
 };

@@ -54,7 +54,8 @@ void DrmProperty::Init(drmModePropertyPtr p, uint64_t value) {
   for (int i = 0; i < p->count_blobs; ++i)
     blob_ids_.push_back(p->blob_ids[i]);
 
-  if (flags_ & DRM_MODE_PROP_RANGE)
+  if ((flags_ & DRM_MODE_PROP_RANGE) ||
+      (flags_ & DRM_MODE_PROP_SIGNED_RANGE))
     type_ = DRM_PROPERTY_TYPE_INT;
   else if (flags_ & DRM_MODE_PROP_ENUM)
     type_ = DRM_PROPERTY_TYPE_ENUM;
@@ -152,5 +153,9 @@ std::tuple<uint64_t, int> DrmProperty::GetEnumValueWithName(
   }
 
   return std::make_tuple(UINT64_MAX, -EINVAL);
+}
+
+void DrmProperty::UpdateValue(uint64_t value) {
+  value_ = value;
 }
 }  // namespace android
