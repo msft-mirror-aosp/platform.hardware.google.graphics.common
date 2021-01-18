@@ -168,6 +168,9 @@ class ExynosDisplayDrmInterface :
                 const std::unique_ptr<DrmPlane> &plane,
                 const exynos_win_config_data& config)
         { return NO_ERROR;};
+        virtual int32_t updateBrightness();
+        virtual float getSdrDimRatio();
+
     protected:
         struct ModeState {
             bool needs_modeset = false;
@@ -211,7 +214,6 @@ class ExynosDisplayDrmInterface :
                 uint32_t &fbId);
 
         int32_t setupPartialRegion(DrmModeAtomicReq &drmReq);
-
         static void parseEnums(const DrmProperty& property,
                 const std::vector<std::pair<uint32_t, const char *>> &enums,
                 DrmPropertyMap &out_enums);
@@ -289,6 +291,56 @@ class ExynosDisplayDrmInterface :
 
     private:
         DrmMode mDozeDrmMode;
+
+    protected:
+        void getBrightnessInterfaceSupport();
+        bool isBrightnessStateChange();
+        void setupBrightnessConfig();
+        FILE *mHbmOnFd;
+        bool mBrightntessIntfSupported = false;
+        float mBrightnessHbmMax = 1.0f;
+        /* boost brightness ratio for HDR */
+        float mBrightnessHdrRatio = 1.0;
+        enum class PanelHbmType {
+            ONE_STEP,
+            CONTINUOUS,
+        };
+        enum BrightnessRange {
+            NORMAL = 0,
+            HBM,
+            MAX,
+        };
+        PanelHbmType mPanelHbmType;
+
+        Mutex mBrightnessUpdateMutex;
+        brightnessState_t mBrightnessState;
+        uint32_t mBrightnessLevel;
+        float mScaledBrightness;
+        bool mBrightnessDimmingOn;
+        bool mBrightnessHbmOn;
+
+        struct BrightnessTable {
+            float mBriStart;
+            float mBriEnd;
+            uint32_t mBklStart;
+            uint32_t mBklEnd;
+            uint32_t mNitsStart;
+            uint32_t mNitsEnd;
+            BrightnessTable() {}
+            BrightnessTable(const brightness_attribute &attr)
+                  : mBriStart(static_cast<float>(attr.percentage.min) / 100.0f),
+                    mBriEnd(static_cast<float>(attr.percentage.max) / 100.0f),
+                    mBklStart(attr.level.min),
+                    mBklEnd(attr.level.max),
+                    mNitsStart(attr.nits.min),
+                    mNitsEnd(attr.nits.max) {}
+        };
+        struct BrightnessTable mBrightnessTable[BrightnessRange::MAX];
+
+        // TODO: hbm in dual display is not supported. It should support it in
+        //      the furture.
+        static constexpr const char *kHbmOnFileNode =
+                "/sys/class/backlight/panel0-backlight/hbm_mode";
 };
 
 #endif

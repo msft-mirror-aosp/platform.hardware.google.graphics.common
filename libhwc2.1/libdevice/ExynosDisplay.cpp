@@ -338,6 +338,7 @@ ExynosDisplay::ExynosDisplay(uint32_t type, ExynosDevice *device)
     mLowFpsLayerInfo.initializeInfos();
 
     mUseDpu = true;
+    mBrightnessState.reset();
     return;
 }
 
@@ -1240,7 +1241,7 @@ int32_t ExynosDisplay::configureHandle(ExynosLayer &layer, int fence_fd, exynos_
             bool hdr_exception = getHDRException(&layer);
             uint32_t parcelFdIndex =
                     getBufferNumOfFormat(layer.mMidImg.format,
-                                         getAFBCCompressionType(layer.mMidImg.bufferHandle));
+                                         getCompressionType(layer.mMidImg.bufferHandle));
             if (parcelFdIndex == 0) {
                 DISPLAY_LOGE("%s:: failed to get parcelFdIndex for midImg with format: %d",
                              __func__, layer.mMidImg.format);
@@ -1295,7 +1296,7 @@ int32_t ExynosDisplay::configureHandle(ExynosLayer &layer, int fence_fd, exynos_
 
             if (layer.mBufferHasMetaParcel == false) {
                 uint32_t parcelFdIndex =
-                        getBufferNumOfFormat(gmeta.format, getAFBCCompressionType(handle));
+                        getBufferNumOfFormat(gmeta.format, getCompressionType(handle));
                 if (parcelFdIndex == 0) {
                     DISPLAY_LOGE("%s:: failed to get parcelFdIndex for srcImg with format: %d",
                                  __func__, gmeta.format);
@@ -2616,6 +2617,8 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
             DISPLAY_LOGD(eDebugSkipValidate, "validate is skipped");
         }
 
+        updateBrightnessState();
+
         if (updateColorConversionInfo() != NO_ERROR) {
             DISPLAY_LOGE("%s:: updateColorConversionInfo() fail, ret(%d)",
                     __func__, ret);
@@ -2827,6 +2830,8 @@ err:
         printDebugInfos(errString);
     }
     mDisplayInterface->setForcePanic();
+
+    mBrightnessState.reset();
 
     ret = -EINVAL;
     return ret;
@@ -3045,10 +3050,19 @@ int32_t ExynosDisplay::setDisplayBrightness(float brightness)
     if (mBrightnessFd == NULL)
         return HWC2_ERROR_UNSUPPORTED;
 
+    mBrightnessValue = brightness;
+    int32_t ret = mDisplayInterface->updateBrightness();
+
+    if (ret == HWC2_ERROR_NONE) return ret;
+
+    if (ret != HWC2_ERROR_UNSUPPORTED) {
+        ALOGE("Fail to update brightness, ret(%d), brightness =%f", ret, brightness);
+        return ret;
+    }
+
     char val[MAX_BRIGHTNESS_LEN]= {0};
     uint32_t scaledBrightness = static_cast<uint32_t>(round(brightness * mMaxBrightness));
 
-    int32_t ret = 0;
     if ((ret = snprintf(val, MAX_BRIGHTNESS_LEN, "%d", scaledBrightness)) > 0) {
         fwrite(val, sizeof(val), 1, mBrightnessFd);
         if (ferror(mBrightnessFd)){
@@ -3228,6 +3242,9 @@ int32_t ExynosDisplay::updateInternalDisplayConfigVariables(
         getDisplayAttribute(mActiveConfig, HWC2_ATTRIBUTE_VSYNC_PERIOD,
                 (int32_t*)&mVsyncPeriod);
 
+    /* Update mYuvHdrHbmThresholdArea */
+    mYuvHdrHbmThresholdArea = mXres * mYres * kHbmThresholdPct;
+
     return NO_ERROR;
 }
 
@@ -3360,6 +3377,7 @@ int ExynosDisplay::clearDisplay(bool readback) {
     /* Update last retire fence */
     mLastRetireFence = fence_close(mLastRetireFence, this, FENCE_TYPE_RETIRE, FENCE_IP_DPP);
 
+    mBrightnessState.reset();
     return ret;
 }
 
@@ -3494,6 +3512,8 @@ int32_t ExynosDisplay::validateDisplay(
         printDebugInfos(errString);
         mDisplayInterface->setForcePanic();
     }
+
+    updateBrightnessState();
 
     if ((ret = updateColorConversionInfo()) != NO_ERROR) {
         validateError = true;
@@ -4774,4 +4794,43 @@ void ExynosDisplay::traceLayerTypes() {
     ATRACE_INT("HWComposer: GPU Layer", gpu_count);
     ATRACE_INT("HWComposer: Cached Layer", skip_count);
     ATRACE_INT("HWComposer: Total Layer", mLayers.size());
+}
+
+void ExynosDisplay::updateBrightnessState() {
+    static constexpr float kMaxCll = 10000.0;
+    bool client_rgb_hdr = false;
+
+    mBrightnessState.reset();
+    for (size_t i = 0; i < mLayers.size(); i++) {
+        if (mLayers[i]->mIsHdrLayer) {
+            if (mLayers[i]->isLayerFormatRgb()) {
+                auto meta = mLayers[i]->getMetaParcel();
+                if ((meta != nullptr) && (meta->eType & VIDEO_INFO_TYPE_HDR_STATIC) &&
+                    meta->sHdrStaticInfo.sType1.mMaxContentLightLevel >= kMaxCll) {
+                    // if there are one or more such layers and any one of them
+                    // is composed by GPU, we won't dim sdr layers
+                    if (mLayers[i]->mExynosCompositionType == HWC2_COMPOSITION_CLIENT) {
+                        client_rgb_hdr = true;
+                    }
+                    mBrightnessState.peak_hbm = true;
+                    mBrightnessState.instant_hbm = true;
+                }
+            } else if (mLayers[i]->getDisplayFrameArea() > mYuvHdrHbmThresholdArea) {
+                mBrightnessState.boost_brightness = true;
+            }
+        }
+    }
+
+    if (mBrightnessState.instant_hbm && !client_rgb_hdr) {
+        // SDR dim ratio = display_nit_current / display_nit_after_hbm_on
+        // mDisplayInterface has the panel caps to calculate current nits.
+        float dim_sdr_ratio = mDisplayInterface->getSdrDimRatio();
+
+        char value[PROPERTY_VALUE_MAX];
+        const float ratio = property_get("debug.hwc.dim_sdr", value, nullptr) > 0 ?
+                                  std::atof(value) : dim_sdr_ratio;
+
+        mBrightnessState.dim_sdr_ratio = ratio;
+    }
+    ATRACE_INT("GHBM", mBrightnessState.dim_sdr_ratio != 1.0);
 }

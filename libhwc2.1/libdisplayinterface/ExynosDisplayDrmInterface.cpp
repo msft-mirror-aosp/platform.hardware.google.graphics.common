@@ -16,12 +16,16 @@
 
 #define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
 
-#include <sys/types.h>
 #include "ExynosDisplayDrmInterface.h"
-#include "ExynosHWCDebug.h"
-#include <drm/drm_fourcc.h>
-#include <xf86drm.h>
+
 #include <drm.h>
+#include <drm/drm_fourcc.h>
+#include <sys/types.h>
+#include <xf86drm.h>
+
+#include <algorithm>
+
+#include "ExynosHWCDebug.h"
 
 using namespace std::chrono_literals;
 
@@ -50,6 +54,22 @@ using namespace vendor::graphics;
 
 extern struct exynos_hwc_control exynosHWCControl;
 static const int32_t kUmPerInch = 25400;
+
+void writeFileNode(FILE *fd, int value) {
+    constexpr uint32_t kMaxWriteFileLen = 16;
+    char val[kMaxWriteFileLen] = {0};
+    if (int32_t ret = snprintf(val, kMaxWriteFileLen, "%d", value) <= 0) {
+        ALOGE("Fail to write file node, ret =%d", ret);
+    } else {
+        fwrite(val, sizeof(val), 1, fd);
+        if (ferror(fd)) {
+            ALOGE("write failed: %s", strerror(errno));
+            clearerr(fd);
+        }
+        rewind(fd);
+    }
+}
+
 ExynosDisplayDrmInterface::ExynosDisplayDrmInterface(ExynosDisplay *exynosDisplay)
 {
     mType = INTERFACE_TYPE_DRM;
@@ -228,6 +248,8 @@ void ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
 
     chosePreferredConfig();
 
+    getBrightnessInterfaceSupport();
+
     return;
 }
 
@@ -363,6 +385,8 @@ int32_t ExynosDisplayDrmInterface::setPowerMode(int32_t mode)
             dpms_value)) != NO_ERROR) {
         HWC_LOGE(mExynosDisplay, "setPower mode ret (%d)", ret);
     }
+
+    if (mode == HWC_POWER_MODE_OFF) mBrightnessState.reset();
     return ret;
 }
 
@@ -811,7 +835,7 @@ int32_t ExynosDisplayDrmInterface::addFBFromDisplayConfig(
         uint32_t compressType = 0;
         if (config.compression)
             compressType = AFBC;
-        else if (isFormatSBWC(config.format))
+        else if (isFormatSBWC(config.format)) // TODO: b/175381083, change to new API
             compressType = COMP_ANY;
 
         auto exynosFormat = halFormatToExynosFormat(config.format, compressType);
@@ -1218,6 +1242,20 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
 
     if (ATRACE_ENABLED()) {
         mExynosDisplay->traceLayerTypes();
+    }
+
+    if (isBrightnessStateChange()) {
+        setupBrightnessConfig();
+        if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(), mDrmConnector->brightness_level(),
+                                            mBrightnessLevel)) < 0) {
+            HWC_LOGE(mExynosDisplay, "%s: Fail to set brightness_level property", __func__);
+        }
+
+        if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(), mDrmConnector->hbm_on(),
+                                            mBrightnessHbmOn)) < 0) {
+            HWC_LOGE(mExynosDisplay, "%s: Fail to set hbm_on property", __func__);
+        }
+        // TODO: add dimming_on property
     }
 
     uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
@@ -1728,4 +1766,161 @@ int32_t ExynosDisplayDrmInterface::getDisplayIdentificationData(
     *outPort = mDrmConnector->id();
 
     return HWC2_ERROR_NONE;
+}
+
+void ExynosDisplayDrmInterface::getBrightnessInterfaceSupport() {
+    if (mDrmConnector->brightness_cap().id() == 0) {
+        ALOGD("the brightness_cap is not supported");
+        return;
+    }
+
+    const auto [ret, blobId] = mDrmConnector->brightness_cap().value();
+    if (ret) {
+        ALOGE("Fail to get brightness_cap (ret = %d)", ret);
+        return;
+    }
+
+    if (blobId == 0) {
+        ALOGE("the brightness_cap is supported but blob is not valid");
+        return;
+    }
+
+    drmModePropertyBlobPtr blob = drmModeGetPropertyBlob(mDrmDevice->fd(), blobId);
+    if (blob == nullptr) {
+        ALOGE("Fail to get brightness_cap blob");
+        return;
+    }
+
+    const struct brightness_capability *cap =
+            reinterpret_cast<struct brightness_capability *>(blob->data);
+
+    mBrightnessHdrRatio =
+            static_cast<float>(cap->hbm.nits.max) / static_cast<float>(cap->normal.nits.max);
+    ALOGI("mBrightnessHdrRatio = %f", mBrightnessHdrRatio);
+
+    if (cap->hbm.level.min == cap->hbm.level.max)
+        mPanelHbmType = PanelHbmType::ONE_STEP;
+    else
+        mPanelHbmType = PanelHbmType::CONTINUOUS;
+    ALOGI("mPanelHbmType = %d", mPanelHbmType);
+
+    mBrightnessHbmMax = static_cast<float>(cap->hbm.percentage.max) / 100.0f;
+    ALOGI("mBrightnessHbmMax = %f", mBrightnessHbmMax);
+
+    mBrightnessTable[BrightnessRange::NORMAL] = BrightnessTable(cap->normal);
+    mBrightnessTable[BrightnessRange::HBM] = BrightnessTable(cap->hbm);
+
+    drmModeFreePropertyBlob(blob);
+
+    mBrightntessIntfSupported = true;
+    mBrightnessState.reset();
+    mBrightnessHbmOn = false;
+    mBrightnessDimmingOn = true;
+
+    mHbmOnFd = fopen(kHbmOnFileNode, "w+");
+    if (mHbmOnFd == NULL) ALOGE("%s open failed! %s", kHbmOnFileNode, strerror(errno));
+
+    return;
+}
+
+float ExynosDisplayDrmInterface::getSdrDimRatio()
+{
+    float sdr_nits = 0;
+    auto sz = BrightnessRange::MAX;
+    if (sz == 0) {
+        ALOGW("%s: no brightness table", __func__);
+        return 1.0;
+    }
+
+    //TODO: keep in normal brightness range before DisplayManager HBM impl ready
+    auto brightness = mExynosDisplay->getBrightnessValue() *
+                       mBrightnessTable[BrightnessRange::NORMAL].mBriEnd;
+
+    if (mBrightnessTable[sz - 1].mBriEnd < brightness) {
+        ALOGE("%s: invalid brightness table, max brightness(float) %f", __func__,
+              mBrightnessTable[sz - 1].mBriEnd);
+        return 1.0;
+    }
+
+    for (int i = 0; i < sz; i++) {
+        if (brightness <= mBrightnessTable[i].mBriEnd) {
+            sdr_nits =
+                    (brightness - mBrightnessTable[i].mBriStart) /
+                            (mBrightnessTable[i].mBriEnd - mBrightnessTable[i].mBriStart) *
+                            (mBrightnessTable[i].mNitsEnd - mBrightnessTable[i].mNitsStart) +
+                    mBrightnessTable[i].mNitsStart;
+            break;
+        }
+    }
+
+    float peak = mBrightnessTable[sz - 1].mNitsEnd;
+    return sdr_nits/peak;
+}
+
+int32_t ExynosDisplayDrmInterface::updateBrightness() {
+    if (!mBrightntessIntfSupported) return HWC2_ERROR_UNSUPPORTED;
+
+    setupBrightnessConfig();
+
+    if (mExynosDisplay->mBrightnessFd)
+        writeFileNode(mExynosDisplay->mBrightnessFd, mBrightnessLevel);
+
+    if (mHbmOnFd) writeFileNode(mHbmOnFd, mBrightnessHbmOn);
+
+    // TODO: dimming_on file node
+
+    return HWC2_ERROR_NONE;
+}
+
+bool ExynosDisplayDrmInterface::isBrightnessStateChange() {
+    if (!mBrightntessIntfSupported) return false;
+
+    return !(mExynosDisplay->getBrightnessState() == mBrightnessState);
+}
+
+void ExynosDisplayDrmInterface::setupBrightnessConfig() {
+    if (!mBrightntessIntfSupported) return;
+
+    Mutex::Autolock lock(mBrightnessUpdateMutex);
+    brightnessState_t brightness_state = mExynosDisplay->getBrightnessState();
+
+    mBrightnessDimmingOn = (!mBrightnessState.instant_hbm && !brightness_state.instant_hbm);
+
+    // TODO: keep in normal brightness range before DisplayManager HBM impl ready
+    float brightness = mExynosDisplay->getBrightnessValue() *
+            mBrightnessTable[BrightnessRange::NORMAL].mBriEnd;
+
+    if (brightness_state.peak_hbm) {
+        mScaledBrightness = mBrightnessHbmMax;
+    } else if (brightness_state.boost_brightness) {
+        mScaledBrightness = min(mBrightnessHdrRatio * brightness, mBrightnessHbmMax);
+    } else {
+        mScaledBrightness = brightness;
+    }
+
+    uint32_t range;
+    for (range = 0; range < BrightnessRange::MAX; range++) {
+        if (mScaledBrightness <= mBrightnessTable[range].mBriEnd) {
+            mBrightnessLevel = static_cast<uint32_t>(
+                    (mScaledBrightness - mBrightnessTable[range].mBriStart) /
+                            (mBrightnessTable[range].mBriEnd - mBrightnessTable[range].mBriStart) *
+                            (mBrightnessTable[range].mBklEnd - mBrightnessTable[range].mBklStart) +
+                    mBrightnessTable[range].mBklStart);
+            break;
+        }
+    }
+
+    if (mPanelHbmType == PanelHbmType::ONE_STEP && mScaledBrightness == mBrightnessHbmMax) {
+        mBrightnessHbmOn = true;
+    } else if (mPanelHbmType == PanelHbmType::CONTINUOUS && range == BrightnessRange::HBM) {
+        mBrightnessHbmOn = true;
+    } else {
+        mBrightnessHbmOn = false;
+    }
+    ALOGI("level=%d, DimmingOn=%d, HbmOn=%d", mBrightnessLevel, mBrightnessDimmingOn,
+          mBrightnessHbmOn);
+
+    mBrightnessState = brightness_state;
+
+    return;
 }
