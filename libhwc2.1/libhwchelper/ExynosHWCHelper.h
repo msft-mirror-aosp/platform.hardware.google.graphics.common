@@ -404,7 +404,7 @@ int drmFormatToHalFormat(int format);
 uint8_t formatToBpp(int format);
 uint8_t DpuFormatToBpp(decon_pixel_format format);
 uint64_t halTransformToDrmRot(uint32_t halTransform);
-uint32_t getAFBCCompressionType(const buffer_handle_t handle);
+uint32_t getCompressionType(const buffer_handle_t handle);
 
 bool isFormatRgb(int format);
 bool isFormatYUV(int format);
@@ -422,7 +422,7 @@ bool isAFBCCompressed(const buffer_handle_t handle);
 bool isSrcCropFloat(hwc_frect &frect);
 bool isScaled(exynos_image &src, exynos_image &dst);
 bool isScaledDown(exynos_image &src, exynos_image &dst);
-bool hasHdrInfo(exynos_image &img);
+bool hasHdrInfo(const exynos_image &img);
 bool hasHdrInfo(android_dataspace dataSpace);
 bool hasHdr10Plus(exynos_image &img);
 

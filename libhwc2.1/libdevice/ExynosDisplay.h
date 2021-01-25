@@ -301,6 +301,32 @@ struct DisplayControl {
     bool readbackSupport = false;
 };
 
+typedef struct brightnessState {
+    static constexpr size_t kNumofBrightnessState = 3;
+    union {
+        std::array<bool, kNumofBrightnessState> mData;
+        struct {
+            bool instant_hbm;
+            bool peak_hbm;
+            bool boost_brightness;
+        };
+    };
+    float dim_sdr_ratio;
+    void reset() {
+        mData = {false, false, false};
+        dim_sdr_ratio = 1.0;
+    }
+    brightnessState& operator=(const brightnessState& a) {
+        mData = a.mData;
+        dim_sdr_ratio = a.dim_sdr_ratio;
+        return *this;
+    }
+    bool operator==(const brightnessState& a) const {
+        return a.mData == mData &&
+            a.dim_sdr_ratio == dim_sdr_ratio;
+    }
+} brightnessState_t;
+
 class ExynosDisplay {
     public:
 
@@ -500,6 +526,8 @@ class ExynosDisplay {
         int checkDynamicReCompMode();
 
         int handleDynamicReCompMode();
+
+        void updateBrightnessState();
 
         /**
          * @param compositionType
@@ -1039,8 +1067,23 @@ class ExynosDisplay {
          */
         std::unique_ptr<ExynosDisplayInterface> mDisplayInterface;
 
+        const brightnessState_t& getBrightnessState() const { return mBrightnessState; }
+        float getBrightnessValue() const { return mBrightnessValue; }
+
     private:
         bool skipStaticLayerChanged(ExynosCompositionInfo& compositionInfo);
+
+        // hbm threshold percentage
+        static constexpr float kHbmThresholdPct = 0.5f;
+
+        // threshold to request HBM when HDR video
+        uint32_t mYuvHdrHbmThresholdArea;
+
+        // Brightness state
+        brightnessState_t mBrightnessState;
+
+        // current Brightness value
+        float mBrightnessValue;
 };
 
 #endif //_EXYNOSDISPLAY_H

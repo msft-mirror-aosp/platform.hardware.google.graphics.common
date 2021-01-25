@@ -25,10 +25,6 @@
 #include "ExynosExternalDisplay.h"
 
 #include "VendorVideoAPI.h"
-#include "VendorGraphicBuffer.h"
-
-using namespace android;
-using vendor::graphics::VendorGraphicBufferMeta;
 
 /**
  * ExynosLayer implementation
@@ -325,7 +321,10 @@ int32_t ExynosLayer::doPreProcess()
     if (getDrmMode(mLayerBuffer) != NO_DRM) {
         priority = ePriorityMax;
     } else if (mIsHdrLayer) {
-        priority = ePriorityHigh;
+        if (isFormatRgb(gmeta.format))
+            priority = ePriorityMax;
+        else
+            priority = ePriorityHigh;
     } else if (isFormatYUV(gmeta.format)) {
         priority = ePriorityHigh;
     } else if ((mDisplay->mDisplayControl.cursorSupport == true) &&
@@ -839,7 +838,7 @@ int32_t ExynosLayer::setDstExynosImage(exynos_image *dst_img)
         HWC_LOGE(NULL, "mDisplay is NULL");
     }
     dst_img->blending = mBlending;
-    dst_img->transform = mTransform;
+    dst_img->transform = 0;
     dst_img->compressed = 0;
     dst_img->planeAlpha = mPlaneAlpha;
     dst_img->zOrder = mZOrder;
