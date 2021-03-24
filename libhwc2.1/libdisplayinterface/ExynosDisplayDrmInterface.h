@@ -204,11 +204,12 @@ class ExynosDisplayDrmInterface :
         virtual int32_t setCursorPositionAsync(uint32_t x_pos, uint32_t y_pos);
         virtual int32_t updateHdrCapabilities();
         virtual int32_t deliverWinConfigData();
-        virtual int32_t clearDisplay(bool readback = false);
+        virtual int32_t clearDisplay(bool needModeClear = false);
         virtual int32_t disableSelfRefresh(uint32_t disable);
         virtual int32_t setForcePanic();
         virtual int getDisplayFd() { return mDrmDevice->fd(); };
-        virtual void initDrmDevice(DrmDevice *drmDevice);
+        virtual int32_t initDrmDevice(DrmDevice *drmDevice);
+        virtual uint32_t getDrmDisplayId(uint32_t type, uint32_t index);
         virtual uint32_t getMaxWindowNum();
         virtual int32_t getReadbackBufferAttributes(int32_t* /*android_pixel_format_t*/ outFormat,
                 int32_t* /*android_dataspace_t*/ outDataspace);
@@ -259,6 +260,7 @@ class ExynosDisplayDrmInterface :
         };
         int32_t createModeBlob(const DrmMode &mode, uint32_t &modeBlob);
         int32_t setDisplayMode(DrmModeAtomicReq &drmReq, const uint32_t modeBlob);
+	int32_t clearDisplayMode(DrmModeAtomicReq &drmReq);
         int32_t chosePreferredConfig();
         int getDeconChannel(ExynosMPP *otfMPP);
         static std::tuple<uint64_t, int> halToDrmEnum(
@@ -355,6 +357,7 @@ class ExynosDisplayDrmInterface :
         bool isBrightnessStateChange();
         void setupBrightnessConfig();
         FILE *mHbmOnFd;
+        FILE *mDimmingOnFd;
         bool mBrightntessIntfSupported = false;
         float mBrightnessHbmMax = 1.0f;
         /* boost brightness ratio for HDR */
@@ -399,6 +402,9 @@ class ExynosDisplayDrmInterface :
         //      the furture.
         static constexpr const char *kHbmOnFileNode =
                 "/sys/class/backlight/panel0-backlight/hbm_mode";
+        static constexpr const char *kDimmingOnFileNode =
+                "/sys/class/backlight/panel0-backlight/dimming_on";
+
         FramebufferManager mFBManager;
 
     private:
