@@ -46,7 +46,7 @@ class Worker {
   }
 
  protected:
-  Worker(const char *name, int priority, bool is_rt = false);
+  Worker(const char *name, int priority);
   virtual ~Worker();
 
   int InitWorker();
@@ -74,7 +74,6 @@ class Worker {
   int priority_;
 
   std::unique_ptr<std::thread> thread_;
-  bool is_rt_;
   bool exit_;
   bool initialized_;
 };
