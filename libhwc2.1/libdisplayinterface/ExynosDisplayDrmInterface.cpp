@@ -560,7 +560,7 @@ void ExynosDisplayDrmInterface::Callback(
 
     if (configApplied) {
         if (mVsyncCallback.getDesiredVsyncPeriod()) {
-            mExynosDisplay->resetConfigRequestState();
+            mExynosDisplay->resetConfigRequestStateLocked();
             mDrmConnector->set_active_mode(mActiveModeState.mode);
             mVsyncCallback.resetDesiredVsyncPeriod();
         }
@@ -929,7 +929,8 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     /* Don't skip when power was off */
     if (!(mExynosDisplay->mSkipFrame) &&
         (mActiveModeState.blob_id != 0) &&
-        (mActiveModeState.mode.id() == mode.id())) {
+        (mActiveModeState.mode.id() == mode.id()) &&
+        (mActiveModeState.needs_modeset == false)) {
         ALOGD("%s:: same mode %d", __func__, mode.id());
         return HWC2_ERROR_NONE;
     }
@@ -1345,11 +1346,14 @@ int32_t ExynosDisplayDrmInterface::waitVBlank() {
     return ret;
 }
 
-int32_t ExynosDisplayDrmInterface::updateColorSettings(DrmModeAtomicReq &drmReq) {
+int32_t ExynosDisplayDrmInterface::updateColorSettings(DrmModeAtomicReq &drmReq, uint64_t dqeEnabled) {
     int ret = NO_ERROR;
-    if ((ret = setDisplayColorSetting(drmReq)) != 0) {
-        HWC_LOGE(mExynosDisplay, "Failed to set display color setting");
-        return ret;
+
+    if (dqeEnabled) {
+        if ((ret = setDisplayColorSetting(drmReq)) != 0) {
+            HWC_LOGE(mExynosDisplay, "Failed to set display color setting");
+            return ret;
+        }
     }
 
     for (size_t i = 0; i < mExynosDisplay->mDpuData.configs.size(); i++) {
@@ -1392,11 +1396,22 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
 
     mFBManager.checkShrink();
 
+    bool needModesetForReadback = false;
     if (mExynosDisplay->mDpuData.enable_readback) {
         if ((ret = setupWritebackCommit(drmReq)) < 0) {
             HWC_LOGE(mExynosDisplay, "%s:: Failed to setup writeback commit ret(%d)",
                     __func__, ret);
             return ret;
+        }
+        needModesetForReadback = true;
+    } else {
+        if (mReadbackInfo.mNeedClearReadbackCommit) {
+            if ((ret = clearWritebackCommit(drmReq)) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Failed to clear writeback commit ret(%d)",
+                         __func__, ret);
+                return ret;
+            }
+            needModesetForReadback = true;
         }
     }
 
@@ -1420,6 +1435,19 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
 
     for (auto &plane : mDrmDevice->planes()) {
         planeEnableInfo[plane->id()] = 0;
+    }
+
+    uint64_t dqeEnable = 1;
+    if (mExynosDisplay->mDpuData.enable_readback &&
+        !mExynosDisplay->mDpuData.readback_info.requested_from_service) {
+        dqeEnable = 0;
+    }
+
+    if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(),
+                    mDrmCrtc->dqe_enabled_property(), dqeEnable)) < 0) {
+        HWC_LOGE(mExynosDisplay, "%s: Fail to dqe_enable setting",
+                __func__);
+        return ret;
     }
 
     for (size_t i = 0; i < mExynosDisplay->mDpuData.configs.size(); i++) {
@@ -1535,17 +1563,17 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     }
 
     uint32_t flags = mipi_sync ? 0 : DRM_MODE_ATOMIC_NONBLOCK;
-    if (mExynosDisplay->mDpuData.enable_readback)
+    if (needModesetForReadback)
         flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 
     if (mipi_sync)
         drmReq.savePset();
 
-    if ((ret = updateColorSettings(drmReq)) != 0) {
+    if ((ret = updateColorSettings(drmReq, dqeEnable)) != 0) {
         HWC_LOGE(mExynosDisplay, "failed to update color settings, ret=%d", ret);
         return ret;
     }
-    if ((ret = drmReq.commit(flags, true, mipi_sync)) < 0) {
+    if ((ret = drmReq.commit(flags, true)) < 0) {
         HWC_LOGE(mExynosDisplay, "%s:: Failed to commit pset ret=%d in deliverWinConfigData()\n",
                 __func__, ret);
         return ret;
@@ -1574,7 +1602,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
             return ret;
         }
         drmReq.restorePset();
-        if ((ret = updateColorSettings(drmReq)) != 0) {
+        if ((ret = updateColorSettings(drmReq, dqeEnable)) != 0) {
             HWC_LOGE(mExynosDisplay, "failed to update color settings, ret=%d", ret);
             return ret;
         }
@@ -1658,6 +1686,15 @@ int32_t ExynosDisplayDrmInterface::clearDisplay(bool needModeClear)
             return ret;
     }
 
+    /* Disable readback connector if required */
+    if (mReadbackInfo.mNeedClearReadbackCommit &&
+        !mExynosDisplay->mDpuData.enable_readback) {
+        if ((ret = clearWritebackCommit(drmReq)) < 0) {
+            HWC_LOGE(mExynosDisplay, "%s: Failed to apply writeback", __func__);
+            return ret;
+        }
+    }
+
     /* Disable ModeSet */
     if (needModeClear) {
         if ((ret = clearDisplayMode(drmReq)) < 0) {
@@ -1672,6 +1709,9 @@ int32_t ExynosDisplayDrmInterface::clearDisplay(bool needModeClear)
                 __func__, ret);
         return ret;
     }
+
+    if (needModeClear)
+        mActiveModeState.needs_modeset = true;
 
     return NO_ERROR;
 }
@@ -1715,19 +1755,19 @@ ExynosDisplayDrmInterface::DrmModeAtomicReq::DrmModeAtomicReq(ExynosDisplayDrmIn
 
 ExynosDisplayDrmInterface::DrmModeAtomicReq::~DrmModeAtomicReq()
 {
-    if (mDrmDisplayInterface != NULL) {
-        if (mError != 0) {
-            android::String8 result;
-            result.appendFormat("atomic commit error\n");
-            if (hwcCheckDebugMessages(eDebugDisplayInterfaceConfig) == false)
-                dumpAtomicCommitInfo(result);
-            HWC_LOGE(mDrmDisplayInterface->mExynosDisplay, "%s", result.string());
-        }
+    if (mError != 0) {
+        android::String8 result;
+        result.appendFormat("atomic commit error\n");
+        if (hwcCheckDebugMessages(eDebugDisplayInterfaceConfig) == false)
+            dumpAtomicCommitInfo(result);
+        HWC_LOGE(mDrmDisplayInterface->mExynosDisplay, "%s", result.string());
     }
+
     if(mPset)
         drmModeAtomicFree(mPset);
 
-    destroyOldBlobs();
+    if (destroyOldBlobs() != NO_ERROR)
+        HWC_LOGE(mDrmDisplayInterface->mExynosDisplay, "destroy blob error");
 }
 
 int32_t ExynosDisplayDrmInterface::DrmModeAtomicReq::atomicAddProperty(
@@ -1834,8 +1874,7 @@ String8& ExynosDisplayDrmInterface::DrmModeAtomicReq::dumpAtomicCommitInfo(
 }
 
 
-int ExynosDisplayDrmInterface::DrmModeAtomicReq::commit(uint32_t flags, bool loggingForDebug,
-                                                        bool keepBlob)
+int ExynosDisplayDrmInterface::DrmModeAtomicReq::commit(uint32_t flags, bool loggingForDebug)
 {
     ATRACE_NAME("drmModeAtomicCommit");
     android::String8 result;
@@ -1845,11 +1884,6 @@ int ExynosDisplayDrmInterface::DrmModeAtomicReq::commit(uint32_t flags, bool log
         dumpAtomicCommitInfo(result, true);
     if (ret < 0) {
         HWC_LOGE(mDrmDisplayInterface->mExynosDisplay, "commit error: %d", ret);
-        setError(ret);
-    }
-
-    if (!keepBlob && (ret = destroyOldBlobs()) != NO_ERROR) {
-        HWC_LOGE(mDrmDisplayInterface->mExynosDisplay, "destroy blob error");
         setError(ret);
     }
 
@@ -1911,9 +1945,9 @@ int32_t ExynosDisplayDrmInterface::setupWritebackCommit(DrmModeAtomicReq &drmReq
     writeback_config.state = exynos_win_config_data::WIN_STATE_BUFFER;
     writeback_config.format = mReadbackInfo.mReadbackFormat;
     writeback_config.src = {0, 0, mExynosDisplay->mXres, mExynosDisplay->mYres,
-        mExynosDisplay->mXres, mExynosDisplay->mYres};
+                            gmeta.stride, gmeta.vstride};
     writeback_config.dst = {0, 0, mExynosDisplay->mXres, mExynosDisplay->mYres,
-        mExynosDisplay->mXres, mExynosDisplay->mYres};
+                            gmeta.stride, gmeta.vstride};
     writeback_config.fd_idma[0] = gmeta.fd;
     writeback_config.fd_idma[1] = gmeta.fd1;
     writeback_config.fd_idma[2] = gmeta.fd2;
@@ -1938,6 +1972,33 @@ int32_t ExynosDisplayDrmInterface::setupWritebackCommit(DrmModeAtomicReq &drmReq
         return ret;
 
     mReadbackInfo.setFbId(writeback_fb_id);
+    mReadbackInfo.mNeedClearReadbackCommit = true;
+    return NO_ERROR;
+}
+
+int32_t ExynosDisplayDrmInterface::clearWritebackCommit(DrmModeAtomicReq &drmReq)
+{
+    int ret;
+
+    DrmConnector *writeback_conn = mReadbackInfo.getWritebackConnector();
+    if (writeback_conn == NULL) {
+        ALOGE("%s: There is no writeback connection", __func__);
+        return -EINVAL;
+    }
+
+    if ((ret = drmReq.atomicAddProperty(writeback_conn->id(),
+            writeback_conn->writeback_fb_id(), 0)) < 0)
+        return ret;
+
+    if ((ret = drmReq.atomicAddProperty(writeback_conn->id(),
+            writeback_conn->writeback_out_fence(), 0)) < 0)
+        return ret;
+
+    if ((ret = drmReq.atomicAddProperty(writeback_conn->id(),
+            writeback_conn->crtc_id_property(), 0)) < 0)
+        return ret;
+
+    mReadbackInfo.mNeedClearReadbackCommit = false;
     return NO_ERROR;
 }
 

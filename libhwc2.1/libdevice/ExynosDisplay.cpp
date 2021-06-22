@@ -2983,7 +2983,7 @@ not_validated:
 
 int32_t ExynosDisplay::presentPostProcessing()
 {
-    setReadbackBufferInternal(NULL, -1);
+    setReadbackBufferInternal(NULL, -1, false);
     if (mDpuData.enable_readback)
         mDevice->signalReadbackDone();
     mDpuData.enable_readback = false;
@@ -3296,6 +3296,9 @@ int32_t ExynosDisplay::setActiveConfigWithConstraints(hwc2_config_t config,
     DISPLAY_LOGD(eDebugDisplayConfig, "%s : %dx%d, %dms, %d Xdpi, %d Ydpi", __func__,
             mXres, mYres, mVsyncPeriod, mXdpi, mYdpi);
 
+    if (mConfigRequestState == hwc_request_state_t::SET_CONFIG_STATE_REQUESTED) {
+        DISPLAY_LOGI("%s, previous request config is processing", __func__);
+    }
     /* Config would be requested on present time */
     mConfigRequestState = hwc_request_state_t::SET_CONFIG_STATE_PENDING;
     mVsyncPeriodChangeConstraints = *vsyncPeriodChangeConstraints;
@@ -3557,8 +3560,8 @@ void ExynosDisplay::updateRefreshRateHint() {
     mPrevRefreshRate = refreshRate;
 }
 
-int32_t ExynosDisplay::resetConfigRequestState()
-{
+/* This function must be called within a mDisplayMutex protection */
+int32_t ExynosDisplay::resetConfigRequestStateLocked() {
     mVsyncPeriod = getDisplayVsyncPeriodFromConfig(mActiveConfig);
     updateBtsVsyncPeriod(mVsyncPeriod, true);
     DISPLAY_LOGD(eDebugDisplayConfig,"Update mVsyncPeriod %d",
@@ -3566,7 +3569,14 @@ int32_t ExynosDisplay::resetConfigRequestState()
 
     updateRefreshRateHint();
 
-    mConfigRequestState = hwc_request_state_t::SET_CONFIG_STATE_NONE;
+    if (mConfigRequestState != hwc_request_state_t::SET_CONFIG_STATE_REQUESTED) {
+        DISPLAY_LOGI("%s: mConfigRequestState (%d) is not REQUESTED", __func__,
+                     mConfigRequestState);
+    } else {
+        DISPLAY_LOGD(eDebugDisplayInterfaceConfig, "%s: Change mConfigRequestState (%d) to NONE",
+                     __func__, mConfigRequestState);
+        mConfigRequestState = hwc_request_state_t::SET_CONFIG_STATE_NONE;
+    }
     return NO_ERROR;
 }
 
@@ -5007,7 +5017,8 @@ int32_t ExynosDisplay::getReadbackBufferAttributes(int32_t* /*android_pixel_form
     return ret;
 }
 
-int32_t ExynosDisplay::setReadbackBuffer(buffer_handle_t buffer, int32_t releaseFence)
+int32_t ExynosDisplay::setReadbackBuffer(buffer_handle_t buffer,
+        int32_t releaseFence, bool requestedService)
 {
     Mutex::Autolock lock(mDisplayMutex);
     int32_t ret = NO_ERROR;
@@ -5026,11 +5037,12 @@ int32_t ExynosDisplay::setReadbackBuffer(buffer_handle_t buffer, int32_t release
         mDpuData.enable_readback = false;
         ret = HWC2_ERROR_UNSUPPORTED;
     }
-    setReadbackBufferInternal(buffer, releaseFence);
+    setReadbackBufferInternal(buffer, releaseFence, requestedService);
     return ret;
 }
 
-void ExynosDisplay::setReadbackBufferInternal(buffer_handle_t buffer, int32_t releaseFence)
+void ExynosDisplay::setReadbackBufferInternal(buffer_handle_t buffer,
+        int32_t releaseFence, bool requestedService)
 {
     if (mDpuData.readback_info.rel_fence >= 0) {
         mDpuData.readback_info.rel_fence =
@@ -5046,6 +5058,8 @@ void ExynosDisplay::setReadbackBufferInternal(buffer_handle_t buffer, int32_t re
 
     if (buffer != NULL)
         mDpuData.readback_info.handle = buffer;
+
+    mDpuData.readback_info.requested_from_service = requestedService;
 }
 
 int32_t ExynosDisplay::getReadbackBufferFence(int32_t* outFence)
