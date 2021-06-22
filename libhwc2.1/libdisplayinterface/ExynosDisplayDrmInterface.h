@@ -180,7 +180,7 @@ class ExynosDisplayDrmInterface :
                         const DrmProperty &property,
                         uint64_t value, bool optional = false);
                 String8& dumpAtomicCommitInfo(String8 &result, bool debugPrint = false);
-                int commit(uint32_t flags, bool loggingForDebug = false, bool keepBlob = false);
+                int commit(uint32_t flags, bool loggingForDebug = false);
                 void addOldBlob(uint32_t blob_id) {
                     mOldBlobs.push_back(blob_id);
                 };
@@ -337,8 +337,10 @@ class ExynosDisplayDrmInterface :
         void parseRangeEnums(const DrmProperty& property);
 
         int32_t setupWritebackCommit(DrmModeAtomicReq &drmReq);
+        int32_t clearWritebackCommit(DrmModeAtomicReq &drmReq);
+
     private:
-        int32_t updateColorSettings(DrmModeAtomicReq &drmReq);
+        int32_t updateColorSettings(DrmModeAtomicReq &drmReq, uint64_t dqeEnabled);
         int32_t getLowPowerDrmModeModeInfo();
         int32_t setActiveDrmMode(DrmMode const &mode);
 
@@ -376,6 +378,7 @@ class ExynosDisplayDrmInterface :
                 static constexpr uint32_t PREFERRED_READBACK_FORMAT =
                     HAL_PIXEL_FORMAT_RGBA_8888;
                 uint32_t mReadbackFormat = HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
+                bool mNeedClearReadbackCommit = false;
             private:
                 DrmDevice *mDrmDevice = NULL;
                 DrmConnector *mWritebackConnector = NULL;
