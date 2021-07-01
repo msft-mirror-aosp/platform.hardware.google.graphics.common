@@ -149,6 +149,7 @@ class ExynosLayer : public ExynosMPPSource {
          * Acquire fence
          */
         int32_t mAcquireFence;
+        int32_t mPrevAcquireFence;
 
         /**
          * Release fence
@@ -420,6 +421,8 @@ class ExynosLayer : public ExynosMPPSource {
         int32_t setSrcExynosImage(exynos_image *src_img);
         int32_t setDstExynosImage(exynos_image *dst_img);
         int32_t resetAssignedResource();
+
+        void setSrcAcquireFence();
 
         bool isDrm() {return ((mLayerBuffer != NULL) && (getDrmMode(mLayerBuffer) != NO_DRM));};
         bool isLayerFormatRgb() {
