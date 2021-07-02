@@ -2745,8 +2745,7 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
             resetFenceCurFlag(this);
             for (size_t i=0; i < mLayers.size(); i++) {
                 // Layer's acquire fence from SF
-                setFenceInfo(mLayers[i]->mAcquireFence, this,
-                        FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_LAYER, FENCE_FROM);
+                mLayers[i]->setSrcAcquireFence();
             }
             DISPLAY_LOGD(eDebugSkipValidate, "validate is skipped");
         }
@@ -3821,6 +3820,8 @@ int32_t ExynosDisplay::validateDisplay(
     // Reset current frame flags for Fence Tracer
     resetFenceCurFlag(this);
 
+    for (size_t i = 0; i < mLayers.size(); i++) mLayers[i]->setSrcAcquireFence();
+
     doPreProcessing();
     checkLayerFps();
     if (exynosHWCControl.useDynamicRecomp == true && mDREnable)
@@ -3830,12 +3831,6 @@ int32_t ExynosDisplay::validateDisplay(
         mDevice->isDynamicRecompositionThreadAlive() == false &&
         mDevice->mDRLoopStatus == false) {
         mDevice->dynamicRecompositionThreadCreate();
-    }
-
-    for (size_t i=0; i < mLayers.size(); i++) {
-        // Layer's acquire fence from SF
-        setFenceInfo(mLayers[i]->mAcquireFence, this,
-                FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_LAYER, FENCE_FROM);
     }
 
     if ((ret = mResourceManager->assignResource(this)) != NO_ERROR) {
