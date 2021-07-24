@@ -18,6 +18,7 @@
 
 #include "ExynosDisplayDrmInterface.h"
 
+#include <cutils/properties.h>
 #include <drm.h>
 #include <drm/drm_fourcc.h>
 #include <sys/types.h>
@@ -698,6 +699,13 @@ int32_t ExynosDisplayDrmInterface::setLowPowerMode() {
     // Dots per 1000 inches
     mExynosDisplay->mYdpi = mm_height ? (mDozeDrmMode.v_display() * kUmPerInch) / mm_height : -1;
 
+    // force to turn off lhbm
+    if (mBrightnessCtrl.LhbmOn.get() == true) {
+        mExynosDisplay->clearReqLhbm();
+        mExynosDisplay->updateBrightnessState();
+        mLhbmForceUpdated = true;
+    }
+
     return setActiveDrmMode(mDozeDrmMode);
 }
 
@@ -790,6 +798,7 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
         /* key: (width<<32 | height) */
         std::map<uint64_t, uint32_t> groupIds;
         uint32_t groupId = 0;
+        uint32_t min_vsync_period = UINT_MAX;
 
         for (const DrmMode &mode : mDrmConnector->modes()) {
             displayConfigs_t configs;
@@ -809,11 +818,14 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
             configs.Xdpi = mm_width ? (mode.h_display() * kUmPerInch) / mm_width : -1;
             // Dots per 1000 inches
             configs.Ydpi = mm_height ? (mode.v_display() * kUmPerInch) / mm_height : -1;
+            // find min vsync period
+            if (configs.vsyncPeriod <= min_vsync_period) min_vsync_period = configs.vsyncPeriod;
             mExynosDisplay->mDisplayConfigs.insert(std::make_pair(mode.id(), configs));
             ALOGD("config group(%d), w(%d), h(%d), vsync(%d), xdpi(%d), ydpi(%d)",
                     configs.groupId, configs.width, configs.height,
                     configs.vsyncPeriod, configs.Xdpi, configs.Ydpi);
         }
+        mExynosDisplay->setMinDisplayVsyncPeriod(min_vsync_period);
     }
 
     uint32_t num_modes = static_cast<uint32_t>(mDrmConnector->modes().size());
@@ -1031,6 +1043,18 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     }
 
     DrmModeAtomicReq drmReq(this);
+
+    if (mLhbmForceUpdated) {
+        if (mBrightnessCtrl.LhbmOn.is_dirty()) {
+            if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(), mDrmConnector->lhbm_on(),
+                                                mBrightnessCtrl.LhbmOn.get())) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to set lhbm_on property", __func__);
+            }
+            mBrightnessCtrl.LhbmOn.clear_dirty();
+            mExynosDisplay->notifyLhbmState(mBrightnessCtrl.LhbmOn.get());
+        }
+        mLhbmForceUpdated = false;
+    }
 
     if ((ret = setDisplayMode(drmReq, modeBlob)) != NO_ERROR) {
         drmReq.addOldBlob(modeBlob);
@@ -2312,6 +2336,13 @@ void ExynosDisplayDrmInterface::getBrightnessInterfaceSupport() {
     mDimmingOnFd = fopen(kDimmingOnFileNode, "w+");
     if (mDimmingOnFd == NULL) ALOGE("%s open failed! %s", kDimmingOnFileNode, strerror(errno));
 
+    if (mDimmingOnFd) {
+        mBrightnessDimmingUsage = static_cast<BrightnessDimmingUsage>(
+                property_get_int32("vendor.display.brightness.dimming.usage", 0));
+        mHbmDimmingTimeUs =
+                property_get_int32("vendor.display.brightness.dimming.hbm_time", kHbmDimmingTimeUs);
+    }
+
     return;
 }
 
@@ -2378,8 +2409,7 @@ void ExynosDisplayDrmInterface::setupBrightnessConfig() {
     brightnessState_t brightness_state = mExynosDisplay->getBrightnessState();
     if (brightness_state == mBrightnessState) return;
 
-    mBrightnessCtrl.DimmingOn.store(
-            (!mBrightnessState.instant_hbm && !brightness_state.instant_hbm));
+    bool dimming_on = (!mBrightnessState.instant_hbm && !brightness_state.instant_hbm);
 
     float brightness = mExynosDisplay->getBrightnessValue();
 
@@ -2411,6 +2441,33 @@ void ExynosDisplayDrmInterface::setupBrightnessConfig() {
     } else {
         mBrightnessCtrl.HbmOn.store(false);
     }
+
+    switch (mBrightnessDimmingUsage) {
+        case BrightnessDimmingUsage::HBM:
+            if (mBrightnessCtrl.HbmOn.is_dirty()) {
+                gettimeofday(&mHbmDimmingStart, NULL);
+                mHbmDimming = true;
+            }
+
+            if (mHbmDimming) {
+                struct timeval curr_time;
+                gettimeofday(&curr_time, NULL);
+                curr_time.tv_usec += (curr_time.tv_sec - mHbmDimmingStart.tv_sec) * 1000000;
+                long duration = curr_time.tv_usec - mHbmDimmingStart.tv_usec;
+                if (duration > mHbmDimmingTimeUs) mHbmDimming = false;
+            }
+
+            dimming_on = dimming_on && (mHbmDimming);
+            break;
+        case BrightnessDimmingUsage::NONE:
+            dimming_on = false;
+            break;
+        default:
+            break;
+    }
+
+    mBrightnessCtrl.DimmingOn.store(dimming_on);
+
     ALOGI("level=%d, DimmingOn=%d, HbmOn=%d, LhbmOn=%d", mBrightnessLevel.get(),
           mBrightnessCtrl.DimmingOn.get(), mBrightnessCtrl.HbmOn.get(),
           mBrightnessCtrl.LhbmOn.get());
