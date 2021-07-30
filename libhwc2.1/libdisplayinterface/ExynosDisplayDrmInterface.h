@@ -75,7 +75,13 @@ class FramebufferManager {
     private:
         // this struct should contain elements that can be used to identify framebuffer more easily
         struct Framebuffer {
-            using BufferDesc = uint64_t;
+            struct BufferDesc {
+                uint64_t bufferId;
+                int drmFormat;
+                bool operator==(const Framebuffer::BufferDesc &rhs) const {
+                    return (bufferId == rhs.bufferId && drmFormat == rhs.drmFormat);
+                }
+            };
             struct SolidColorDesc {
                 uint32_t width;
                 uint32_t height;
@@ -483,7 +489,6 @@ class ExynosDisplayDrmInterface :
         static constexpr int32_t kHbmDimmingTimeUs = 5000000;
 
         FramebufferManager mFBManager;
-        bool mLhbmForceUpdated = false;
 
         /*
          * BrightnessDimmingUsage:

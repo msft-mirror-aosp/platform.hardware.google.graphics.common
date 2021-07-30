@@ -180,7 +180,7 @@ int32_t FramebufferManager::getBuffer(const exynos_win_config_data &config, uint
         }
 
         fbId = findCachedFbId(config.layer,
-                              [bufferDesc = Framebuffer::BufferDesc{config.buffer_id}](
+                              [bufferDesc = Framebuffer::BufferDesc{config.buffer_id, drmFormat}](
                                       auto &buffer) { return buffer->bufferDesc == bufferDesc; });
         if (fbId != 0) {
             return NO_ERROR;
@@ -283,7 +283,8 @@ int32_t FramebufferManager::getBuffer(const exynos_win_config_data &config, uint
                                     Framebuffer::SolidColorDesc{bufWidth, bufHeight}));
         } else {
             cachedBuffers.emplace_front(
-                    new Framebuffer(mDrmFd, fbId, Framebuffer::BufferDesc{config.buffer_id}));
+                    new Framebuffer(mDrmFd, fbId,
+                                    Framebuffer::BufferDesc{config.buffer_id, drmFormat}));
             mHasSecureFramebuffer |= (isFramebuffer(config.layer) && config.protection);
         }
     } else {
@@ -699,13 +700,6 @@ int32_t ExynosDisplayDrmInterface::setLowPowerMode() {
     // Dots per 1000 inches
     mExynosDisplay->mYdpi = mm_height ? (mDozeDrmMode.v_display() * kUmPerInch) / mm_height : -1;
 
-    // force to turn off lhbm
-    if (mBrightnessCtrl.LhbmOn.get() == true) {
-        mExynosDisplay->clearReqLhbm();
-        mExynosDisplay->updateBrightnessState();
-        mLhbmForceUpdated = true;
-    }
-
     return setActiveDrmMode(mDozeDrmMode);
 }
 
@@ -798,7 +792,6 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
         /* key: (width<<32 | height) */
         std::map<uint64_t, uint32_t> groupIds;
         uint32_t groupId = 0;
-        uint32_t min_vsync_period = UINT_MAX;
 
         for (const DrmMode &mode : mDrmConnector->modes()) {
             displayConfigs_t configs;
@@ -818,14 +811,11 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
             configs.Xdpi = mm_width ? (mode.h_display() * kUmPerInch) / mm_width : -1;
             // Dots per 1000 inches
             configs.Ydpi = mm_height ? (mode.v_display() * kUmPerInch) / mm_height : -1;
-            // find min vsync period
-            if (configs.vsyncPeriod <= min_vsync_period) min_vsync_period = configs.vsyncPeriod;
             mExynosDisplay->mDisplayConfigs.insert(std::make_pair(mode.id(), configs));
             ALOGD("config group(%d), w(%d), h(%d), vsync(%d), xdpi(%d), ydpi(%d)",
                     configs.groupId, configs.width, configs.height,
                     configs.vsyncPeriod, configs.Xdpi, configs.Ydpi);
         }
-        mExynosDisplay->setMinDisplayVsyncPeriod(min_vsync_period);
     }
 
     uint32_t num_modes = static_cast<uint32_t>(mDrmConnector->modes().size());
@@ -1043,18 +1033,6 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     }
 
     DrmModeAtomicReq drmReq(this);
-
-    if (mLhbmForceUpdated) {
-        if (mBrightnessCtrl.LhbmOn.is_dirty()) {
-            if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(), mDrmConnector->lhbm_on(),
-                                                mBrightnessCtrl.LhbmOn.get())) < 0) {
-                HWC_LOGE(mExynosDisplay, "%s: Fail to set lhbm_on property", __func__);
-            }
-            mBrightnessCtrl.LhbmOn.clear_dirty();
-            mExynosDisplay->notifyLhbmState(mBrightnessCtrl.LhbmOn.get());
-        }
-        mLhbmForceUpdated = false;
-    }
 
     if ((ret = setDisplayMode(drmReq, modeBlob)) != NO_ERROR) {
         drmReq.addOldBlob(modeBlob);
@@ -1665,15 +1643,15 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
         mBrightnessCtrl.LhbmOn.clear_dirty();
     }
 
-    if (mBrightnessCtrl.HbmOn.is_dirty()) {
+    // only allow to set hbm on for mipi sync when dim SDR transition
+    if (mBrightnessCtrl.HbmOn.is_dirty() && mBrightnessState.dimSdrTransition()) {
         if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(), mDrmConnector->hbm_on(),
                                             mBrightnessCtrl.HbmOn.get())) < 0) {
             HWC_LOGE(mExynosDisplay, "%s: Fail to set hbm_on property", __func__);
         }
         mBrightnessCtrl.HbmOn.clear_dirty();
-
         // sync mipi command and frame when sdr dimming on/off
-        if (!mipi_sync && mBrightnessState.dimSdrTransition()) {
+        if (!mipi_sync) {
             mipi_sync = true;
             wait_vsync = 1; // GHBM mipi command has 1 frame delay
             mipi_sync_action = mBrightnessCtrl.HbmOn.get() ? brightnessState_t::MIPI_SYNC_GHBM_ON
@@ -2391,9 +2369,13 @@ int32_t ExynosDisplayDrmInterface::updateBrightness(bool syncFrame) {
         mBrightnessCtrl.DimmingOn.clear_dirty();
     }
 
-    if (mHbmOnFd && mBrightnessCtrl.HbmOn.is_dirty()) {
-        writeFileNode(mHbmOnFd, mBrightnessCtrl.HbmOn.get());
-        mBrightnessCtrl.HbmOn.clear_dirty();
+    if (mBrightnessCtrl.HbmOn.is_dirty() && !mBrightnessState.dimSdrTransition()) {
+        if (mHbmOnFd) {
+            writeFileNode(mHbmOnFd, mBrightnessCtrl.HbmOn.get());
+            mBrightnessCtrl.HbmOn.clear_dirty();
+        } else {
+            ALOGW("Fail to set hbm_on by sysfs");
+        }
     }
 
     if (mExynosDisplay->mBrightnessFd)
