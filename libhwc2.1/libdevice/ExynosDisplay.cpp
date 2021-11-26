@@ -29,6 +29,7 @@
 
 #include <map>
 
+#include "BrightnessController.h"
 #include "ExynosExternalDisplay.h"
 #include "ExynosLayer.h"
 #include "exynos_format.h"
@@ -279,7 +280,7 @@ int32_t ExynosDisplay::PowerHalHintWorker::checkIdleHintSupport(void) {
     return ret;
 }
 
-int32_t ExynosDisplay::PowerHalHintWorker::updateIdleHint(uint64_t deadlineTime, bool forceUpdate) {
+int32_t ExynosDisplay::PowerHalHintWorker::updateIdleHint(int64_t deadlineTime, bool forceUpdate) {
     int32_t ret = checkIdleHintSupport();
     if (ret != NO_ERROR) {
         return ret;
@@ -337,24 +338,27 @@ void ExynosDisplay::PowerHalHintWorker::signalIdle() {
     Signal();
 }
 
+bool ExynosDisplay::PowerHalHintWorker::needUpdateIdleHintLocked(int64_t &timeout) {
+    if (!mIdleHintIsSupported) {
+        return false;
+    }
+
+    int64_t currentTime = systemTime(SYSTEM_TIME_MONOTONIC);
+    bool shouldEnableIdleHint = (mIdleHintDeadlineTime < currentTime);
+    if (mIdleHintIsEnabled != shouldEnableIdleHint || mForceUpdateIdleHint) {
+        return true;
+    }
+
+    timeout = mIdleHintDeadlineTime - currentTime;
+    return false;
+}
+
 void ExynosDisplay::PowerHalHintWorker::Routine() {
     Lock();
     int ret = 0;
-    if (!mNeedUpdateRefreshRateHint) {
-        if (mIdleHintIsSupported) {
-            uint64_t currentTime = systemTime(SYSTEM_TIME_MONOTONIC);
-            bool shouldEnableIdleHint = (mIdleHintDeadlineTime < currentTime);
-            if (mIdleHintIsEnabled == shouldEnableIdleHint) {
-                if (mIdleHintIsEnabled) {
-                    ret = WaitForSignalOrExitLocked();
-                } else {
-                    uint64_t timeout = mIdleHintDeadlineTime - currentTime;
-                    ret = WaitForSignalOrExitLocked(timeout);
-                }
-            }
-        } else if (mIdleHintSupportIsChecked) {
-            ret = WaitForSignalOrExitLocked();
-        }
+    int64_t timeout = -1;
+    if (!mNeedUpdateRefreshRateHint && !needUpdateIdleHintLocked(timeout)) {
+        ret = WaitForSignalOrExitLocked(timeout);
     }
 
     if (ret == -EINTR) {
@@ -363,7 +367,7 @@ void ExynosDisplay::PowerHalHintWorker::Routine() {
     }
 
     bool needUpdateRefreshRateHint = mNeedUpdateRefreshRateHint;
-    uint64_t deadlineTime = mIdleHintDeadlineTime;
+    int64_t deadlineTime = mIdleHintDeadlineTime;
     hwc2_power_mode_t powerMode = mPowerModeState;
     uint32_t vsyncPeriod = mVsyncPeriod;
 
@@ -652,9 +656,7 @@ ExynosDisplay::ExynosDisplay(uint32_t index, ExynosDevice *device)
         mDeviceYres(0),
         mColorMode(HAL_COLOR_MODE_NATIVE),
         mSkipFrame(false),
-        mBrightnessFd(NULL),
         mEarlyWakeupFd(NULL),
-        mMaxBrightness(0),
         mVsyncPeriodChangeConstraints{systemTime(SYSTEM_TIME_MONOTONIC), 0},
         mVsyncAppliedTimeLine{false, 0, systemTime(SYSTEM_TIME_MONOTONIC)},
         mConfigRequestState(hwc_request_state_t::SET_CONFIG_STATE_NONE) {
@@ -691,8 +693,6 @@ ExynosDisplay::ExynosDisplay(uint32_t index, ExynosDevice *device)
     mLowFpsLayerInfo.initializeInfos();
 
     mUseDpu = true;
-    mBrightnessState.reset();
-
     return;
 }
 
@@ -1245,6 +1245,13 @@ bool ExynosDisplay::skipStaticLayerChanged(ExynosCompositionInfo& compositionInf
         }
     }
     return isChanged;
+}
+
+void ExynosDisplay::requestLhbm(bool on) {
+    mDevice->invalidate();
+    if (mBrightnessController) {
+        mBrightnessController->processLocalHbm(on);
+    }
 }
 
 /**
@@ -2018,7 +2025,6 @@ int ExynosDisplay::setWinConfigData() {
 
 void ExynosDisplay::printDebugInfos(String8 &reason)
 {
-    bool writeFile = true;
     FILE *pFile = NULL;
     struct timeval tv;
     struct tm* localTime;
@@ -2032,9 +2038,7 @@ void ExynosDisplay::printDebugInfos(String8 &reason)
             ((tv.tv_sec * 1000) + (tv.tv_usec / 1000)));
     ALOGD("%s", reason.string());
 
-    if (mErrorFrameCount >= HWC_PRINT_FRAME_NUM)
-        writeFile = false;
-    else {
+    if (mErrorFrameCount < HWC_PRINT_FRAME_NUM) {
         char filePath[128];
         sprintf(filePath, "%s/%s_hwc_debug%d.dump", ERROR_LOG_PATH0, mDisplayName.string(), (int)mErrorFrameCount);
         pFile = fopen(filePath, "wb");
@@ -3285,8 +3289,6 @@ err:
     }
     mDisplayInterface->setForcePanic();
 
-    mBrightnessState.reset();
-
     ret = -EINVAL;
     return ret;
 
@@ -3472,7 +3474,7 @@ int32_t ExynosDisplay::getDisplayCapabilities(uint32_t* outNumCapabilities,
      * this should be described in display module codes */
 
     uint32_t capabilityNum = 0;
-    if (mBrightnessFd != NULL)
+    if (mBrightnessController && mBrightnessController->isSupported())
         capabilityNum++;
 
     if (mDisplayInterface->isDozeModeAvailable()) {
@@ -3493,7 +3495,7 @@ int32_t ExynosDisplay::getDisplayCapabilities(uint32_t* outNumCapabilities,
     }
 
     uint32_t index = 0;
-    if (mBrightnessFd != NULL)
+    if (mBrightnessController && mBrightnessController->isSupported())
         outCapabilities[index++] = HWC2_DISPLAY_CAPABILITY_BRIGHTNESS;
 
     if (mDisplayInterface->isDozeModeAvailable()) {
@@ -3509,7 +3511,7 @@ int32_t ExynosDisplay::getDisplayCapabilities(uint32_t* outNumCapabilities,
 
 int32_t ExynosDisplay::getDisplayBrightnessSupport(bool* outSupport)
 {
-    if (mBrightnessFd == NULL) {
+    if (!mBrightnessController || !mBrightnessController->isSupported()) {
         *outSupport = false;
     } else {
         *outSupport = true;
@@ -3520,35 +3522,11 @@ int32_t ExynosDisplay::getDisplayBrightnessSupport(bool* outSupport)
 
 int32_t ExynosDisplay::setDisplayBrightness(float brightness)
 {
-    if (mBrightnessFd == NULL)
-        return HWC2_ERROR_UNSUPPORTED;
-
-    mBrightnessState.brightness_value = brightness;
-    int32_t ret = mDisplayInterface->updateBrightness(false /* syncFrame */);
-
-    if (ret == HWC2_ERROR_NONE) return ret;
-
-    if (ret != HWC2_ERROR_UNSUPPORTED) {
-        ALOGE("Fail to update brightness, ret(%d), brightness =%f", ret, brightness);
-        return ret;
+    if (mBrightnessController) {
+        return mBrightnessController->processDisplayBrightness(brightness,
+                                         [this]() { mDevice->invalidate(); });
     }
-
-    char val[MAX_BRIGHTNESS_LEN]= {0};
-    uint32_t scaledBrightness = static_cast<uint32_t>(round(brightness * mMaxBrightness));
-
-    if ((ret = snprintf(val, MAX_BRIGHTNESS_LEN, "%d", scaledBrightness)) > 0) {
-        fwrite(val, sizeof(val), 1, mBrightnessFd);
-        if (ferror(mBrightnessFd)){
-            ALOGE("brightness write failed");
-            clearerr(mBrightnessFd);
-        }
-        rewind(mBrightnessFd);
-    } else {
-        ALOGE("Fail to set brightness, ret(%d), brightness(%f, %d)",
-                ret, brightness, scaledBrightness);
-    }
-
-    return HWC2_ERROR_NONE;
+    return HWC2_ERROR_UNSUPPORTED;
 }
 
 int32_t ExynosDisplay::getDisplayConnectionType(uint32_t* outType)
@@ -3910,7 +3888,9 @@ int ExynosDisplay::clearDisplay(bool needModeClear) {
     /* Update last retire fence */
     mLastRetireFence = fence_close(mLastRetireFence, this, FENCE_TYPE_RETIRE, FENCE_IP_DPP);
 
-    mBrightnessState.reset();
+    if (mBrightnessController) {
+        mBrightnessController->onClearDisplay();
+    }
     return ret;
 }
 
@@ -4229,6 +4209,9 @@ void ExynosDisplay::dump(String8& result)
         }
     }
     result.appendFormat("\n");
+    if (mBrightnessController) {
+        mBrightnessController->dump(result);
+    }
 }
 
 void ExynosDisplay::dumpConfig(String8 &result, const exynos_win_config_data &c)
@@ -5346,9 +5329,10 @@ void ExynosDisplay::traceLayerTypes() {
 
 void ExynosDisplay::updateBrightnessState() {
     static constexpr float kMaxCll = 10000.0;
-    bool client_rgb_hdr = false;
+    bool clientRgbHdr = false;
+    bool instantHbm = false;
+    bool hdrFullScreen = false;
 
-    mBrightnessState.reset();
     for (size_t i = 0; i < mLayers.size(); i++) {
         if (mLayers[i]->mIsHdrLayer) {
             if (mLayers[i]->isLayerFormatRgb()) {
@@ -5358,39 +5342,21 @@ void ExynosDisplay::updateBrightnessState() {
                     // if there are one or more such layers and any one of them
                     // is composed by GPU, we won't dim sdr layers
                     if (mLayers[i]->mExynosCompositionType == HWC2_COMPOSITION_CLIENT) {
-                        client_rgb_hdr = true;
+                        clientRgbHdr = true;
+                    } else {
+                        instantHbm = true;
                     }
-                    mBrightnessState.peak_hbm = true;
-                    mBrightnessState.instant_hbm = true;
                 }
             }
             if (mLayers[i]->getDisplayFrameArea() >= mHdrFullScrenAreaThreshold) {
-                mBrightnessState.hdr_full_screen = true;
+                hdrFullScreen = true;
             }
         }
     }
 
-    if (mBrightnessState.instant_hbm && !client_rgb_hdr) {
-        // SDR dim ratio = display_nit_current / display_nit_after_hbm_on
-        // mDisplayInterface has the panel caps to calculate current nits.
-        float dim_sdr_ratio = mDisplayInterface->getSdrDimRatio();
-        if (dim_sdr_ratio < kGhbmMinDimRatio) {
-            ALOGW("sdr dim ratio %f too small", dim_sdr_ratio);
-            dim_sdr_ratio = kGhbmMinDimRatio;
-        }
-        char value[PROPERTY_VALUE_MAX];
-        const float ratio = property_get("debug.hwc.dim_sdr", value, nullptr) > 0 ?
-                                  std::atof(value) : dim_sdr_ratio;
-
-        mBrightnessState.dim_sdr_target_ratio = ratio;
-    }
-
-    mBrightnessState.local_hbm = mReqLhbm;
-    mBrightnessState.instant_hbm |= mBrightnessState.local_hbm;
-
-    int ret = mDisplayInterface->updateBrightness(true /* syncFrame */);
-    if (ret != HWC2_ERROR_NONE && ret != HWC2_ERROR_UNSUPPORTED) {
-        ALOGW("Failed to update brightness");
+    if (mBrightnessController) {
+        mBrightnessController->updateFrameStates(hdrFullScreen);
+        mBrightnessController->processInstantHbm(instantHbm && !clientRgbHdr);
     }
 }
 
