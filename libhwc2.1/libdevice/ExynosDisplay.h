@@ -1014,7 +1014,7 @@ class ExynosDisplay {
         /* This function is called by ExynosDisplayInterface class to set acquire fence*/
         int32_t setReadbackBufferAcqFence(int32_t acqFence);
 
-        void dump(String8& result);
+        virtual void dump(String8& result);
 
         virtual int32_t startPostProcessing();
 
@@ -1103,17 +1103,18 @@ class ExynosDisplay {
         std::unique_ptr<ExynosDisplayInterface> mDisplayInterface;
         void requestLhbm(bool on);
 
+        virtual int setMinIdleRefreshRate(const int __unused fps) { return NO_ERROR; }
+        virtual int setRefreshRateThrottleNanos(const int64_t __unused delayNanos) {
+            return NO_ERROR;
+        }
+
+        virtual void updateAppliedActiveConfig(const hwc2_config_t /*newConfig*/,
+                                               const int64_t /*ts*/) {}
+
     private:
         bool skipStaticLayerChanged(ExynosCompositionInfo& compositionInfo);
 
         bool skipSignalIdleForVideoLayer();
-
-        inline uint32_t getDisplayVsyncPeriodFromConfig(hwc2_config_t config) {
-            int32_t vsync_period;
-            getDisplayAttribute(config, HWC2_ATTRIBUTE_VSYNC_PERIOD, &vsync_period);
-            assert(vsync_period > 0);
-            return static_cast<uint32_t>(vsync_period);
-        }
 
         /// minimum possible dim rate in the case hbm peak is 1000 nits and norml
         // display brightness is 2 nits
@@ -1182,6 +1183,19 @@ class ExynosDisplay {
         };
 
         PowerHalHintWorker mPowerHalHint;
+
+    protected:
+        inline uint32_t getDisplayVsyncPeriodFromConfig(hwc2_config_t config) {
+            int32_t vsync_period;
+            getDisplayAttribute(config, HWC2_ATTRIBUTE_VSYNC_PERIOD, &vsync_period);
+            assert(vsync_period > 0);
+            return static_cast<uint32_t>(vsync_period);
+        }
+
+        virtual void calculateTimeline(
+                hwc2_config_t config,
+                hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
+                hwc_vsync_period_change_timeline_t* outTimeline);
 };
 
 #endif //_EXYNOSDISPLAY_H
