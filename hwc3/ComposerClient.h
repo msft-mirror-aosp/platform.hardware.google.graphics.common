@@ -64,15 +64,14 @@ class ComposerClient : public BnComposerClient {
                                             VirtualDisplay* display) override;
     ndk::ScopedAStatus destroyLayer(int64_t display, int64_t layer) override;
     ndk::ScopedAStatus destroyVirtualDisplay(int64_t display) override;
-    ndk::ScopedAStatus executeCommands(const std::vector<command::CommandPayload>& commands,
-                                       std::vector<command::CommandResultPayload>* results) override;
+    ndk::ScopedAStatus executeCommands(const std::vector<DisplayCommand>& commands,
+                                       std::vector<CommandResultPayload>* results) override;
     ndk::ScopedAStatus getActiveConfig(int64_t display, int32_t* config) override;
     ndk::ScopedAStatus getColorModes(int64_t display, std::vector<ColorMode>* colorModes) override;
     ndk::ScopedAStatus getDataspaceSaturationMatrix(common::Dataspace dataspace,
                                                     std::vector<float>* matrix) override;
     ndk::ScopedAStatus getDisplayAttribute(int64_t display, int32_t config,
                                            DisplayAttribute attribute, int32_t* value) override;
-    ndk::ScopedAStatus getDisplayBrightnessSupport(int64_t display, bool* support) override;
     ndk::ScopedAStatus getDisplayCapabilities(int64_t display,
                                               std::vector<DisplayCapability>* caps) override;
     ndk::ScopedAStatus getDisplayConfigs(int64_t display, std::vector<int32_t>* configs) override;
@@ -87,7 +86,6 @@ class ComposerClient : public BnComposerClient {
                                                  DisplayContentSample* samples) override;
     ndk::ScopedAStatus getDisplayedContentSamplingAttributes(
             int64_t display, DisplayContentSamplingAttributes* attrs) override;
-    ndk::ScopedAStatus getDozeSupport(int64_t display, bool* support) override;
     ndk::ScopedAStatus getHdrCapabilities(int64_t display, HdrCapabilities* caps) override;
     ndk::ScopedAStatus getLayerGenericMetadataKeys(
             std::vector<LayerGenericMetadataKey>* keys) override;
