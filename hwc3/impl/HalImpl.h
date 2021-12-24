@@ -69,7 +69,6 @@ class HalImpl : public IComposerHal {
                                                   DisplayContentSamplingAttributes* attrs) override;
     int32_t getDozeSupport(int64_t display, bool* support) override;
     int32_t getHdrCapabilities(int64_t display, HdrCapabilities* caps) override;
-    int32_t getLayerGenericMetadataKeys(std::vector<LayerGenericMetadataKey>* keys) override;
     int32_t getMaxVirtualDisplayCount(int32_t* count) override;
     int32_t getPerFrameMetadataKeys(int64_t display,
                                     std::vector<PerFrameMetadataKey>* keys) override;
@@ -93,8 +92,7 @@ class HalImpl : public IComposerHal {
                             const ndk::ScopedFileDescriptor& fence, common::Dataspace dataspace,
                             const std::vector<common::Rect>& damage) override;
     int32_t setColorMode(int64_t display, ColorMode mode, RenderIntent intent) override;
-    int32_t setColorTransform(int64_t display, const std::vector<float>& matrix,
-                              common::ColorTransform hint) override;
+    int32_t setColorTransform(int64_t display, const std::vector<float>& matrix) override;
     int32_t setContentType(int64_t display, ContentType contentType) override;
     int32_t setDisplayBrightness(int64_t display, float brightness) override;
     int32_t setDisplayedContentSamplingEnabled(int64_t display, bool enable,
@@ -112,8 +110,6 @@ class HalImpl : public IComposerHal {
     int32_t setLayerDisplayFrame(int64_t display, int64_t layer,
                                  const common::Rect& frame) override;
     int32_t setLayerFloatColor(int64_t display, int64_t layer, FloatColor color) override;
-    int32_t setLayerGenericMetadata(int64_t display, int64_t layer,
-                                    const GenericMetadata& metadata) override;
     int32_t setLayerPerFrameMetadata(int64_t display, int64_t layer,
                             const std::vector<std::optional<PerFrameMetadata>>& metadata) override;
     int32_t setLayerPerFrameMetadataBlobs(int64_t display, int64_t layer,
