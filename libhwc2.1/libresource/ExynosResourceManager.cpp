@@ -201,6 +201,10 @@ ExynosResourceManager::ExynosResourceManager(ExynosDevice *device)
 
     mDstBufMgrThread->mRunning = true;
     mDstBufMgrThread->run("DstBufMgrThread");
+
+    char value[PROPERTY_VALUE_MAX];
+    mMinimumSdrDimRatio = property_get("debug.hwc.min_sdr_dimming", value, nullptr) > 0
+                          ? std::atof(value) : 1.0f;
 }
 
 ExynosResourceManager::~ExynosResourceManager()
@@ -374,41 +378,6 @@ int32_t ExynosResourceManager::doAllocDstBufs(uint32_t Xres, uint32_t Yres)
         }
     }
     return ret;
-}
-
-int32_t ExynosResourceManager::checkScenario(ExynosDisplay __unused *display)
-{
-    uint32_t prevResourceReserved = mResourceReserved;
-    mResourceReserved = 0x0;
-    /* Check whether camera preview is running */
-    ExynosDisplay *exynosDisplay = NULL;
-    for (uint32_t i = 0; i < mDevice->mDisplays.size(); i++) {
-        exynosDisplay = mDevice->mDisplays[i];
-        if ((exynosDisplay != NULL) && (exynosDisplay->mPlugState == true)) {
-            for (uint32_t i = 0; i < exynosDisplay->mLayers.size(); i++) {
-                ExynosLayer *layer = exynosDisplay->mLayers[i];
-                VendorGraphicBufferMeta gmeta(layer->mLayerBuffer);
-                if ((layer->mLayerBuffer != NULL) &&
-                    (gmeta.producer_usage & BufferUsage::CAMERA_OUTPUT)) {
-                    mResourceReserved |= (MPP_LOGICAL_G2D_YUV | MPP_LOGICAL_G2D_RGB);
-                    break;
-                }
-            }
-        }
-    }
-
-    char value[PROPERTY_VALUE_MAX];
-    bool preview;
-    property_get("persist.vendor.sys.camera.preview", value, "0");
-    preview = !!atoi(value);
-    if (preview)
-        mResourceReserved |= (MPP_LOGICAL_G2D_YUV | MPP_LOGICAL_G2D_RGB);
-
-    if (prevResourceReserved != mResourceReserved) {
-        mDevice->setGeometryChanged(GEOMETRY_DEVICE_SCENARIO_CHANGED);
-    }
-
-    return NO_ERROR;
 }
 
 /**
@@ -1129,6 +1098,9 @@ int32_t ExynosResourceManager::validateLayer(uint32_t index, ExynosDisplay *disp
         (layer->mPreprocessedInfo.displayFrame.right > (int32_t)display->mXres) ||
         (layer->mPreprocessedInfo.displayFrame.bottom > (int32_t)display->mYres))
         return eInvalidDispFrame;
+
+    if (layer->mPreprocessedInfo.sdrDimRatio < mMinimumSdrDimRatio)
+        return eExceedSdrDimRatio;
 
     return NO_ERROR;
 }
