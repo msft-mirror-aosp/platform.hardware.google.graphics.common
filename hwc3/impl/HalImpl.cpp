@@ -81,6 +81,14 @@ void vsyncPeriodTimingChanged(hwc2_callback_data_t callbackData,
     hal->getEventCallback()->onVsyncPeriodTimingChanged(display, timeline);
 }
 
+void vsyncIdle(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay) {
+    auto hal = static_cast<HalImpl*>(callbackData);
+    int64_t display;
+
+    h2a::translate(hwcDisplay, display);
+    hal->getEventCallback()->onVsyncIdle(display);
+}
+
 void seamlessPossible(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay) {
     auto hal = static_cast<HalImpl*>(callbackData);
     int64_t display;
@@ -395,9 +403,15 @@ int32_t HalImpl::getDisplayedContentSamplingAttributes(
     return HWC2_ERROR_UNSUPPORTED;
 }
 
-int32_t HalImpl::getDisplayPhysicalOrientation([[maybe_unused]] int64_t display,
-                                               [[maybe_unused]] common::Transform* orientation) {
-    // TODO(b/214461751): return the physical orientation of the display
+int32_t HalImpl::getDisplayPhysicalOrientation(int64_t display,
+                                               common::Transform* orientation) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    HwcMountOrientation hwcOrientation;
+    RET_IF_ERR(halDisplay->getMountOrientation(&hwcOrientation));
+    h2a::translate(hwcOrientation, *orientation);
+
     return HWC2_ERROR_UNSUPPORTED;
 }
 
@@ -923,6 +937,14 @@ int32_t HalImpl::setVsyncEnabled(int64_t display, bool enabled) {
     hwc2_vsync_t hwcEnable;
     a2h::translate(enabled, hwcEnable);
     return halDisplay->setVsyncEnabled(hwcEnable);
+}
+
+int32_t HalImpl::setIdleTimerEnabled(int64_t display, int32_t __unused timeout) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    // TODO(b/198808492): implement setIdleTimerEnabled
+    return HWC2_ERROR_UNSUPPORTED;
 }
 
 int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChangedLayers,
