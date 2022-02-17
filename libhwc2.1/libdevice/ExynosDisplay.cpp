@@ -3917,30 +3917,8 @@ int32_t ExynosDisplay::getDisplayBrightnessSupport(bool* outSupport)
 int32_t ExynosDisplay::setDisplayBrightness(float brightness, bool waitPresent)
 {
     if (mBrightnessController) {
-        int err = mBrightnessController->processDisplayBrightness(brightness, mVsyncPeriod,
+        return mBrightnessController->processDisplayBrightness(brightness, mVsyncPeriod,
                                                                waitPresent);
-        if (!err && waitPresent) {
-            // If HDR layer is gone, and SDR layers are dimmed, trigger a validate
-            // display to recalc the dim ratio upon this display brightness change.
-            // This could happen when HDR is gone and DM animates the display
-            // brightnes to current SDR brightness.
-            float displayWp = -1;
-            err = mBrightnessController->getDisplayWhitePointNits(&displayWp);
-            if (!err) {
-                bool sdrDimmed = false;
-                for (size_t i = 0; i < mLayers.size(); i++) {
-                    if (fabs(mLayers[i]->mWhitePointNits - displayWp) > 1e-6) {
-                        sdrDimmed = true;
-                        break;
-                    }
-                }
-                if (sdrDimmed) {
-                    setGeometryChanged(GEOMETRY_LAYER_WHITEPOINT_CHANGED);
-                }
-            }
-        }
-        return err;
-
     }
     return HWC2_ERROR_UNSUPPORTED;
 }
@@ -5821,7 +5799,7 @@ void ExynosDisplay::updateBrightnessState() {
     static constexpr float kMaxCll = 10000.0;
     bool clientRgbHdr = false;
     bool instantHbm = false;
-    bool hdrFullScreen = false;
+    BrightnessController::HdrLayerState hdrState = BrightnessController::HdrLayerState::kHdrNone;
 
     for (size_t i = 0; i < mLayers.size(); i++) {
         if (mLayers[i]->mIsHdrLayer) {
@@ -5838,14 +5816,19 @@ void ExynosDisplay::updateBrightnessState() {
                     }
                 }
             }
-            if (mLayers[i]->getDisplayFrameArea() >= mHdrFullScrenAreaThreshold) {
-                hdrFullScreen = true;
-            }
+
+            // If any HDR layer is large, keep the state as kHdrLarge
+            if (hdrState != BrightnessController::HdrLayerState::kHdrLarge
+                && mLayers[i]->getDisplayFrameArea() >= mHdrFullScrenAreaThreshold) {
+                hdrState = BrightnessController::HdrLayerState::kHdrLarge;
+            } else if (hdrState == BrightnessController::HdrLayerState::kHdrNone) {
+                hdrState = BrightnessController::HdrLayerState::kHdrSmall;
+            } // else keep the state (kHdrLarge or kHdrSmall) unchanged.
         }
     }
 
     if (mBrightnessController) {
-        mBrightnessController->updateFrameStates(hdrFullScreen);
+        mBrightnessController->updateFrameStates(hdrState);
         mBrightnessController->processInstantHbm(instantHbm && !clientRgbHdr);
     }
 }
