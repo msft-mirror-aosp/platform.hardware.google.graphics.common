@@ -1069,14 +1069,15 @@ class ExynosDisplay {
          *       composer requests. If dataspace field is set to UNKNOWN, it means
          *       the hardware composer requests nothing, the client must ignore the
          *       returned client target property structure.
-         *
+         *   outDimmingStage - where should the SDR dimming happen. HWC3 only.
          * Returns HWC2_ERROR_NONE or one of the following errors:
          *   HWC2_ERROR_BAD_DISPLAY - an invalid display handle was passed in
          *   HWC2_ERROR_NOT_VALIDATED - validateDisplay has not been called for this
          *       display
          */
         virtual int32_t getClientTargetProperty(
-                hwc_client_target_property_t* outClientTargetProperty);
+                hwc_client_target_property_t* outClientTargetProperty,
+                HwcDimmingStage *outDimmingStage = nullptr);
 
         /*
          * HWC3
@@ -1192,6 +1193,7 @@ class ExynosDisplay {
         virtual int32_t setDisplayIdleTimer(const int32_t __unused timeoutMs) {
             return HWC2_ERROR_UNSUPPORTED;
         }
+        virtual void handleDisplayIdleEnter(const uint32_t __unused idleTeRefreshRate) {}
 
         /* getDisplayPreAssignBit support mIndex up to 1.
            It supports only dual LCD and 2 external displays */
@@ -1210,6 +1212,7 @@ class ExynosDisplay {
         virtual int32_t setActiveConfigInternal(hwc2_config_t config, bool force);
 
         void updateRefreshRateHint();
+        bool isFullScreenComposition();
 
     public:
         /**

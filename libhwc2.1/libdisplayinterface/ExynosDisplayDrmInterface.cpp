@@ -1124,7 +1124,6 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
         } else {
             ALOGD("%s: switching display resolution, clearing planes", __func__);
         }
-        flags |= DRM_MODE_ATOMIC_NONBLOCK;
         reconfig = true;
     }
 
@@ -1767,6 +1766,12 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
     if (needModesetForReadback)
         flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+
+    /* For Histogram */
+    if (dqeEnable && (ret = setDisplayHistogramSetting(drmReq)) != 0) {
+        HWC_LOGE(mExynosDisplay, "Failed to set display histogram setting (%d)", ret);
+        return ret;
+    }
 
     if ((ret = updateColorSettings(drmReq, dqeEnable)) != 0) {
         HWC_LOGE(mExynosDisplay, "failed to update color settings (%d)", ret);

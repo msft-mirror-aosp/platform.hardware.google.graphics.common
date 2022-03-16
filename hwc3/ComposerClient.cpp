@@ -553,8 +553,10 @@ void ComposerClient::destroyResources() {
             std::vector<int64_t> requestedLayers;
             std::vector<int32_t> requestMasks;
             ClientTargetProperty clientTargetProperty;
+            DimmingStage dimmingStage;
             mHal->validateDisplay(display, &changedLayers, &compositionTypes, &displayRequestMask,
-                                  &requestedLayers, &requestMasks, &clientTargetProperty);
+                                  &requestedLayers, &requestMasks, &clientTargetProperty,
+                                  &dimmingStage);
             mHal->acceptDisplayChanges(display);
 
             ndk::ScopedFileDescriptor presentFence;
