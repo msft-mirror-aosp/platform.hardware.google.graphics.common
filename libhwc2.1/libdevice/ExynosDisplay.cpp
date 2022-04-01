@@ -3459,8 +3459,6 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
         if (mDevice->canSkipValidate() == false)
             goto not_validated;
         else {
-            // Reset current frame flags for Fence Tracer
-            resetFenceCurFlag(this);
             for (size_t i=0; i < mLayers.size(); i++) {
                 // Layer's acquire fence from SF
                 mLayers[i]->setSrcAcquireFence();
@@ -4484,9 +4482,6 @@ int32_t ExynosDisplay::validateDisplay(
         DISPLAY_LOGI("%s:: validateDisplay layer size is 0", __func__);
     else
         mLayers.vector_sort();
-
-    // Reset current frame flags for Fence Tracer
-    resetFenceCurFlag(this);
 
     for (size_t i = 0; i < mLayers.size(); i++) mLayers[i]->setSrcAcquireFence();
 
@@ -5847,6 +5842,7 @@ void ExynosDisplay::updateBrightnessState() {
     static constexpr float kMaxCll = 10000.0;
     bool clientRgbHdr = false;
     bool instantHbm = false;
+    bool sdrDim = false;
     BrightnessController::HdrLayerState hdrState = BrightnessController::HdrLayerState::kHdrNone;
 
     for (size_t i = 0; i < mLayers.size(); i++) {
@@ -5873,10 +5869,15 @@ void ExynosDisplay::updateBrightnessState() {
                 hdrState = BrightnessController::HdrLayerState::kHdrSmall;
             } // else keep the state (kHdrLarge or kHdrSmall) unchanged.
         }
+        // SDR layers could be kept dimmed for a while after HDR is gone (DM
+        // will animate the display brightness from HDR brightess to SDR brightness).
+        if (mLayers[i]->mBrightness < 1.0) {
+            sdrDim = true;
+        }
     }
 
     if (mBrightnessController) {
-        mBrightnessController->updateFrameStates(hdrState);
+        mBrightnessController->updateFrameStates(hdrState, sdrDim);
         mBrightnessController->processInstantHbm(instantHbm && !clientRgbHdr);
     }
 }
