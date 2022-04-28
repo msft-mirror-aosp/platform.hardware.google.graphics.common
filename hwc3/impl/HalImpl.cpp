@@ -14,15 +14,17 @@
  * limitations under the License.
  */
 
+#include "HalImpl.h"
+
+#include <aidl/android/hardware/graphics/composer3/IComposerCallback.h>
 #include <android-base/logging.h>
 #include <hardware/hwcomposer2.h>
 
-#include "ExynosDeviceModule.h"
 #include "ExynosDevice.h"
+#include "ExynosDeviceModule.h"
 #include "ExynosDisplay.h"
 #include "ExynosHWCService.h"
 #include "ExynosLayer.h"
-#include "HalImpl.h"
 #include "TranslateHwcAidl.h"
 #include "Util.h"
 
@@ -126,6 +128,8 @@ void HalImpl::initCaps() {
         h2a::translate(hwcCap, cap);
         mCaps.insert(cap);
     }
+
+    mCaps.insert(Capability::BOOT_DISPLAY_CONFIG);
 }
 
 int32_t HalImpl::getHalDisplay(int64_t display, ExynosDisplay*& halDisplay) {
@@ -163,11 +167,13 @@ void HalImpl::getCapabilities(std::vector<Capability>* caps) {
 }
 
 void HalImpl::dumpDebugInfo(std::string* output) {
-    uint32_t count = 0;
-    mDevice->dump(&count, nullptr);
+    if (output == nullptr) return;
 
-    output->resize(count);
-    mDevice->dump(&count, output->data());
+    String8 result;
+    mDevice->dump(result);
+
+    output->resize(result.size());
+    output->assign(result.c_str());
 }
 
 void HalImpl::registerEventCallback(EventCallback* callback) {
@@ -183,6 +189,10 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
                      reinterpret_cast<hwc2_function_pointer_t>(hook::vsyncPeriodTimingChanged));
     mDevice->registerCallback(HWC2_CALLBACK_SEAMLESS_POSSIBLE, this,
                      reinterpret_cast<hwc2_function_pointer_t>(hook::seamlessPossible));
+
+    // register HWC3 Callback
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this,
+                                  reinterpret_cast<hwc2_function_pointer_t>(hook::vsyncIdle));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -191,6 +201,9 @@ void HalImpl::unregisterEventCallback() {
     mDevice->registerCallback(HWC2_CALLBACK_VSYNC_2_4, this, nullptr);
     mDevice->registerCallback(HWC2_CALLBACK_VSYNC_PERIOD_TIMING_CHANGED, this, nullptr);
     mDevice->registerCallback(HWC2_CALLBACK_SEAMLESS_POSSIBLE, this, nullptr);
+
+    // unregister HWC3 Callback
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this, nullptr);
 
     mEventCallback = nullptr;
 }
@@ -412,7 +425,7 @@ int32_t HalImpl::getDisplayPhysicalOrientation(int64_t display,
     RET_IF_ERR(halDisplay->getMountOrientation(&hwcOrientation));
     h2a::translate(hwcOrientation, *orientation);
 
-    return HWC2_ERROR_UNSUPPORTED;
+    return HWC2_ERROR_NONE;
 }
 
 int32_t HalImpl::getDozeSupport(int64_t display, bool& support) {
@@ -459,9 +472,9 @@ int32_t HalImpl::getPerFrameMetadataKeys(int64_t display,
     uint32_t numKeys = 0;
     auto resManager = mDevice->mResourceManager;
     if (resManager->hasHDR10PlusMPP()) {
-        numKeys = HWC2_HDR10_PLUS_SEI;
+        numKeys = HWC2_HDR10_PLUS_SEI + 1;
     } else {
-        numKeys = HWC2_MAX_FRAME_AVERAGE_LIGHT_LEVEL;
+        numKeys = HWC2_MAX_FRAME_AVERAGE_LIGHT_LEVEL + 1;
     }
     for (uint32_t i = 0; i < numKeys; ++i) {
         PerFrameMetadataKey key;
@@ -939,12 +952,11 @@ int32_t HalImpl::setVsyncEnabled(int64_t display, bool enabled) {
     return halDisplay->setVsyncEnabled(hwcEnable);
 }
 
-int32_t HalImpl::setIdleTimerEnabled(int64_t display, int32_t __unused timeout) {
+int32_t HalImpl::setIdleTimerEnabled(int64_t display, int32_t timeout) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
-    // TODO(b/198808492): implement setIdleTimerEnabled
-    return HWC2_ERROR_UNSUPPORTED;
+    return halDisplay->setDisplayIdleTimer(timeout);
 }
 
 int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChangedLayers,
@@ -953,7 +965,7 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
                                  std::vector<int64_t>* outRequestedLayers,
                                  std::vector<int32_t>* outRequestMasks,
                                  ClientTargetProperty* outClientTargetProperty,
-                                 float* outClientTargetWhitePointNits) {
+                                 DimmingStage* outDimmingStage) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
@@ -976,15 +988,15 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
     RET_IF_ERR(halDisplay->getDisplayRequests(&displayReqs, &reqsCount,
                                               hwcRequestedLayers.data(), outRequestMasks->data()));
 
-    RET_IF_ERR(halDisplay->getClientTargetWhitePointNits(outClientTargetWhitePointNits));
-
     h2a::translate(hwcChangedLayers, *outChangedLayers);
     h2a::translate(hwcCompositionTypes, *outCompositionTypes);
     *outDisplayRequestMask = displayReqs;
     h2a::translate(hwcRequestedLayers, *outRequestedLayers);
 
     hwc_client_target_property hwcProperty;
-    if (!halDisplay->getClientTargetProperty(&hwcProperty)) {
+    HwcDimmingStage hwcDimmingStage;
+    if (!halDisplay->getClientTargetProperty(&hwcProperty, &hwcDimmingStage)) {
+        h2a::translate(hwcDimmingStage, *outDimmingStage);
         h2a::translate(hwcProperty, *outClientTargetProperty);
     } // else ignore this error
 
@@ -1012,6 +1024,25 @@ int32_t HalImpl::getRCDLayerSupport(int64_t display, bool& outSupport) {
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
     return halDisplay->getRCDLayerSupport(outSupport);
+}
+
+int32_t HalImpl::setLayerBlockingRegion(
+        int64_t display, int64_t layer,
+        const std::vector<std::optional<common::Rect>>& blockingRegion) {
+    ExynosLayer* halLayer;
+    RET_IF_ERR(getHalLayer(display, layer, halLayer));
+
+    std::vector<hwc_rect_t> halBlockingRegion;
+    a2h::translate(blockingRegion, halBlockingRegion);
+
+    return halLayer->setLayerBlockingRegion(halBlockingRegion);
+}
+
+int32_t HalImpl::getDisplayIdleTimerSupport(int64_t display, bool& outSupport) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    return halDisplay->getDisplayIdleTimerSupport(outSupport);
 }
 
 } // namespace aidl::android::hardware::graphics::composer3::impl

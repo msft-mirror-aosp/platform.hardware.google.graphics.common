@@ -32,6 +32,7 @@
 #include <utils/Vector.h>
 
 #include <atomic>
+#include <map>
 #include <thread>
 
 #include "ExynosHWC.h"
@@ -183,6 +184,8 @@ class ExynosDevice {
         /** TODO : Array size shuld be checked */
         exynos_callback_info_t mCallbackInfos[HWC2_CALLBACK_SEAMLESS_POSSIBLE + 1];
 
+        std::map<uint32_t, exynos_callback_info_t> mHwc3CallbackInfos;
+
         /**
          * Thread variables
          */
@@ -199,7 +202,7 @@ class ExynosDevice {
         uint32_t mDisplayMode;
 
         // Variable for fence tracer
-        hwc_fence_info mFenceInfo[MAX_FD_NUM];
+        std::map<int, hwc_fence_info_t> mFenceInfos;
 
         /**
          * This will be initialized with differnt class
@@ -293,6 +296,7 @@ class ExynosDevice {
         void checkDynamicRecompositionThread();
         int32_t setDisplayDeviceMode(int32_t display_id, int32_t mode);
         int32_t setPanelGammaTableSource(int32_t display_id, int32_t type, int32_t source);
+        void dump(String8 &result);
 
         class captureReadbackClass {
             public:
@@ -317,6 +321,10 @@ class ExynosDevice {
         uint32_t getSpecialPlaneNum(uint32_t displayId);
         uint32_t getSpecialPlaneId(uint32_t index);
         uint64_t getSpecialPlaneAttr(uint32_t index);
+
+        int32_t registerHwc3Callback(uint32_t descriptor, hwc2_callback_data_t callbackData,
+                                     hwc2_function_pointer_t point);
+        void onVsyncIdle(hwc2_display_t displayId);
 
     protected:
         void initDeviceInterface(uint32_t interfaceType);

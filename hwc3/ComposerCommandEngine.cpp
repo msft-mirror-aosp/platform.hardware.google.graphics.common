@@ -28,6 +28,12 @@ namespace aidl::android::hardware::graphics::composer3::impl {
         }                                                                        \
     } while (0)
 
+#define DISPATCH_LAYER_COMMAND_SIMPLE(display, layerCmd, field, funcName)     \
+    do {                                                                      \
+        dispatchLayerCommand(display, layerCmd.layer, #field, layerCmd.field, \
+                             &IComposerHal::setLayer##funcName);              \
+    } while (0)
+
 #define DISPATCH_DISPLAY_COMMAND(displayCmd, field, funcName)                \
     do {                                                                     \
         if (displayCmd.field) {                                              \
@@ -122,6 +128,7 @@ void ComposerCommandEngine::dispatchLayerCommand(int64_t display, const LayerCom
     DISPATCH_LAYER_COMMAND(display, command, brightness, Brightness);
     DISPATCH_LAYER_COMMAND(display, command, perFrameMetadata, PerFrameMetadata);
     DISPATCH_LAYER_COMMAND(display, command, perFrameMetadataBlob, PerFrameMetadataBlobs);
+    DISPATCH_LAYER_COMMAND_SIMPLE(display, command, blockingRegion, BlockingRegion);
 }
 
 int32_t ComposerCommandEngine::executeValidateDisplayInternal(int64_t display) {
@@ -130,17 +137,19 @@ int32_t ComposerCommandEngine::executeValidateDisplayInternal(int64_t display) {
     uint32_t displayRequestMask = 0x0;
     std::vector<int64_t> requestedLayers;
     std::vector<int32_t> requestMasks;
-    float clientTargetWhitePointNits;
     ClientTargetProperty clientTargetProperty{common::PixelFormat::RGBA_8888,
                                               common::Dataspace::UNKNOWN};
-    auto err = mHal->validateDisplay(display, &changedLayers, &compositionTypes,
-                                     &displayRequestMask, &requestedLayers, &requestMasks,
-                                     &clientTargetProperty, &clientTargetWhitePointNits);
+    DimmingStage dimmingStage;
+    auto err =
+            mHal->validateDisplay(display, &changedLayers, &compositionTypes, &displayRequestMask,
+                                  &requestedLayers, &requestMasks, &clientTargetProperty,
+                                  &dimmingStage);
     mResources->setDisplayMustValidateState(display, false);
     if (!err) {
         mWriter->setChangedCompositionTypes(display, changedLayers, compositionTypes);
         mWriter->setDisplayRequests(display, displayRequestMask, requestedLayers, requestMasks);
-        mWriter->setClientTargetProperty(display, clientTargetProperty, clientTargetWhitePointNits);
+        static constexpr float kBrightness = 1.f;
+        mWriter->setClientTargetProperty(display, clientTargetProperty, kBrightness, dimmingStage);
     } else {
         LOG(ERROR) << __func__ << ": err " << err;
         mWriter->setError(mCommandIndex, err);
