@@ -23,14 +23,15 @@
 #include <utils/KeyedVector.h>
 #include <utils/Vector.h>
 
+#include <atomic>
 #include <chrono>
 #include <set>
 
 #include "ExynosDisplayInterface.h"
 #include "ExynosHWC.h"
-#include "ExynosHwc3Types.h"
 #include "ExynosHWCDebug.h"
 #include "ExynosHWCHelper.h"
+#include "ExynosHwc3Types.h"
 #include "ExynosMPP.h"
 #include "ExynosResourceManager.h"
 #include "worker.h"
@@ -143,6 +144,13 @@ enum class hwc_request_state_t {
     SET_CONFIG_STATE_NONE = 0,
     SET_CONFIG_STATE_PENDING,
     SET_CONFIG_STATE_REQUESTED,
+};
+
+enum class DispIdleTimerRequester : uint32_t {
+    SF = 0,
+    PIXEL_DISP,
+    TEST,
+    MAX,
 };
 
 #define NUM_SKIP_STATIC_LAYER  5
@@ -945,7 +953,7 @@ class ExynosDisplay {
          *     HWC2_ERROR_BAD_CONFIG - when the configuration is invalid
          *     HWC2_ERROR_UNSUPPORTED - when the display does not support boot display config
          */
-        int32_t setBootDisplayConfig(int32_t config);
+        virtual int32_t setBootDisplayConfig(int32_t config);
 
         /**
          * clearBootDisplayConfig(...)
@@ -959,7 +967,7 @@ class ExynosDisplay {
          *     HWC2_ERROR_BAD_DISPLAY - when the display is invalid
          *     HWC2_ERROR_UNSUPPORTED - when the display does not support boot display config
          */
-        int32_t clearBootDisplayConfig();
+        virtual int32_t clearBootDisplayConfig();
 
         /**
          * getPreferredBootDisplayConfig(..., config*)
@@ -982,6 +990,8 @@ class ExynosDisplay {
          *     HWC2_ERROR_UNSUPPORTED - when the display does not support boot display config
          */
         int32_t getPreferredBootDisplayConfig(int32_t* outConfig);
+
+        virtual int32_t getPreferredDisplayConfigInternal(int32_t *outConfig);
 
         /* setAutoLowLatencyMode(displayToken, on)
          * Descriptor: HWC2_FUNCTION_SET_AUTO_LOW_LATENCY_MODE
@@ -1061,21 +1071,15 @@ class ExynosDisplay {
          *       composer requests. If dataspace field is set to UNKNOWN, it means
          *       the hardware composer requests nothing, the client must ignore the
          *       returned client target property structure.
-         *
+         *   outDimmingStage - where should the SDR dimming happen. HWC3 only.
          * Returns HWC2_ERROR_NONE or one of the following errors:
          *   HWC2_ERROR_BAD_DISPLAY - an invalid display handle was passed in
          *   HWC2_ERROR_NOT_VALIDATED - validateDisplay has not been called for this
          *       display
          */
         virtual int32_t getClientTargetProperty(
-                hwc_client_target_property_t* outClientTargetProperty);
-
-        /*
-         * HWC3
-         *
-         * Retrieves the client target white point nits.
-         */
-        int32_t getClientTargetWhitePointNits(float* outClientTargetWhitePointNits);
+                hwc_client_target_property_t* outClientTargetProperty,
+                HwcDimmingStage *outDimmingStage = nullptr);
 
         /*
          * HWC3
@@ -1187,6 +1191,11 @@ class ExynosDisplay {
         virtual void setExpectedPresentTime(uint64_t __unused timestamp) {}
         virtual uint64_t getPendingExpectedPresentTime() { return 0; }
         virtual void applyExpectedPresentTime() {}
+        virtual int32_t getDisplayIdleTimerSupport(bool& outSupport);
+        virtual int32_t setDisplayIdleTimer(const int32_t __unused timeoutMs) {
+            return HWC2_ERROR_UNSUPPORTED;
+        }
+        virtual void handleDisplayIdleEnter(const uint32_t __unused idleTeRefreshRate) {}
 
         /* getDisplayPreAssignBit support mIndex up to 1.
            It supports only dual LCD and 2 external displays */
@@ -1196,7 +1205,8 @@ class ExynosDisplay {
         }
 
         void cleanupAfterClientDeath();
-        int32_t getRCDLayerSupport(bool& outSupport);
+        int32_t getRCDLayerSupport(bool& outSupport) const;
+        int32_t setDebugRCDLayerEnabled(bool enable);
 
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
@@ -1204,6 +1214,7 @@ class ExynosDisplay {
         virtual int32_t setActiveConfigInternal(hwc2_config_t config, bool force);
 
         void updateRefreshRateHint();
+        bool isFullScreenComposition();
 
     public:
         /**
@@ -1215,7 +1226,8 @@ class ExynosDisplay {
         void requestLhbm(bool on);
 
         virtual int setMinIdleRefreshRate(const int __unused fps) { return NO_ERROR; }
-        virtual int setRefreshRateThrottleNanos(const int64_t __unused delayNanos) {
+        virtual int setRefreshRateThrottleNanos(const int64_t __unused delayNanos,
+                                                const DispIdleTimerRequester __unused requester) {
             return NO_ERROR;
         }
 
@@ -1394,6 +1406,8 @@ class ExynosDisplay {
         };
 
         static const constexpr int kAveragesBufferSize = 3;
+        static const constexpr nsecs_t SIGNAL_TIME_PENDING = INT64_MAX;
+        static const constexpr nsecs_t SIGNAL_TIME_INVALID = -1;
         std::unordered_map<uint32_t, RollingAverage<kAveragesBufferSize>> mRollingAverages;
         PowerHalHintWorker mPowerHalHint;
 
@@ -1406,15 +1420,20 @@ class ExynosDisplay {
         std::optional<nsecs_t> mRetireFenceWaitTime;
         // tracks the time right after we finish waiting for the fence
         std::optional<nsecs_t> mRetireFenceAcquireTime;
+        // tracks the time when the retire fence previously signaled
+        std::optional<nsecs_t> mRetireFencePreviousSignalTime;
         // tracks the expected present time of the last frame
-        std::optional<nsecs_t> mLastTarget;
+        std::optional<nsecs_t> mLastExpectedPresentTime;
         // tracks the expected present time of the current frame
-        nsecs_t mCurrentTarget;
+        nsecs_t mExpectedPresentTime;
         // set once at the start of composition to ensure consistency
         bool mUsePowerHints = false;
-        nsecs_t getTarget();
+        nsecs_t getExpectedPresentTime(nsecs_t startTime);
+        nsecs_t getPredictedPresentTime(nsecs_t startTime);
+        nsecs_t getSignalTime(int32_t fd) const;
         void updateAverages(nsecs_t endTime);
         std::optional<nsecs_t> getPredictedDuration(bool duringValidation);
+        atomic_bool mDebugRCDLayerEnabled = true;
 
     protected:
         inline uint32_t getDisplayVsyncPeriodFromConfig(hwc2_config_t config) {
