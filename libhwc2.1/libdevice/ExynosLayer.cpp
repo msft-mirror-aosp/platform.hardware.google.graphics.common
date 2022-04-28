@@ -90,6 +90,11 @@ ExynosLayer::~ExynosLayer() {
         mMetaParcelFd = -1;
     }
 
+    if (mAcquireFence >= 0) {
+        mAcquireFence =
+                fence_close(mAcquireFence, mDisplay, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_UNDEFINED);
+    }
+
     if (mPrevAcquireFence != -1)
         mPrevAcquireFence = fence_close(mPrevAcquireFence, mDisplay, FENCE_TYPE_SRC_ACQUIRE,
                                         FENCE_IP_UNDEFINED);
@@ -729,6 +734,20 @@ int32_t ExynosLayer::setLayerBrightness(float brightness) {
     return HWC2_ERROR_NONE;
 }
 
+int32_t ExynosLayer::setLayerBlockingRegion(const std::vector<hwc_rect_t>& blockingRegion) {
+    hwc_rect_t maxRect;
+
+    for (auto rect : blockingRegion) {
+        maxRect = std::max(maxRect, rect, [](const hwc_rect_t& lhs, const hwc_rect_t& rhs) {
+            return rectSize(lhs) < rectSize(rhs);
+        });
+    }
+
+    mBlockingRect = maxRect;
+
+    return HWC2_ERROR_NONE;
+}
+
 void ExynosLayer::resetValidateData()
 {
     mValidateCompositionType = HWC2_COMPOSITION_INVALID;
@@ -1001,21 +1020,23 @@ void ExynosLayer::dump(String8& result)
                                                  mPreprocessedInfo.displayFrame.top,
                                                  mPreprocessedInfo.displayFrame.right,
                                                  mPreprocessedInfo.displayFrame.bottom}))
+                          .add("blockRect",
+                               std::vector<int>({mBlockingRect.left, mBlockingRect.top,
+                                                 mBlockingRect.right, mBlockingRect.bottom}))
                           .add("tr", mTransform, true)
                           .add("windowIndex", mWindowIndex)
                           .add("type", mCompositionType)
                           .add("exynosType", mExynosCompositionType)
                           .add("validateType", mValidateCompositionType)
                           .add("overlayInfo", mOverlayInfo, true)
-                          .add("supportedMPPFlag", mSupportedMPPFlag, true)
                           .build()
                           .c_str());
 
-    {
-        TableBuilder tb;
-        tb.add("dim ratio", mPreprocessedInfo.sdrDimRatio);
-        result.append(tb.build().c_str());
-    }
+    result.append(TableBuilder()
+                          .add("MPPFlag", mSupportedMPPFlag, true)
+                          .add("dim ratio", mPreprocessedInfo.sdrDimRatio)
+                          .build()
+                          .c_str());
 
     if ((mDisplay != NULL) && (mDisplay->mResourceManager != NULL)) {
         result.appendFormat("MPPFlags for otfMPP\n");
