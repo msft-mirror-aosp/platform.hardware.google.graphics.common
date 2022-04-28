@@ -16,10 +16,11 @@
 
 #pragma once
 
-#include <memory>
+#include <android/hardware/graphics/composer3/ComposerServiceWriter.h>
 #include <utils/Mutex.h>
 
-#include "ComposerServiceWriter.h"
+#include <memory>
+
 #include "include/IComposerHal.h"
 #include "include/IResourceManager.h"
 
@@ -33,6 +34,10 @@ class ComposerCommandEngine {
 
       int32_t execute(const std::vector<DisplayCommand>& commands,
                       std::vector<CommandResultPayload>* result);
+
+      template <typename InputType, typename Functor>
+      void dispatchLayerCommand(int64_t display, int64_t layer, const std::string& funcName,
+                                const InputType input, const Functor func);
 
       void reset() {
           mWriter->reset();
@@ -95,6 +100,19 @@ class ComposerCommandEngine {
       IResourceManager* mResources;
       std::unique_ptr<ComposerServiceWriter> mWriter;
       int32_t mCommandIndex;
+};
+
+template <typename InputType, typename Functor>
+void ComposerCommandEngine::dispatchLayerCommand(int64_t display, int64_t layer,
+                                                 const std::string& funcName, const InputType input,
+                                                 const Functor func) {
+    if (input) {
+        auto err = (mHal->*func)(display, layer, *input);
+        if (err) {
+            LOG(ERROR) << funcName << ": err " << err;
+            mWriter->setError(mCommandIndex, err);
+        }
+    }
 };
 
 } // namespace aidl::android::hardware::graphics::composer3::impl
