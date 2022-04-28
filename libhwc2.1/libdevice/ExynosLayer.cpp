@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <aidl/android/hardware/graphics/common/BufferUsage.h>
 #include <utils/Errors.h>
 #include <linux/videodev2.h>
 #include <sys/mman.h>
@@ -31,6 +32,8 @@
 /**
  * ExynosLayer implementation
  */
+
+using AidlBufferUsage = ::aidl::android::hardware::graphics::common::BufferUsage;
 
 ExynosLayer::ExynosLayer(ExynosDisplay* display)
       : ExynosMPPSource(MPP_SOURCE_LAYER, this),
@@ -87,6 +90,11 @@ ExynosLayer::~ExynosLayer() {
         mMetaParcelFd = -1;
     }
 
+    if (mAcquireFence >= 0) {
+        mAcquireFence =
+                fence_close(mAcquireFence, mDisplay, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_UNDEFINED);
+    }
+
     if (mPrevAcquireFence != -1)
         mPrevAcquireFence = fence_close(mPrevAcquireFence, mDisplay, FENCE_TYPE_SRC_ACQUIRE,
                                         FENCE_IP_UNDEFINED);
@@ -140,28 +148,12 @@ int32_t ExynosLayer::doPreProcess()
     mPreprocessedInfo.sourceCrop = mSourceCrop;
     mPreprocessedInfo.displayFrame = mDisplayFrame;
     mPreprocessedInfo.interlacedType = V4L2_FIELD_NONE;
-    mPreprocessedInfo.sdrDimRatio = 1.0f;
+    mPreprocessedInfo.sdrDimRatio = mBrightness;
 
     if (mCompositionType == HWC2_COMPOSITION_SOLID_COLOR) {
         mLayerFlag |= EXYNOS_HWC_DIM_LAYER;
     } else {
         mLayerFlag &= ~(EXYNOS_HWC_DIM_LAYER);
-    }
-
-    if (mDisplay->mBrightnessController) {
-        float displayWhitePointNits = -1;
-        mDisplay->mBrightnessController->getDisplayWhitePointNits(&displayWhitePointNits);
-        if (mWhitePointNits >= 0) {
-            if (mWhitePointNits < displayWhitePointNits) {
-                mPreprocessedInfo.sdrDimRatio = mWhitePointNits / displayWhitePointNits;
-                // in case of small floating error
-                if (mPreprocessedInfo.sdrDimRatio >= 0.999) {
-                    mPreprocessedInfo.sdrDimRatio = 1.0;
-                }
-            }
-            // any error should have been reported by
-            // BrightnessController::validateLayerWhitePointNits
-        }
     }
 
     if (mLayerBuffer == NULL) {
@@ -341,7 +333,10 @@ int32_t ExynosLayer::doPreProcess()
         mPreprocessedInfo.preProcessed = true;
     }
 
-    if (getDrmMode(mLayerBuffer) != NO_DRM) {
+    if (VendorGraphicBufferMeta::get_usage(mLayerBuffer) &
+               toUnderlying(AidlBufferUsage::FRONT_BUFFER)) {
+        priority = ePriorityMax;
+    } else if (getDrmMode(mLayerBuffer) != NO_DRM) {
         priority = ePriorityMax;
     } else if (mIsHdrLayer) {
         if (isFormatRgb(gmeta.format))
@@ -395,6 +390,11 @@ int32_t ExynosLayer::setLayerBuffer(buffer_handle_t buffer, int32_t acquireFence
             setGeometryChanged(GEOMETRY_LAYER_DRM_CHANGED);
         if (VendorGraphicBufferMeta::get_format(mLayerBuffer) != gmeta.format)
             setGeometryChanged(GEOMETRY_LAYER_FORMAT_CHANGED);
+        if ((VendorGraphicBufferMeta::get_usage(buffer) &
+                    toUnderlying(AidlBufferUsage::FRONT_BUFFER)) !=
+                (VendorGraphicBufferMeta::get_usage(mLayerBuffer) &
+                    toUnderlying(AidlBufferUsage::FRONT_BUFFER)))
+            setGeometryChanged(GEOMETRY_LAYER_FRONT_BUFFER_USAGE_CHANGED);
     }
 
     mLayerBuffer = buffer;
@@ -720,17 +720,31 @@ int32_t ExynosLayer::setLayerGenericMetadata(hwc2_layer_t __unused layer,
     return HWC2_ERROR_UNSUPPORTED;
 }
 
-int32_t ExynosLayer::setLayerWhitePointNits(float whitePointNits)
-{
+int32_t ExynosLayer::setLayerBrightness(float brightness) {
     if (mDisplay->mBrightnessController == nullptr ||
-        !mDisplay->mBrightnessController->validateLayerWhitePointNits(whitePointNits)) {
+        !mDisplay->mBrightnessController->validateLayerBrightness(brightness)) {
         return HWC2_ERROR_BAD_PARAMETER;
     }
 
-    if (mWhitePointNits != whitePointNits) {
-        mWhitePointNits = whitePointNits;
+    if (mBrightness != brightness) {
+        // Trigger display validation in case client composition is needed.
         setGeometryChanged(GEOMETRY_LAYER_WHITEPOINT_CHANGED);
+        mBrightness = brightness;
     }
+    return HWC2_ERROR_NONE;
+}
+
+int32_t ExynosLayer::setLayerBlockingRegion(const std::vector<hwc_rect_t>& blockingRegion) {
+    hwc_rect_t maxRect;
+
+    for (auto rect : blockingRegion) {
+        maxRect = std::max(maxRect, rect, [](const hwc_rect_t& lhs, const hwc_rect_t& rhs) {
+            return rectSize(lhs) < rectSize(rhs);
+        });
+    }
+
+    mBlockingRect = maxRect;
+
     return HWC2_ERROR_NONE;
 }
 
@@ -1006,22 +1020,23 @@ void ExynosLayer::dump(String8& result)
                                                  mPreprocessedInfo.displayFrame.top,
                                                  mPreprocessedInfo.displayFrame.right,
                                                  mPreprocessedInfo.displayFrame.bottom}))
+                          .add("blockRect",
+                               std::vector<int>({mBlockingRect.left, mBlockingRect.top,
+                                                 mBlockingRect.right, mBlockingRect.bottom}))
                           .add("tr", mTransform, true)
                           .add("windowIndex", mWindowIndex)
                           .add("type", mCompositionType)
                           .add("exynosType", mExynosCompositionType)
                           .add("validateType", mValidateCompositionType)
                           .add("overlayInfo", mOverlayInfo, true)
-                          .add("supportedMPPFlag", mSupportedMPPFlag, true)
                           .build()
                           .c_str());
 
-    {
-        TableBuilder tb;
-        tb.add("wp nits", mWhitePointNits)
-          .add("dim ratio", mPreprocessedInfo.sdrDimRatio);
-        result.append(tb.build().c_str());
-    }
+    result.append(TableBuilder()
+                          .add("MPPFlag", mSupportedMPPFlag, true)
+                          .add("dim ratio", mPreprocessedInfo.sdrDimRatio)
+                          .build()
+                          .c_str());
 
     if ((mDisplay != NULL) && (mDisplay->mResourceManager != NULL)) {
         result.appendFormat("MPPFlags for otfMPP\n");

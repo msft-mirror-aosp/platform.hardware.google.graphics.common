@@ -32,14 +32,21 @@
 #include "ExynosExternalDisplay.h"
 #include "ExynosHWCDebug.h"
 #include "ExynosHWCHelper.h"
+#include "ExynosLayer.h"
 
 extern struct exynos_hwc_control exynosHWCControl;
 
 using namespace SOC_VERSION;
+constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
+constexpr auto nsecsPerMs = std::chrono::nanoseconds(1ms).count();
 
 static const std::map<const DisplayType, const std::string> panelSysfsPath =
         {{DisplayType::DISPLAY_PRIMARY, "/sys/devices/platform/exynos-drm/primary-panel/"},
          {DisplayType::DISPLAY_SECONDARY, "/sys/devices/platform/exynos-drm/secondary-panel/"}};
+
+static constexpr const char* PROPERTY_BOOT_MODE = "persist.vendor.display.primary.boot_config";
+static constexpr const char *PROPERTY_DEFAULT_BOOT_MODE =
+        "vendor.display.primary.default_boot_config";
 
 static std::string loadPanelGammaCalibration(const std::string &file) {
     std::ifstream ifs(file);
@@ -74,7 +81,9 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device)
         mMinIdleRefreshRate(0),
         mRefreshRateDelayNanos(0),
         mLastRefreshRateAppliedNanos(0),
-        mAppliedActiveConfig(0) {
+        mAppliedActiveConfig(0),
+        mDisplayIdleTimerEnabled(false),
+        mDisplayNeedHandleIdleExit(false) {
     // TODO : Hard coded here
     mNumMaxPriorityAllowed = 5;
 
@@ -106,7 +115,9 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device)
     if (mEarlyWakeupDispFd == nullptr)
         ALOGE("open %s failed! %s", EARLY_WAKUP_NODE_0_BASE, strerror(errno));
     mBrightnessController =
-            std::make_unique<BrightnessController>(mIndex, [this]() { mDevice->invalidate(); });
+            std::make_unique<BrightnessController>(mIndex,
+                                     [this]() { mDevice->invalidate(); },
+                                     [this]() { updatePresentColorConversionInfo(); });
 }
 
 ExynosPrimaryDisplay::~ExynosPrimaryDisplay()
@@ -114,6 +125,10 @@ ExynosPrimaryDisplay::~ExynosPrimaryDisplay()
     if (mEarlyWakeupDispFd) {
         fclose(mEarlyWakeupDispFd);
         mEarlyWakeupDispFd = nullptr;
+    }
+
+    if (mDisplayNeedHandleIdleExitOfs.is_open()) {
+        mDisplayNeedHandleIdleExitOfs.close();
     }
 }
 
@@ -186,6 +201,73 @@ int32_t ExynosPrimaryDisplay::applyPendingConfig() {
     }
 
     return ExynosDisplay::setActiveConfigInternal(config, true);
+}
+
+int32_t ExynosPrimaryDisplay::setBootDisplayConfig(int32_t config) {
+    auto hwcConfig = static_cast<hwc2_config_t>(config);
+
+    const auto &it = mDisplayConfigs.find(hwcConfig);
+    if (it == mDisplayConfigs.end()) {
+        DISPLAY_LOGE("%s: invalid config %d", __func__, config);
+        return HWC2_ERROR_BAD_CONFIG;
+    }
+
+    const auto &mode = it->second;
+    if (mode.vsyncPeriod == 0)
+        return HWC2_ERROR_BAD_CONFIG;
+
+    int refreshRate = round(nsecsPerSec / mode.vsyncPeriod * 0.1f) * 10;
+    char modeStr[PROPERTY_VALUE_MAX];
+    int ret = snprintf(modeStr, sizeof(modeStr), "%dx%d@%d",
+             mode.width, mode.height, refreshRate);
+    if (ret <= 0)
+        return HWC2_ERROR_BAD_CONFIG;
+
+    ALOGD("%s: mode=%s (%d) vsyncPeriod=%d", __func__, modeStr, config,
+            mode.vsyncPeriod);
+    ret = property_set(PROPERTY_BOOT_MODE, modeStr);
+
+    return !ret ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
+}
+
+int32_t ExynosPrimaryDisplay::clearBootDisplayConfig() {
+    auto ret = property_set(PROPERTY_BOOT_MODE, nullptr);
+
+    ALOGD("%s: clearing boot mode", __func__);
+    return !ret ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
+}
+
+int32_t ExynosPrimaryDisplay::getPreferredDisplayConfigInternal(int32_t *outConfig) {
+    char modeStr[PROPERTY_VALUE_MAX], defaultModeStr[PROPERTY_VALUE_MAX];
+    property_get(PROPERTY_DEFAULT_BOOT_MODE, defaultModeStr, "");
+    auto ret = property_get(PROPERTY_BOOT_MODE, modeStr, defaultModeStr);
+
+    if (ret <= 0) {
+        return mDisplayInterface->getDefaultModeId(outConfig);
+    }
+
+    int width, height;
+    int fps = 0;
+
+    ret = sscanf(modeStr, "%dx%d@%d", &width, &height, &fps);
+    if ((ret < 3) || !fps) {
+        ALOGD("%s: unable to find boot config for mode: %s", __func__, modeStr);
+        return HWC2_ERROR_BAD_CONFIG;
+    }
+
+    const auto vsyncPeriod = nsecsPerSec / fps;
+
+    for (auto const& [config, mode] : mDisplayConfigs) {
+        long delta = abs(vsyncPeriod - mode.vsyncPeriod);
+        if ((width == mode.width) && (height == mode.height) &&
+            (delta < nsecsPerMs)) {
+            ALOGD("%s: found preferred display config for mode: %s=%d",
+                  __func__, modeStr, config);
+            *outConfig = config;
+            return HWC2_ERROR_NONE;
+        }
+    }
+    return HWC2_ERROR_BAD_CONFIG;
 }
 
 int32_t ExynosPrimaryDisplay::setPowerOn() {
@@ -300,6 +382,8 @@ int32_t ExynosPrimaryDisplay::setPowerMode(int32_t mode) {
 void ExynosPrimaryDisplay::firstPowerOn() {
     SetCurrentPanelGammaSource(DisplayType::DISPLAY_PRIMARY, PanelGammaSource::GAMMA_CALIBRATION);
     mFirstPowerOn = false;
+    getDisplayIdleTimerEnabled(mDisplayIdleTimerEnabled);
+    initDisplayHandleIdleExit();
 }
 
 bool ExynosPrimaryDisplay::getHDRException(ExynosLayer* __unused layer)
@@ -315,6 +399,11 @@ void ExynosPrimaryDisplay::initDisplayInterface(uint32_t interfaceType)
         LOG_ALWAYS_FATAL("%s::Unknown interface type(%d)",
                 __func__, interfaceType);
     mDisplayInterface->init(this);
+
+    mDpuData.init(mMaxWindowNum, mDevice->getSpecialPlaneNum(mDisplayId));
+    mLastDpuData.init(mMaxWindowNum, mDevice->getSpecialPlaneNum(mDisplayId));
+    ALOGI("window configs size(%zu) rcd configs zie(%zu)", mDpuData.configs.size(),
+          mDpuData.rcdConfigs.size());
 }
 
 std::string ExynosPrimaryDisplay::getPanelSysfsPath(const DisplayType &type) {
@@ -455,6 +544,129 @@ void ExynosPrimaryDisplay::applyExpectedPresentTime() {
     mExpectedPresentTime.clear_dirty();
 }
 
+int32_t ExynosPrimaryDisplay::setDisplayIdleTimer(const int32_t timeoutMs) {
+    bool support = false;
+    if (getDisplayIdleTimerSupport(support) || support == false) {
+        return HWC2_ERROR_UNSUPPORTED;
+    }
+
+    if (timeoutMs < 0) {
+        return HWC2_ERROR_BAD_PARAMETER;
+    }
+
+    if (timeoutMs > 0) {
+        setRefreshRateThrottleNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::milliseconds(timeoutMs))
+                                            .count(),
+                                    DispIdleTimerRequester::SF);
+    }
+
+    bool enabled = (timeoutMs > 0);
+    if (enabled != mDisplayIdleTimerEnabled) {
+        if (setDisplayIdleTimerEnabled(enabled) == NO_ERROR) {
+            mDisplayIdleTimerEnabled = enabled;
+        }
+    }
+
+    return HWC2_ERROR_NONE;
+}
+
+int32_t ExynosPrimaryDisplay::getDisplayIdleTimerEnabled(bool &enabled) {
+    bool support = false;
+    if (getDisplayIdleTimerSupport(support) || support == false) {
+        return HWC2_ERROR_UNSUPPORTED;
+    }
+
+    const std::string path = getPanelSysfsPath(DisplayType::DISPLAY_PRIMARY) + "panel_idle";
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
+        return errno;
+    } else {
+        std::string panel_idle;
+        std::getline(ifs, panel_idle);
+        ifs.close();
+        enabled = (panel_idle == "1");
+        ALOGI("%s() get panel_idle(%d) from the sysfs node", __func__, enabled);
+    }
+    return NO_ERROR;
+}
+
+int32_t ExynosPrimaryDisplay::setDisplayIdleTimerEnabled(const bool enabled) {
+    const std::string path = getPanelSysfsPath(DisplayType::DISPLAY_PRIMARY) + "panel_idle";
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) {
+        ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
+        return errno;
+    } else {
+        ofs << enabled;
+        ofs.close();
+        ALOGI("%s() writes panel_idle(%d) to the sysfs node", __func__, enabled);
+    }
+    return NO_ERROR;
+}
+
+void ExynosPrimaryDisplay::initDisplayHandleIdleExit() {
+    if (bool support; getDisplayIdleTimerSupport(support) || support == false) {
+        return;
+    }
+
+    const std::string path =
+            getPanelSysfsPath(DisplayType::DISPLAY_PRIMARY) + "panel_need_handle_idle_exit";
+    mDisplayNeedHandleIdleExitOfs.open(path, std::ofstream::out);
+    if (!mDisplayNeedHandleIdleExitOfs.is_open()) {
+        ALOGI("%s() '%s' doesn't exist(%s)", __func__, path.c_str(), strerror(errno));
+    }
+
+    setDisplayNeedHandleIdleExit(false, true);
+}
+
+void ExynosPrimaryDisplay::setDisplayNeedHandleIdleExit(const bool needed, const bool force) {
+    if (!mDisplayNeedHandleIdleExitOfs.is_open()) {
+        return;
+    }
+
+    if (needed == mDisplayNeedHandleIdleExit && !force) {
+        return;
+    }
+
+    mDisplayNeedHandleIdleExitOfs << needed;
+    if (mDisplayNeedHandleIdleExitOfs.fail()) {
+        ALOGW("%s() failed to write panel_need_handle_idle_exit(%d) to sysfs node %s", __func__,
+              needed, strerror(errno));
+        return;
+    }
+
+    mDisplayNeedHandleIdleExitOfs.flush();
+    if (mDisplayNeedHandleIdleExitOfs.fail()) {
+        ALOGW("%s() failed to flush panel_need_handle_idle_exit(%d) to sysfs node %s", __func__,
+              needed, strerror(errno));
+        return;
+    }
+
+    ALOGI("%s() writes panel_need_handle_idle_exit(%d) to sysfs node", __func__, needed);
+    mDisplayNeedHandleIdleExit = needed;
+}
+
+void ExynosPrimaryDisplay::handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) {
+    Mutex::Autolock lock(mDisplayMutex);
+    uint32_t btsRefreshRate = getBtsRefreshRate();
+    if (idleTeRefreshRate <= btsRefreshRate) {
+        return;
+    }
+
+    bool needed = false;
+    for (size_t i = 0; i < mLayers.size(); i++) {
+        if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
+            !mLayers[i]->checkDownscaleCap(idleTeRefreshRate)) {
+            needed = true;
+            break;
+        }
+    }
+
+    setDisplayNeedHandleIdleExit(needed, false);
+}
+
 int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int fps) {
     mMinIdleRefreshRate = fps;
 
@@ -472,8 +684,30 @@ int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int fps) {
     return NO_ERROR;
 }
 
-int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos) {
-    mRefreshRateDelayNanos = delayNanos;
+int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos,
+                                                      const DispIdleTimerRequester requester) {
+    ALOGI("%s() requester(%u) set delay to %" PRId64 "ns", __func__, toUnderlying(requester),
+          delayNanos);
+    if (delayNanos < 0) {
+        ALOGW("%s() set invalid delay(%" PRId64 ")", __func__, delayNanos);
+        return BAD_VALUE;
+    }
+
+    std::lock_guard<std::mutex> lock(mIdleRefreshRateThrottleMutex);
+
+    int64_t maxDelayNanos = 0;
+    mDisplayIdleTimerNanos[toUnderlying(requester)] = delayNanos;
+    for (uint32_t i = 0; i < toUnderlying(DispIdleTimerRequester::MAX); i++) {
+        if (mDisplayIdleTimerNanos[i] > maxDelayNanos) {
+            maxDelayNanos = mDisplayIdleTimerNanos[i];
+        }
+    }
+
+    if (mRefreshRateDelayNanos == maxDelayNanos) {
+        return NO_ERROR;
+    }
+
+    mRefreshRateDelayNanos = maxDelayNanos;
 
     const int32_t refreshRateDelayMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                                std::chrono::nanoseconds(mRefreshRateDelayNanos))
@@ -481,13 +715,13 @@ int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos) 
     const std::string path = getPanelSysfsPath(DisplayType::DISPLAY_PRIMARY) + "idle_delay_ms";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
-        ALOGW("Unable to open node '%s', error = %s", path.c_str(), strerror(errno));
+        ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
         return errno;
     } else {
         ofs << refreshRateDelayMs;
+        ALOGI("%s() writes idle_delay_ms(%d) to the sysfs node (0x%x)", __func__,
+              refreshRateDelayMs, ofs.rdstate());
         ofs.close();
-        ALOGI("ExynosPrimaryDisplay::%s() writes idle_delay_ms(%d) to the sysfs node", __func__,
-              refreshRateDelayMs);
     }
 
     return NO_ERROR;
@@ -495,8 +729,14 @@ int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos) 
 
 void ExynosPrimaryDisplay::dump(String8 &result) {
     ExynosDisplay::dump(result);
+    result.appendFormat("Display idle timer: %s\n",
+                        (mDisplayIdleTimerEnabled) ? "enabled" : "disabled");
     result.appendFormat("Min idle refresh rate: %d\n", mMinIdleRefreshRate);
-    result.appendFormat("Refresh rate delay: %" PRId64 "ns\n\n", mRefreshRateDelayNanos);
+    result.appendFormat("Refresh rate delay: %" PRId64 " ns\n", mRefreshRateDelayNanos);
+    for (uint32_t i = 0; i < toUnderlying(DispIdleTimerRequester::MAX); i++) {
+        result.appendFormat("\t[%u] set to %" PRId64 " ns\n", i, mDisplayIdleTimerNanos[i]);
+    }
+    result.appendFormat("\n");
 }
 
 void ExynosPrimaryDisplay::calculateTimeline(

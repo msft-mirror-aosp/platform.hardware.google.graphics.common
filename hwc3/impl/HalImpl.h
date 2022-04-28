@@ -57,7 +57,7 @@ class HalImpl : public IComposerHal {
                                          std::vector<float>* matrix) override;
     int32_t getDisplayAttribute(int64_t display, int32_t config, DisplayAttribute attribute,
                                 int32_t* outValue) override;
-    int32_t getDisplayBrightnessSupport(int64_t display, bool* outSupport) override;
+    int32_t getDisplayBrightnessSupport(int64_t display, bool& outSupport) override;
     int32_t getDisplayCapabilities(int64_t display, std::vector<DisplayCapability>* caps) override;
     int32_t getDisplayConfigs(int64_t display, std::vector<int32_t>* configs) override;
     int32_t getDisplayConnectionType(int64_t display, DisplayConnectionType* outType) override;
@@ -69,7 +69,7 @@ class HalImpl : public IComposerHal {
     int32_t getDisplayedContentSamplingAttributes(int64_t display,
                                                   DisplayContentSamplingAttributes* attrs) override;
     int32_t getDisplayPhysicalOrientation(int64_t display, common::Transform* orientation) override;
-    int32_t getDozeSupport(int64_t display, bool* support) override;
+    int32_t getDozeSupport(int64_t display, bool& outSupport) override;
     int32_t getHdrCapabilities(int64_t display, HdrCapabilities* caps) override;
     int32_t getMaxVirtualDisplayCount(int32_t* count) override;
     int32_t getPerFrameMetadataKeys(int64_t display,
@@ -127,7 +127,7 @@ class HalImpl : public IComposerHal {
     int32_t setLayerTransform(int64_t display, int64_t layer, common::Transform transform) override;
     int32_t setLayerVisibleRegion(int64_t display, int64_t layer,
                           const std::vector<std::optional<common::Rect>>& visible) override;
-    int32_t setLayerWhitePointNits(int64_t display, int64_t layer, float nits) override;
+    int32_t setLayerBrightness(int64_t display, int64_t layer, float brightness) override;
     int32_t setLayerZOrder(int64_t display, int64_t layer, uint32_t z) override;
     int32_t setOutputBuffer(int64_t display, buffer_handle_t buffer,
                             const ndk::ScopedFileDescriptor& releaseFence) override;
@@ -135,14 +135,19 @@ class HalImpl : public IComposerHal {
     int32_t setReadbackBuffer(int64_t display, buffer_handle_t buffer,
                               const ndk::ScopedFileDescriptor& releaseFence) override;
     int32_t setVsyncEnabled(int64_t display, bool enabled) override;
+    int32_t getDisplayIdleTimerSupport(int64_t display, bool& outSupport) override;
     int32_t setIdleTimerEnabled(int64_t display, int32_t timeout) override;
+    int32_t getRCDLayerSupport(int64_t display, bool& outSupport) override;
+    int32_t setLayerBlockingRegion(
+            int64_t display, int64_t layer,
+            const std::vector<std::optional<common::Rect>>& blockingRegion) override;
     int32_t validateDisplay(int64_t display, std::vector<int64_t>* outChangedLayers,
                             std::vector<Composition>* outCompositionTypes,
                             uint32_t* outDisplayRequestMask,
                             std::vector<int64_t>* outRequestedLayers,
                             std::vector<int32_t>* outRequestMasks,
                             ClientTargetProperty* outClientTargetProperty,
-                            float* outClientTargetWhitePointNits) override;
+                            DimmingStage* outDimmingStage) override;
     int32_t setExpectedPresentTime(
             int64_t display,
             const std::optional<ClockMonotonicTimestamp> expectedPresentTime) override;

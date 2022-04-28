@@ -204,7 +204,7 @@ ExynosResourceManager::ExynosResourceManager(ExynosDevice *device)
 
     char value[PROPERTY_VALUE_MAX];
     mMinimumSdrDimRatio = property_get("debug.hwc.min_sdr_dimming", value, nullptr) > 0
-                          ? std::atof(value) : 1.0f;
+                          ? std::atof(value) : 0.0f;
 }
 
 ExynosResourceManager::~ExynosResourceManager()
@@ -1132,6 +1132,36 @@ int32_t ExynosResourceManager::validateLayer(uint32_t index, ExynosDisplay *disp
     return NO_ERROR;
 }
 
+int32_t ExynosResourceManager::validateRCDLayer(const ExynosDisplay &display,
+                                                const ExynosLayer &layer,
+                                                const exynos_image &srcImg,
+                                                const exynos_image &dstImg) {
+    if (CC_UNLIKELY(srcImg.bufferHandle == NULL || srcImg.format != HAL_PIXEL_FORMAT_GOOGLE_R_8)) {
+        return eInvalidHandle;
+    }
+
+    if (bool supported;
+        CC_UNLIKELY(display.getRCDLayerSupport(supported) != NO_ERROR || !supported))
+        return eUnSupportedUseCase;
+
+    // no rotation
+    if (srcImg.transform & (HAL_TRANSFORM_ROT_90 | HAL_TRANSFORM_ROT_180)) {
+        return eMPPUnsupported;
+    }
+
+    // no scale
+    if (srcImg.w != dstImg.w || srcImg.h != dstImg.h) {
+        return eMPPUnsupported;
+    }
+
+    // b/215335109: IMG_SIZE must be equal or larger than display output
+    if (dstImg.x != 0 || dstImg.y != 0 || dstImg.w != display.mXres || dstImg.h != display.mYres) {
+        return eInvalidDispFrame;
+    }
+
+    return NO_ERROR;
+}
+
 exynos_image ExynosResourceManager::getAlignedImage(exynos_image image, const ExynosMPP *m2mMpp,
                                                     const ExynosMPP *otfMpp) const {
     const auto srcCropWidthAlign = otfMpp ? otfMpp->getSrcCropWidthAlign(image) : 1;
@@ -1610,6 +1640,13 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
         layer->setExynosImage(src_img, dst_img);
         layer->setExynosMidImage(dst_img);
 
+        // TODO: call validate function for RCD layer
+        if (layer->mCompositionType == HWC2_COMPOSITION_DISPLAY_DECORATION &&
+            validateRCDLayer(*display, *layer, src_img, dst_img) == NO_ERROR) {
+            layer->mValidateCompositionType = HWC2_COMPOSITION_DISPLAY_DECORATION;
+            continue;
+        }
+
         compositionType = assignLayer(display, layer, i, m2m_out_img, &m2mMPP, &otfMPP, validateFlag);
         if (compositionType == HWC2_COMPOSITION_DEVICE) {
             if (otfMPP != NULL) {
@@ -1753,6 +1790,9 @@ int32_t ExynosResourceManager::assignWindow(ExynosDisplay *display)
             compositionInfo->mWindowIndex = windowIndex;
             HDEBUGLOGD(eDebugResourceManager, "\t\t[%d] %s Composition windowIndex: %d",
                     i, compositionInfo->getTypeStr().string(), windowIndex);
+        } else if (layer->mValidateCompositionType == HWC2_COMPOSITION_DISPLAY_DECORATION) {
+            layer->mWindowIndex = -1;
+            continue;
         } else {
             HWC_LOGE(display, "%s:: Invalid layer compositionType layer(%d), compositionType(%d)",
                     __func__, i, layer->mValidateCompositionType);

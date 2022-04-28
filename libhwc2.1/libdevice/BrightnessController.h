@@ -39,6 +39,8 @@
  */
 class BrightnessController {
 public:
+    using HdrLayerState = displaycolor::HdrLayerState;
+
     class DimmingMsgHandler : public virtual ::android::MessageHandler {
     public:
         enum {
@@ -52,9 +54,11 @@ public:
         BrightnessController* mBrightnessController;
     };
 
-    BrightnessController(int32_t panelIndex, std::function<void(void)> refresh);
+    BrightnessController(int32_t panelIndex, std::function<void(void)> refresh,
+                         std::function<void(void)> updateDcLhbm);
     ~BrightnessController();
 
+    BrightnessController(int32_t panelIndex);
     int initDrm(const DrmDevice& drmDevice,
                 const DrmConnector& connector);
 
@@ -62,7 +66,7 @@ public:
     int processDisplayBrightness(float bl, const nsecs_t vsyncNs, bool waitPresent = false);
     int processLocalHbm(bool on);
     int applyPendingChangeViaSysfs(const nsecs_t vsyncNs);
-    bool validateLayerWhitePointNits(float nits);
+    bool validateLayerBrightness(float brightness);
 
     /**
      * processInstantHbm for GHBM UDFPS
@@ -72,7 +76,12 @@ public:
      */
     int processInstantHbm(bool on);
 
-    void updateFrameStates(bool hdrFullScreen) { mHdrFullScreen.store(hdrFullScreen); }
+    /**
+     * updateFrameStates
+     *  - hdrState: hdr layer size in this frame
+     *  - sdrDim: whether any dimmed sdr layer in this frame
+     */
+    void updateFrameStates(HdrLayerState hdrState, bool sdrDim);
 
     /**
      * Dim ratio to keep the sdr brightness unchange after an instant hbm on with peak brightness.
@@ -94,45 +103,32 @@ public:
     bool isLhbmSupported() { return mLhbmSupported; }
 
     bool isGhbmOn() {
-        std::lock_guard<std::mutex> lock(mBrightnessMutex);
+        std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
         return mGhbm.get() != HbmMode::OFF;
     }
 
     bool isLhbmOn() {
-        std::lock_guard<std::mutex> lock(mBrightnessMutex);
+        std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
         return mLhbm.get();
     }
 
     uint32_t getBrightnessLevel() {
-        std::lock_guard<std::mutex> lock(mBrightnessMutex);
+        std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
         return mBrightnessLevel.get();
     }
 
     bool isDimSdr() {
-        std::lock_guard<std::mutex> lock(mBrightnessMutex);
+        std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
         return mInstantHbmReq.get();
     }
 
-    bool isHdrFullScreen() {
-        return mHdrFullScreen.get();
+    HdrLayerState getHdrLayerState() {
+        return mHdrLayerState.get();
     }
 
     bool isSupported() {
         // valid mMaxBrightness means both brightness and max_brightness sysfs exist
         return mMaxBrightness > 0;
-    }
-
-    int getDisplayWhitePointNits(float* nits) {
-        if (!nits) {
-            return HWC2_ERROR_BAD_PARAMETER;
-        }
-
-        if (!mBrightnessIntfSupported) {
-            return HWC2_ERROR_UNSUPPORTED;
-        }
-
-        *nits = mDisplayWhitePointNits;
-        return NO_ERROR;
     }
 
     void dump(String8 &result);
@@ -212,7 +208,7 @@ private:
     DrmEnumParser::MapHal2DrmEnum mHbmModeEnums;
 
     // brightness state
-    std::mutex mBrightnessMutex;
+    std::recursive_mutex mBrightnessMutex;
     // requests
     CtrlValue<bool> mEnhanceHbmReq GUARDED_BY(mBrightnessMutex);
     CtrlValue<bool> mLhbmReq GUARDED_BY(mBrightnessMutex);
@@ -223,13 +219,14 @@ private:
     CtrlValue<HbmMode> mGhbm GUARDED_BY(mBrightnessMutex);
     CtrlValue<bool> mDimming GUARDED_BY(mBrightnessMutex);
     CtrlValue<bool> mLhbm GUARDED_BY(mBrightnessMutex);
+    CtrlValue<bool> mSdrDim GUARDED_BY(mBrightnessMutex);
+    CtrlValue<bool> mPrevSdrDim GUARDED_BY(mBrightnessMutex);
 
     // Indicating if the last LHBM on has changed the brightness level
     bool mLhbmBrightnessAdj = false;
 
-    CtrlValue<bool> mHdrFullScreen;
-
     std::function<void(void)> mFrameRefresh;
+    CtrlValue<HdrLayerState> mHdrLayerState;
 
     // these are used by sysfs path to wait drm path bl change task
     // indicationg an unchecked LHBM change in drm path
@@ -257,6 +254,8 @@ private:
 
     // Note IRC or dimming is not in consideration for now.
     float mDisplayWhitePointNits = 0;
+
+    std::function<void(void)> mUpdateDcLhbm;
 };
 
 #endif // _BRIGHTNESS_CONTROLLER_H_

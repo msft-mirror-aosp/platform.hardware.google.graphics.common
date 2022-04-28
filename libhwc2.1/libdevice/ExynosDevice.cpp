@@ -14,24 +14,28 @@
  * limitations under the License.
  */
 
-#include "BrightnessController.h"
 #include "ExynosDevice.h"
+
+#include <aidl/android/hardware/graphics/composer3/IComposerCallback.h>
+#include <sync/sync.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#include "BrightnessController.h"
+#include "ExynosDeviceDrmInterface.h"
 #include "ExynosDisplay.h"
+#include "ExynosExternalDisplayModule.h"
+#include "ExynosHWCDebug.h"
+#include "ExynosHWCHelper.h"
 #include "ExynosLayer.h"
 #include "ExynosPrimaryDisplayModule.h"
 #include "ExynosResourceManagerModule.h"
-#include "ExynosExternalDisplayModule.h"
 #include "ExynosVirtualDisplayModule.h"
-#include "ExynosHWCDebug.h"
-#include "ExynosHWCHelper.h"
-#include "ExynosDeviceDrmInterface.h"
-#include <unistd.h>
-#include <sync/sync.h>
-#include <sys/mman.h>
 #include "VendorGraphicBuffer.h"
 
 using namespace vendor::graphics;
 using namespace SOC_VERSION;
+using aidl::android::hardware::graphics::composer3::IComposerCallback;
 
 /**
  * ExynosDevice implementation
@@ -39,8 +43,6 @@ using namespace SOC_VERSION;
 
 class ExynosDevice;
 
-extern void vsync_callback(hwc2_callback_data_t callbackData,
-        hwc2_display_t displayId, int64_t timestamp);
 extern uint32_t mFenceLogSize;
 extern void PixelDisplayInit(ExynosDevice *device);
 
@@ -361,7 +363,24 @@ void ExynosDevice::dump(uint32_t *outSize, char *outBuffer) {
         return;
     }
 
-    android::String8 result;
+    String8 result;
+    dump(result);
+
+    if (outBuffer == NULL) {
+        *outSize = static_cast<uint32_t>(result.length());
+    } else {
+        if (*outSize == 0) {
+            ALOGE("%s:: outSize is 0", __func__);
+            return;
+        }
+        size_t copySize = min(static_cast<size_t>(*outSize), result.size());
+        ALOGI("HWC dump:: resultSize(%zu), outSize(%d), copySize(%zu)", result.size(), *outSize,
+              copySize);
+        strlcpy(outBuffer, result.string(), copySize);
+    }
+}
+
+void ExynosDevice::dump(String8 &result) {
     result.append("\n\n");
 
     struct tm* localTime = (struct tm*)localtime((time_t*)&updateTimeInfo.lastUeventTime.tv_sec);
@@ -392,27 +411,18 @@ void ExynosDevice::dump(uint32_t *outSize, char *outBuffer) {
     result.appendFormat("\n");
     mResourceManager->dump(result);
 
+    result.appendFormat("special plane num: %d:\n", getSpecialPlaneNum());
+    for (uint32_t index = 0; index < getSpecialPlaneNum(); index++) {
+        result.appendFormat("\tindex: %d attribute 0x%" PRIx64 "\n", getSpecialPlaneId(index),
+                            getSpecialPlaneAttr(index));
+    }
+    result.append("\n");
+
     for (size_t i = 0;i < mDisplays.size(); i++) {
         ExynosDisplay *display = mDisplays[i];
         if (display->mPlugState == true)
             display->dump(result);
     }
-
-    if (outBuffer == NULL) {
-        *outSize = (uint32_t)result.length();
-    } else {
-        if (*outSize == 0) {
-            ALOGE("%s:: outSize is 0", __func__);
-            return;
-        }
-        uint32_t copySize = *outSize;
-        if (*outSize > result.size())
-            copySize = (uint32_t)result.size();
-        ALOGI("HWC dump:: resultSize(%zu), outSize(%d), copySize(%d)", result.size(), *outSize, copySize);
-        strlcpy(outBuffer, result.string(), copySize);
-    }
-
-    return;
 }
 
 uint32_t ExynosDevice::getMaxVirtualDisplayCount() {
@@ -756,18 +766,14 @@ bool ExynosDevice::canSkipValidate()
 bool ExynosDevice::validateFences(ExynosDisplay *display) {
 
     if (!validateFencePerFrame(display)) {
-        String8 errString;
-        errString.appendFormat("You should doubt fence leak!\n");
-        ALOGE("%s", errString.string());
+        ALOGE("You should doubt fence leak!");
         saveFenceTrace(display);
         return false;
     }
 
     if (fenceWarn(display, MAX_FENCE_THRESHOLD)) {
-        String8 errString;
-        errString.appendFormat("Fence leak!\n");
-        printLeakFds(display);
         ALOGE("Fence leak! --");
+        printLeakFds(display);
         saveFenceTrace(display);
         return false;
     }
@@ -1079,6 +1085,13 @@ uint32_t ExynosDevice::getSpecialPlaneNum()
     return mDeviceInterface->getNumSPPChs();
 }
 
+uint32_t ExynosDevice::getSpecialPlaneNum(uint32_t /*displayId*/) {
+    /*
+     * TODO: create the query function for each display
+     */
+    return mDeviceInterface->getNumSPPChs();
+}
+
 uint32_t ExynosDevice::getSpecialPlaneId(uint32_t index)
 {
     return mDeviceInterface->getSPPChId(index);
@@ -1105,10 +1118,33 @@ int ExynosDevice::setRefreshRateThrottle(const int delayMs) {
 
     ExynosDisplay *display = getDisplay(getDisplayId(HWC_DISPLAY_PRIMARY, 0));
     if (display) {
-        return display->setRefreshRateThrottleNanos(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::milliseconds(delayMs))
-                        .count());
+        return display
+                ->setRefreshRateThrottleNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                      std::chrono::milliseconds(delayMs))
+                                                      .count(),
+                                              DispIdleTimerRequester::PIXEL_DISP);
     }
     return BAD_VALUE;
+}
+
+int32_t ExynosDevice::registerHwc3Callback(uint32_t descriptor, hwc2_callback_data_t callbackData,
+                                           hwc2_function_pointer_t point) {
+    mHwc3CallbackInfos[descriptor].callbackData = callbackData;
+    mHwc3CallbackInfos[descriptor].funcPointer = point;
+
+    return HWC2_ERROR_NONE;
+}
+
+void ExynosDevice::onVsyncIdle(hwc2_display_t displayId) {
+    const auto &idleCallback = mHwc3CallbackInfos.find(IComposerCallback::TRANSACTION_onVsyncIdle);
+
+    if (idleCallback == mHwc3CallbackInfos.end()) return;
+
+    const auto &callbackInfo = idleCallback->second;
+    if (callbackInfo.funcPointer == nullptr || callbackInfo.callbackData == nullptr) return;
+
+    auto callbackFunc =
+            reinterpret_cast<void (*)(hwc2_callback_data_t callbackData,
+                                      hwc2_display_t hwcDisplay)>(callbackInfo.funcPointer);
+    callbackFunc(callbackInfo.callbackData, displayId);
 }

@@ -42,15 +42,17 @@ ndk::ScopedAStatus Composer::createClient(std::shared_ptr<IComposerClient>* outC
     auto clientDestroyed = [this]() { onClientDestroyed(); };
     client->setOnClientDestroyed(clientDestroyed);
 
-    mClient = client;
+    mClientAlive = true;
     *outClient = client;
 
     return ndk::ScopedAStatus::ok();
 }
 
-ndk::ScopedAStatus Composer::dumpDebugInfo(std::string* output) {
-    mHal->dumpDebugInfo(output);
-    return ndk::ScopedAStatus::ok();
+binder_status_t Composer::dump(int fd, const char** /*args*/, uint32_t /*numArgs*/) {
+    std::string output;
+    mHal->dumpDebugInfo(&output);
+    write(fd, output.c_str(), output.size());
+    return STATUS_OK;
 }
 
 ndk::ScopedAStatus Composer::getCapabilities(std::vector<Capability>* caps) {
@@ -60,7 +62,7 @@ ndk::ScopedAStatus Composer::getCapabilities(std::vector<Capability>* caps) {
 }
 
 bool Composer::waitForClientDestroyedLocked(std::unique_lock<std::mutex>& lock) {
-    if (!mClient.expired()) {
+    if (mClientAlive) {
         using namespace std::chrono_literals;
 
         // In surface flinger we delete a composer client on one thread and
@@ -71,18 +73,18 @@ bool Composer::waitForClientDestroyedLocked(std::unique_lock<std::mutex>& lock) 
         // see if the existing client is destroyed.
         LOG(DEBUG) << "waiting for previous client to be destroyed";
         mClientDestroyedCondition.wait_for(lock, 1s,
-                                           [this]() -> bool { return mClient.expired(); });
-        if (!mClient.expired()) {
+                                           [this]() -> bool { return !mClientAlive; });
+        if (mClientAlive) {
             LOG(DEBUG) << "previous client was not destroyed";
         }
     }
 
-    return mClient.expired() ;
+    return !mClientAlive;
 }
 
 void Composer::onClientDestroyed() {
     std::lock_guard<std::mutex> lock(mClientMutex);
-    mClient.reset();
+    mClientAlive = false;
     mClientDestroyedCondition.notify_all();
 }
 

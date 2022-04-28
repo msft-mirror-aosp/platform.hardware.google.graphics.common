@@ -132,6 +132,7 @@ typedef struct format_description {
 constexpr int HAL_PIXEL_FORMAT_EXYNOS_UNDEFINED = 0;
 constexpr int DRM_FORMAT_UNDEFINED = 0;
 
+// clang-format off
 const format_description_t exynos_format_desc[] = {
     /* RGB */
     {HAL_PIXEL_FORMAT_RGBA_8888, DECON_PIXEL_FORMAT_RGBA_8888, DRM_FORMAT_RGBA8888,
@@ -248,8 +249,12 @@ const format_description_t exynos_format_desc[] = {
         2, 2, 12, YUV420|BIT10|SBWC, false, String8("EXYNOS_YCrbCb_420_SP_M_10B_SBWC"), 0},
 
     {HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_UNDEFINED,
-        0, 0, 0, TYPE_UNDEF, false, String8("ImplDef"), 0}
+        0, 0, 0, TYPE_UNDEF, false, String8("ImplDef"), 0},
+
+    {HAL_PIXEL_FORMAT_GOOGLE_R_8, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_C8,
+        1, 1, 8, RGB|BIT8, true, String8("GOOGLE_R_8"), 0},
 };
+// clang-format on
 
 constexpr size_t FORMAT_MAX_CNT = sizeof(exynos_format_desc) / sizeof(format_description);
 
@@ -488,23 +493,23 @@ enum {
 };
 
 typedef struct fenceTrace {
-    hwc_fdebug_fence_type type;
-    hwc_fdebug_ip_type ip;
-    struct timeval time;
-    int32_t curFlag;
+    hwc_fdebug_fence_type type = FENCE_TYPE_UNDEFINED;
+    hwc_fdebug_ip_type ip = FENCE_IP_UNDEFINED;
+    struct timeval time = {0, 0};
+    int32_t curFlag = 0;
 } fenceTrace_t;
 
 typedef struct hwc_fence_info {
-    uint32_t displayId;
-    struct sync_fence_info_data* sync_data;
-    struct sync_pt_info* pt_info;
-    fenceTrace_t from;
-    fenceTrace_t to;
-    fenceTrace_t dup;
-    fenceTrace_t close;
-    int32_t usage;
-    int32_t curFlag;
-    uint32_t last_dir;
+    uint32_t displayId = HWC_DISPLAY_PRIMARY;
+    struct sync_fence_info_data *sync_data = nullptr;
+    struct sync_pt_info *pt_info = nullptr;
+    fenceTrace_t from = {};
+    fenceTrace_t to = {};
+    fenceTrace_t dup = {};
+    fenceTrace_t close = {};
+    int32_t usage = 0;
+    int32_t curFlag = 0;
+    uint32_t last_dir = 0;
     bool pendingAllowed = false;
     bool leaking = false;
 } hwc_fence_info_t;
@@ -524,10 +529,8 @@ void setFenceName(uint32_t fd, ExynosDisplay *display,
 void setFenceInfo(uint32_t fd, ExynosDisplay *display,
         hwc_fdebug_fence_type type, hwc_fdebug_ip_type ip,
         uint32_t direction, bool pendingAllowed = false);
-void printFenceInfo(uint32_t fd, hwc_fence_info_t* info);
+void printLastFenceInfo(uint32_t fd, ExynosDisplay *display);
 void dumpFenceInfo(ExynosDisplay *display, int32_t __unused depth);
-bool fenceWarn(hwc_fence_info_t **info, uint32_t threshold);
-void resetFenceCurFlag(ExynosDisplay *display);
 bool fenceWarn(ExynosDisplay *display, uint32_t threshold);
 void printLeakFds(ExynosDisplay *display);
 bool validateFencePerFrame(ExynosDisplay *display);
@@ -620,4 +623,7 @@ struct RollingAverage {
 // Waits for a given property value, or returns std::nullopt if unavailable
 std::optional<std::string> waitForPropertyValue(const std::string &property, int64_t timeoutMs);
 
+uint32_t rectSize(const hwc_rect_t &rect);
+void assign(decon_win_rect &win_rect, uint32_t left, uint32_t right, uint32_t width,
+            uint32_t height);
 #endif

@@ -44,7 +44,9 @@ using namespace android;
 
 class ExynosDevice;
 
-using BufHandles = std::array<uint32_t, HWC_DRM_BO_MAX_PLANES>;
+template <typename T>
+using DrmArray = std::array<T, HWC_DRM_BO_MAX_PLANES>;
+
 class FramebufferManager {
     public:
         FramebufferManager(){};
@@ -107,10 +109,15 @@ class FramebufferManager {
 
         template <class UnaryPredicate>
         uint32_t findCachedFbId(const ExynosLayer *layer, UnaryPredicate predicate);
-        int addFB2WithModifiers(uint32_t width, uint32_t height, uint32_t pixel_format,
-                        const BufHandles handles, const uint32_t pitches[4],
-                        const uint32_t offsets[4], const uint64_t modifier[4], uint32_t *buf_id,
-                        uint32_t flags);
+        int addFB2WithModifiers(uint32_t state, uint32_t width, uint32_t height, uint32_t drmFormat,
+                                const DrmArray<uint32_t> &handles,
+                                const DrmArray<uint32_t> &pitches,
+                                const DrmArray<uint32_t> &offsets,
+                                const DrmArray<uint64_t> &modifier, uint32_t *buf_id,
+                                uint32_t flags);
+        bool validateLayerInfo(uint32_t state, uint32_t pixel_format,
+                               const DrmArray<uint32_t> &handles,
+                               const DrmArray<uint64_t> &modifier);
         uint32_t getBufHandleFromFd(int fd);
         void freeBufHandle(uint32_t handle);
         void removeFBsThreadRoutine();
@@ -295,8 +302,19 @@ class ExynosDisplayDrmInterface :
         { return NO_ERROR;};
         virtual void destroyLayer(ExynosLayer *layer) override;
 
+        /* For HWC 3.0 APIs */
+        virtual int32_t getDisplayIdleTimerSupport(bool &outSupport);
+        virtual int32_t getDefaultModeId(int32_t *modeId) override;
+
         virtual int32_t waitVBlank();
         float getDesiredRefreshRate() { return mDesiredModeState.mode.v_refresh(); }
+
+        /* For Histogram */
+        virtual int32_t setDisplayHistogramSetting(
+                ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq) {
+            return NO_ERROR;
+        }
+        virtual int32_t setHistogramData(void *__unused bin) { return NO_ERROR; }
 
     protected:
         enum class HalMipiSyncType : uint32_t {
@@ -330,6 +348,7 @@ class ExynosDisplayDrmInterface :
         int32_t createModeBlob(const DrmMode &mode, uint32_t &modeBlob);
         int32_t setDisplayMode(DrmModeAtomicReq &drmReq, const uint32_t modeBlob);
         int32_t clearDisplayMode(DrmModeAtomicReq &drmReq);
+        int32_t clearDisplayPlanes(DrmModeAtomicReq &drmReq);
         int32_t chosePreferredConfig();
         int getDeconChannel(ExynosMPP *otfMPP);
         /*
@@ -372,6 +391,17 @@ class ExynosDisplayDrmInterface :
             };
         };
 
+        struct BlockingRegionState {
+            struct decon_win_rect mRegion;
+            uint32_t mBlobId = 0;
+
+            inline bool operator==(const decon_win_rect &rhs) const {
+                return mRegion.x == rhs.x && mRegion.y == rhs.y && mRegion.w == rhs.w &&
+                        mRegion.h == rhs.h;
+            }
+            inline bool operator!=(const decon_win_rect &rhs) const { return !(*this == rhs); }
+        };
+
         class DrmReadbackInfo {
             public:
                 void init(DrmDevice *drmDevice, uint32_t displayId);
@@ -410,6 +440,7 @@ class ExynosDisplayDrmInterface :
         ModeState mActiveModeState;
         ModeState mDesiredModeState;
         PartialRegionState mPartialRegionState;
+        BlockingRegionState mBlockState;
         /* Mapping plane id to ExynosMPP, key is plane id */
         std::unordered_map<uint32_t, ExynosMPP*> mExynosMPPsForPlane;
 

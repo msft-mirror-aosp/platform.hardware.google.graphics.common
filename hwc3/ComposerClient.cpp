@@ -158,18 +158,20 @@ ndk::ScopedAStatus ComposerClient::getDisplayCapabilities(int64_t display,
                                                           std::vector<DisplayCapability>* caps) {
     DEBUG_FUNC();
     auto err = mHal->getDisplayCapabilities(display, caps);
-    if (!err) {
+    if (err) {
         return TO_BINDER_STATUS(err);
     }
-    bool support;
-    err = mHal->getDisplayBrightnessSupport(display, &support);
-    if (err == 0 && support) {
-        caps->push_back(DisplayCapability::BRIGHTNESS);
+
+    bool support = false;
+    err = mHal->getDisplayIdleTimerSupport(display, support);
+    if (err != ::android::OK) {
+        LOG(ERROR) << "failed to getDisplayIdleTimerSupport: " << err;
     }
-    err = mHal->getDozeSupport(display, &support);
-    if (err == 0 && support) {
-        caps->push_back(DisplayCapability::DOZE);
+
+    if (support) {
+        caps->push_back(DisplayCapability::DISPLAY_IDLE_TIMER);
     }
+
     return TO_BINDER_STATUS(err);
 }
 
@@ -272,6 +274,25 @@ ndk::ScopedAStatus ComposerClient::getSupportedContentTypes(int64_t display,
                                                             std::vector<ContentType>* types) {
     DEBUG_FUNC();
     auto err = mHal->getSupportedContentTypes(display, types);
+    return TO_BINDER_STATUS(err);
+}
+
+ndk::ScopedAStatus ComposerClient::getDisplayDecorationSupport(
+        int64_t display, std::optional<common::DisplayDecorationSupport>* supportStruct) {
+    DEBUG_FUNC();
+    bool support = false;
+    auto err = mHal->getRCDLayerSupport(display, support);
+    if (err != ::android::OK) {
+        LOG(ERROR) << "failed to getRCDLayerSupport: " << err;
+    }
+    if (support) {
+        // TODO (b/218499393): determine from mHal instead of hard coding.
+        auto& s = supportStruct->emplace();
+        s.format = common::PixelFormat::R_8;
+        s.alphaInterpretation = common::AlphaInterpretation::COVERAGE;
+    } else {
+        supportStruct->reset();
+    }
     return TO_BINDER_STATUS(err);
 }
 
@@ -532,10 +553,10 @@ void ComposerClient::destroyResources() {
             std::vector<int64_t> requestedLayers;
             std::vector<int32_t> requestMasks;
             ClientTargetProperty clientTargetProperty;
-            float clientWhitePointNits;
+            DimmingStage dimmingStage;
             mHal->validateDisplay(display, &changedLayers, &compositionTypes, &displayRequestMask,
                                   &requestedLayers, &requestMasks, &clientTargetProperty,
-                                  &clientWhitePointNits);
+                                  &dimmingStage);
             mHal->acceptDisplayChanges(display);
 
             ndk::ScopedFileDescriptor presentFence;
