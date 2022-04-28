@@ -28,9 +28,10 @@ class Composer : public BnComposer {
 public:
     Composer(std::unique_ptr<IComposerHal> hal) : mHal(std::move(hal)) {}
 
+    binder_status_t dump(int fd, const char** args, uint32_t numArgs) override;
+
     // compser3 api
     ndk::ScopedAStatus createClient(std::shared_ptr<IComposerClient>* client) override;
-    ndk::ScopedAStatus dumpDebugInfo(std::string* output) override;
     ndk::ScopedAStatus getCapabilities(std::vector<Capability>* caps) override;
 
 protected:
@@ -42,7 +43,7 @@ private:
 
     const std::unique_ptr<IComposerHal> mHal;
     std::mutex mClientMutex;
-    std::weak_ptr<ComposerClient> mClient GUARDED_BY(mClientMutex);
+    bool mClientAlive GUARDED_BY(mClientMutex) = false;
     std::condition_variable mClientDestroyedCondition;
 };
 

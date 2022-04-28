@@ -41,15 +41,22 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual void setExpectedPresentTime(uint64_t timestamp);
         virtual uint64_t getPendingExpectedPresentTime();
         virtual void applyExpectedPresentTime();
+        virtual int32_t setDisplayIdleTimer(const int32_t timeoutMs) override;
+        virtual void handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) override;
 
         virtual void initDisplayInterface(uint32_t interfaceType);
         virtual int32_t doDisplayConfigInternal(hwc2_config_t config) override;
 
         virtual int setMinIdleRefreshRate(const int fps) override;
-        virtual int setRefreshRateThrottleNanos(const int64_t delayNs) override;
+        virtual int setRefreshRateThrottleNanos(const int64_t delayNs,
+                                                const DispIdleTimerRequester requester) override;
         virtual void dump(String8& result) override;
         virtual void updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                const int64_t ts) override;
+
+        virtual int32_t setBootDisplayConfig(int32_t config) override;
+        virtual int32_t clearBootDisplayConfig() override;
+        virtual int32_t getPreferredDisplayConfigInternal(int32_t *outConfig) override;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -84,6 +91,10 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         int32_t setPowerOff();
         int32_t setPowerDoze(hwc2_power_mode_t mode);
         void firstPowerOn();
+        int32_t setDisplayIdleTimerEnabled(const bool enabled);
+        int32_t getDisplayIdleTimerEnabled(bool& enabled);
+        void setDisplayNeedHandleIdleExit(const bool needed, const bool force);
+        void initDisplayHandleIdleExit();
 
         // LHBM
         FILE* mLhbmFd;
@@ -102,10 +113,16 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         void calculateTimeline(hwc2_config_t config,
                                hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
                                hwc_vsync_period_change_timeline_t* outTimeline) override;
+        std::mutex mIdleRefreshRateThrottleMutex;
         int mMinIdleRefreshRate;
         int64_t mRefreshRateDelayNanos;
         int64_t mLastRefreshRateAppliedNanos;
         hwc2_config_t mAppliedActiveConfig;
+
+        bool mDisplayIdleTimerEnabled;
+        int64_t mDisplayIdleTimerNanos[toUnderlying(DispIdleTimerRequester::MAX)];
+        std::ofstream mDisplayNeedHandleIdleExitOfs;
+        bool mDisplayNeedHandleIdleExit;
 };
 
 #endif
