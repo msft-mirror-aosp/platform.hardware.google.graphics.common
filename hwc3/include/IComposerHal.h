@@ -34,13 +34,14 @@
 #include <aidl/android/hardware/graphics/composer3/ChangedCompositionTypes.h>
 #include <aidl/android/hardware/graphics/composer3/ClientTarget.h>
 #include <aidl/android/hardware/graphics/composer3/ClientTargetProperty.h>
-#include <aidl/android/hardware/graphics/composer3/ClientTargetPropertyWithNits.h>
+#include <aidl/android/hardware/graphics/composer3/ClientTargetPropertyWithBrightness.h>
 #include <aidl/android/hardware/graphics/composer3/Color.h>
 #include <aidl/android/hardware/graphics/composer3/ColorMode.h>
 #include <aidl/android/hardware/graphics/composer3/CommandError.h>
 #include <aidl/android/hardware/graphics/composer3/CommandResultPayload.h>
 #include <aidl/android/hardware/graphics/composer3/Composition.h>
 #include <aidl/android/hardware/graphics/composer3/ContentType.h>
+#include <aidl/android/hardware/graphics/composer3/DimmingStage.h>
 #include <aidl/android/hardware/graphics/composer3/DisplayAttribute.h>
 #include <aidl/android/hardware/graphics/composer3/DisplayBrightness.h>
 #include <aidl/android/hardware/graphics/composer3/DisplayCapability.h>
@@ -119,6 +120,8 @@ class IComposerHal {
     virtual int32_t getDisplayAttribute(int64_t display, int32_t config,
                                       DisplayAttribute attribute, int32_t* outValue) = 0;
     virtual int32_t getDisplayBrightnessSupport(int64_t display, bool& outSupport) = 0;
+    virtual int32_t getDisplayIdleTimerSupport(int64_t display, bool& outSupport) = 0;
+
     virtual int32_t getDisplayCapabilities(int64_t display,
                                            std::vector<DisplayCapability>* caps) = 0;
     virtual int32_t getDisplayConfigs(int64_t display, std::vector<int32_t>* configs) = 0;
@@ -209,11 +212,14 @@ class IComposerHal {
                                     std::vector<int64_t>* outRequestedLayers,
                                     std::vector<int32_t>* outRequestMasks,
                                     ClientTargetProperty* outClientTargetProperty,
-                                    float* outClientTargetWhitePointNits) = 0;
+                                    DimmingStage* outDimmingStage) = 0;
     virtual int32_t setExpectedPresentTime(
             int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) = 0;
     virtual int32_t setIdleTimerEnabled(int64_t display, int32_t timeout) = 0;
     virtual int32_t getRCDLayerSupport(int64_t display, bool& outSupport) = 0;
+    virtual int32_t setLayerBlockingRegion(
+            int64_t display, int64_t layer,
+            const std::vector<std::optional<common::Rect>>& blockingRegion) = 0;
 };
 
 } // namespace aidl::android::hardware::graphics::composer3::detail

@@ -135,15 +135,19 @@ class HalImpl : public IComposerHal {
     int32_t setReadbackBuffer(int64_t display, buffer_handle_t buffer,
                               const ndk::ScopedFileDescriptor& releaseFence) override;
     int32_t setVsyncEnabled(int64_t display, bool enabled) override;
+    int32_t getDisplayIdleTimerSupport(int64_t display, bool& outSupport) override;
     int32_t setIdleTimerEnabled(int64_t display, int32_t timeout) override;
     int32_t getRCDLayerSupport(int64_t display, bool& outSupport) override;
+    int32_t setLayerBlockingRegion(
+            int64_t display, int64_t layer,
+            const std::vector<std::optional<common::Rect>>& blockingRegion) override;
     int32_t validateDisplay(int64_t display, std::vector<int64_t>* outChangedLayers,
                             std::vector<Composition>* outCompositionTypes,
                             uint32_t* outDisplayRequestMask,
                             std::vector<int64_t>* outRequestedLayers,
                             std::vector<int32_t>* outRequestMasks,
                             ClientTargetProperty* outClientTargetProperty,
-                            float* outClientTargetWhitePointNits) override;
+                            DimmingStage* outDimmingStage) override;
     int32_t setExpectedPresentTime(
             int64_t display,
             const std::optional<ClockMonotonicTimestamp> expectedPresentTime) override;

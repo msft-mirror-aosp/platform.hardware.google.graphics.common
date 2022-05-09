@@ -436,8 +436,7 @@ int DrmDevice::AttachWriteback(DrmConnector *display_conn) {
   return -EINVAL;
 }
 
-int DrmDevice::CreatePropertyBlob(void *data, size_t length,
-                                  uint32_t *blob_id) {
+int DrmDevice::CreatePropertyBlob(const void *data, size_t length, uint32_t *blob_id) {
   struct drm_mode_create_blob create_blob;
   memset(&create_blob, 0, sizeof(create_blob));
   create_blob.length = length;
@@ -541,5 +540,15 @@ int DrmDevice::UpdateCrtcProperty(const DrmCrtc &crtc, DrmProperty *property) {
 
 int DrmDevice::UpdateConnectorProperty(const DrmConnector &conn, DrmProperty *property) {
     return UpdateObjectProperty(conn.id(), DRM_MODE_OBJECT_CONNECTOR, property);
+}
+
+int DrmDevice::CallVendorIoctl(unsigned long request, void *arg) {
+    int ret = drmIoctl(fd(), request, arg);
+    if (ret) {
+        ALOGE("Failed to call vendor ioctl %lu ioctl_ret= %d", request, ret);
+        return ret;
+    }
+
+    return 0;
 }
 }  // namespace android
