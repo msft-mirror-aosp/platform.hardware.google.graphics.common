@@ -91,6 +91,8 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device)
     mType = HWC_DISPLAY_PRIMARY;
     mIndex = index;
     mDisplayId = getDisplayId(mType, mIndex);
+    mFramesToReachLhbmPeakBrightness =
+            property_get_int32("vendor.primarydisplay.lhbm.frames_to_reach_peak_brightness", 3);
 
     // Prepare multi resolution
     // Will be exynosHWCControl.multiResoultion
@@ -505,8 +507,14 @@ int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
         ALOGI("setLhbmState =%d timeout !", enabled);
         return TIMED_OUT;
     } else {
-        if (enabled)
+        if (enabled) {
             mDisplayInterface->waitVBlank();
+            ATRACE_NAME("frames to reach LHBM peak brightness");
+            for (int32_t i = mFramesToReachLhbmPeakBrightness; i > 0; i--) {
+                mDevice->invalidate();
+                mDisplayInterface->waitVBlank();
+            }
+        }
         return NO_ERROR;
     }
 }
@@ -805,4 +813,36 @@ void ExynosPrimaryDisplay::updateAppliedActiveConfig(const hwc2_config_t newConf
     }
 
     mAppliedActiveConfig = newConfig;
+}
+
+void ExynosPrimaryDisplay::checkBtsReassignResource(const uint32_t vsyncPeriod,
+                                                    const uint32_t btsVsyncPeriod) {
+    ATRACE_CALL();
+    uint32_t refreshRate = static_cast<uint32_t>(round(nsecsPerSec / vsyncPeriod * 0.1f) * 10);
+
+    if (vsyncPeriod < btsVsyncPeriod) {
+        for (size_t i = 0; i < mLayers.size(); i++) {
+            if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
+                !mLayers[i]->checkDownscaleCap(refreshRate)) {
+                mLayers[i]->setGeometryChanged(GEOMETRY_DEVICE_CONFIG_CHANGED);
+                break;
+            }
+        }
+    } else if (vsyncPeriod > btsVsyncPeriod) {
+        for (size_t i = 0; i < mLayers.size(); i++) {
+            if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP) {
+                float srcWidth = mLayers[i]->mSourceCrop.right - mLayers[i]->mSourceCrop.left;
+                float srcHeight = mLayers[i]->mSourceCrop.bottom - mLayers[i]->mSourceCrop.top;
+                float resolution = srcWidth * srcHeight * refreshRate / 1000;
+                float ratioVertical = static_cast<float>(mLayers[i]->mDisplayFrame.bottom -
+                                                         mLayers[i]->mDisplayFrame.top) /
+                        mYres;
+
+                if (mLayers[i]->mOtfMPP->checkDownscaleCap(resolution, ratioVertical)) {
+                    mLayers[i]->setGeometryChanged(GEOMETRY_DEVICE_CONFIG_CHANGED);
+                    break;
+                }
+            }
+        }
+    }
 }
