@@ -53,6 +53,12 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual void dump(String8& result) override;
         virtual void updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                const int64_t ts) override;
+        virtual void checkBtsReassignResource(const uint32_t vsyncPeriod,
+                                              const uint32_t btsVsyncPeriod) override;
+
+        virtual int32_t setBootDisplayConfig(int32_t config) override;
+        virtual int32_t clearBootDisplayConfig() override;
+        virtual int32_t getPreferredDisplayConfigInternal(int32_t *outConfig) override;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -96,6 +102,7 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         FILE* mLhbmFd;
         bool mLhbmOn;
         bool mLhbmChanged;
+        int32_t mFramesToReachLhbmPeakBrightness;
 
         std::mutex lhbm_mutex_;
         std::condition_variable lhbm_cond_;

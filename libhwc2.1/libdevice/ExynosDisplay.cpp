@@ -39,6 +39,7 @@
 #include "ExynosLayer.h"
 #include "VendorGraphicBuffer.h"
 #include "exynos_format.h"
+#include "utils/Timers.h"
 
 /**
  * ExynosDisplay implementation
@@ -417,25 +418,35 @@ void ExynosDisplay::PowerHalHintWorker::signalActualWorkDuration(nsecs_t actualD
         return;
     }
     Lock();
-    // convert to long long so "%lld" works correctly
-    long long actualNs = actualDurationNanos, targetNs = mTargetWorkDuration;
-    ALOGV("Sending actual work duration of: %lld on target: %lld with error: %lld", actualNs,
-          targetNs, actualNs - targetNs);
-    if (sTraceHintSessionData) {
-        ATRACE_INT64("Measured duration", actualNs);
-        ATRACE_INT64("Target error term", targetNs - actualNs);
-    }
-
-    WorkDuration work;
-    work.timeStampNanos = systemTime();
-    work.durationNanos = actualDurationNanos;
+    nsecs_t reportedDurationNs = actualDurationNanos;
     if (sNormalizeTarget) {
-        work.durationNanos += mLastTargetDurationReported - mTargetWorkDuration;
+        reportedDurationNs += mLastTargetDurationReported - mTargetWorkDuration;
+    } else {
+        if (mLastTargetDurationReported != kDefaultTarget.count() && mTargetWorkDuration != 0) {
+            reportedDurationNs =
+                    static_cast<int64_t>(static_cast<long double>(mLastTargetDurationReported) /
+                                         mTargetWorkDuration * actualDurationNanos);
+        }
     }
 
-    mPowerHintQueue.push_back(work);
-    // store the non-normalized last value here
-    mActualWorkDuration = actualDurationNanos;
+    mActualWorkDuration = reportedDurationNs;
+    WorkDuration duration = {.durationNanos = reportedDurationNs, .timeStampNanos = systemTime()};
+
+    if (sTraceHintSessionData) {
+        ATRACE_INT64("Measured duration", actualDurationNanos);
+        ATRACE_INT64("Target error term", mTargetWorkDuration - actualDurationNanos);
+
+        ATRACE_INT64("Reported duration", reportedDurationNs);
+        ATRACE_INT64("Reported target", mLastTargetDurationReported);
+        ATRACE_INT64("Reported target error term",
+                     mLastTargetDurationReported - reportedDurationNs);
+    }
+    ALOGV("Sending actual work duration of: %" PRId64 " on reported target: %" PRId64
+          " with error: %" PRId64,
+          reportedDurationNs, mLastTargetDurationReported,
+          mLastTargetDurationReported - reportedDurationNs);
+
+    mPowerHintQueue.push_back(duration);
 
     bool shouldSignal = needSendActualWorkDurationLocked();
     Unlock();
@@ -445,6 +456,7 @@ void ExynosDisplay::PowerHalHintWorker::signalActualWorkDuration(nsecs_t actualD
 }
 
 void ExynosDisplay::PowerHalHintWorker::signalTargetWorkDuration(nsecs_t targetDurationNanos) {
+    ATRACE_CALL();
     if (!usePowerHintSession()) {
         return;
     }
@@ -841,11 +853,21 @@ void ExynosCompositionInfo::setTargetBuffer(ExynosDisplay *display, buffer_handl
 {
     mTargetBuffer = handle;
     if (mType == COMPOSITION_CLIENT) {
-        if (display != NULL)
+        if (display != NULL) {
+            if (mAcquireFence >= 0) {
+                mAcquireFence =
+                        fence_close(mAcquireFence, display, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_FB);
+            }
             mAcquireFence = hwcCheckFenceDebug(display, FENCE_TYPE_DST_ACQUIRE, FENCE_IP_FB, acquireFence);
+        }
     } else {
-        if (display != NULL)
+        if (display != NULL) {
+            if (mAcquireFence >= 0) {
+                mAcquireFence =
+                        fence_close(mAcquireFence, display, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_G2D);
+            }
             mAcquireFence = hwcCheckFenceDebug(display, FENCE_TYPE_DST_ACQUIRE, FENCE_IP_G2D, acquireFence);
+        }
     }
     if ((display != NULL) && (mDataSpace != dataspace))
         display->setGeometryChanged(GEOMETRY_DISPLAY_DATASPACE_CHANGED);
@@ -1892,6 +1914,9 @@ int32_t ExynosDisplay::configureHandle(ExynosLayer &layer, int fence_fd, exynos_
     cfg.assignedMPP = otfMPP;
 
     if (layer.isDimLayer()) {
+        if (fence_fd >= 0) {
+            fence_fd = fence_close(fence_fd, this, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_ALL);
+        }
         cfg.state = cfg.WIN_STATE_COLOR;
         hwc_color_t color = layer.mColor;
         cfg.color = (color.a << 24) | (color.r << 16) | (color.g << 8) | color.b;
@@ -3359,21 +3384,19 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
         // adds + removes the tid for adpf tracking
         mPowerHalHint.trackThisThread();
         mPresentStartTime = systemTime(SYSTEM_TIME_MONOTONIC);
-        if (mValidateStartTime.has_value()) {
-            // this includes the time between end of validation and start of present
-            mValidationDuration = mPresentStartTime - *mValidateStartTime;
-        } else {
+        if (!mValidateStartTime.has_value()) {
             mValidationDuration = std::nullopt;
             // load target time here if validation was skipped
-            mCurrentTarget = getTarget();
-            mPowerHalHint.signalTargetWorkDuration(mCurrentTarget - mPresentStartTime);
+            mExpectedPresentTime = getExpectedPresentTime(mPresentStartTime);
+            auto target = min(mExpectedPresentTime - mPresentStartTime,
+                              static_cast<nsecs_t>(mVsyncPeriod));
+            mPowerHalHint.signalTargetWorkDuration(target);
             // if we did not validate (have not sent hint yet) and have data for this case
             std::optional<nsecs_t> predictedDuration = getPredictedDuration(false);
             if (predictedDuration.has_value()) {
                 mPowerHalHint.signalActualWorkDuration(*predictedDuration);
             }
         }
-        mRetireFenceAcquireTime = std::nullopt;
         mRetireFenceWaitTime = std::nullopt;
         mValidateStartTime = std::nullopt;
     }
@@ -3459,8 +3482,6 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
         if (mDevice->canSkipValidate() == false)
             goto not_validated;
         else {
-            // Reset current frame flags for Fence Tracer
-            resetFenceCurFlag(this);
             for (size_t i=0; i < mLayers.size(); i++) {
                 // Layer's acquire fence from SF
                 mLayers[i]->setSrcAcquireFence();
@@ -3487,7 +3508,7 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
             startPostProcessing();
         }
     }
-
+    mRetireFenceAcquireTime = std::nullopt;
     mDpuData.reset();
 
     if (mConfigRequestState == hwc_request_state_t::SET_CONFIG_STATE_PENDING) {
@@ -3669,16 +3690,19 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
     }
 
     if (mUsePowerHints) {
-        // update the "last target" now that we know for sure when this frame is due
-        mLastTarget = mCurrentTarget;
+        // update the "last present" now that we know for sure when this frame is due
+        mLastExpectedPresentTime = mExpectedPresentTime;
 
         // we add an offset here to keep the flinger and HWC error terms roughly the same
         static const constexpr std::chrono::nanoseconds kFlingerOffset = 300us;
         nsecs_t now = systemTime() + kFlingerOffset.count();
 
         updateAverages(now);
-        mPowerHalHint.signalActualWorkDuration(now - mPresentStartTime +
-                                               mValidationDuration.value_or(0));
+        nsecs_t duration = now - mPresentStartTime;
+        if (mRetireFenceWaitTime.has_value() && mRetireFenceAcquireTime.has_value()) {
+            duration = now - *mRetireFenceAcquireTime + *mRetireFenceWaitTime - mPresentStartTime;
+        }
+        mPowerHalHint.signalActualWorkDuration(duration + mValidationDuration.value_or(0));
     }
 
     return ret;
@@ -4102,6 +4126,10 @@ int32_t ExynosDisplay::clearBootDisplayConfig() {
 }
 
 int32_t ExynosDisplay::getPreferredBootDisplayConfig(int32_t *outConfig) {
+    return getPreferredDisplayConfigInternal(outConfig);
+}
+
+int32_t ExynosDisplay::getPreferredDisplayConfigInternal(int32_t *outConfig) {
     return HWC2_ERROR_UNSUPPORTED;
 }
 
@@ -4180,22 +4208,9 @@ int32_t ExynosDisplay::updateInternalDisplayConfigVariables(
     return NO_ERROR;
 }
 
-void ExynosDisplay::updateBtsVsyncPeriod(uint32_t vsyncPeriod, bool forceUpdate) {
-    if (vsyncPeriod < mBtsVsyncPeriod) {
-        mBtsVsyncPeriod = vsyncPeriod;
-
-        if (mType == HWC_DISPLAY_PRIMARY) {
-            uint32_t btsRefreshRate = getBtsRefreshRate();
-
-            for (size_t i = 0; i < mLayers.size(); i++) {
-                if (!mLayers[i]->checkDownscaleCap(btsRefreshRate)) {
-                    setGeometryChanged(GEOMETRY_DEVICE_CONFIG_CHANGED);
-                    break;
-                }
-            }
-        }
-    } else if (forceUpdate) {
-        /* TODO: add check for resource can re-assign to Device */
+void ExynosDisplay::updateBtsVsyncPeriod(uint32_t vsyncPeriod, bool configApplied) {
+    if (configApplied || vsyncPeriod < mBtsVsyncPeriod) {
+        checkBtsReassignResource(vsyncPeriod, mBtsVsyncPeriod);
         mBtsVsyncPeriod = vsyncPeriod;
     }
 }
@@ -4454,8 +4469,7 @@ int32_t ExynosDisplay::validateDisplay(
     gettimeofday(&updateTimeInfo.lastValidateTime, NULL);
     Mutex::Autolock lock(mDisplayMutex);
 
-    if (mPauseDisplay)
-        return HWC2_ERROR_NONE;
+    if (mPauseDisplay) return HWC2_ERROR_NONE;
 
     if ((mGeometryChanged & GEOMETRY_DISPLAY_RESOLUTION_CHANGED) &&
             !isFullScreenComposition()) {
@@ -4471,8 +4485,10 @@ int32_t ExynosDisplay::validateDisplay(
 
     if (usePowerHintSession()) {
         mValidateStartTime = mLastUpdateTimeStamp;
-        mCurrentTarget = getTarget();
-        mPowerHalHint.signalTargetWorkDuration(mCurrentTarget - *mValidateStartTime);
+        mExpectedPresentTime = getExpectedPresentTime(*mValidateStartTime);
+        auto target =
+                min(mExpectedPresentTime - *mValidateStartTime, static_cast<nsecs_t>(mVsyncPeriod));
+        mPowerHalHint.signalTargetWorkDuration(target);
         std::optional<nsecs_t> predictedDuration = getPredictedDuration(true);
         if (predictedDuration.has_value()) {
             mPowerHalHint.signalActualWorkDuration(*predictedDuration);
@@ -4484,9 +4500,6 @@ int32_t ExynosDisplay::validateDisplay(
         DISPLAY_LOGI("%s:: validateDisplay layer size is 0", __func__);
     else
         mLayers.vector_sort();
-
-    // Reset current frame flags for Fence Tracer
-    resetFenceCurFlag(this);
 
     for (size_t i = 0; i < mLayers.size(); i++) mLayers[i]->setSrcAcquireFence();
 
@@ -4583,6 +4596,10 @@ int32_t ExynosDisplay::validateDisplay(
 
     if ((*outNumTypes == 0) && (*outNumRequests == 0))
         return HWC2_ERROR_NONE;
+
+    if (usePowerHintSession()) {
+        mValidationDuration = systemTime(SYSTEM_TIME_MONOTONIC) - *mValidateStartTime;
+    }
 
     return HWC2_ERROR_HAS_CHANGES;
 }
@@ -5847,6 +5864,7 @@ void ExynosDisplay::updateBrightnessState() {
     static constexpr float kMaxCll = 10000.0;
     bool clientRgbHdr = false;
     bool instantHbm = false;
+    bool sdrDim = false;
     BrightnessController::HdrLayerState hdrState = BrightnessController::HdrLayerState::kHdrNone;
 
     for (size_t i = 0; i < mLayers.size(); i++) {
@@ -5873,10 +5891,15 @@ void ExynosDisplay::updateBrightnessState() {
                 hdrState = BrightnessController::HdrLayerState::kHdrSmall;
             } // else keep the state (kHdrLarge or kHdrSmall) unchanged.
         }
+        // SDR layers could be kept dimmed for a while after HDR is gone (DM
+        // will animate the display brightness from HDR brightess to SDR brightness).
+        if (mLayers[i]->mBrightness < 1.0) {
+            sdrDim = true;
+        }
     }
 
     if (mBrightnessController) {
-        mBrightnessController->updateFrameStates(hdrState);
+        mBrightnessController->updateFrameStates(hdrState, sdrDim);
         mBrightnessController->processInstantHbm(instantHbm && !clientRgbHdr);
     }
 }
@@ -5906,7 +5929,7 @@ bool ExynosDisplay::usePowerHintSession() {
     return mUsePowerHintSession.value_or(false);
 }
 
-nsecs_t ExynosDisplay::getTarget() {
+nsecs_t ExynosDisplay::getExpectedPresentTime(nsecs_t startTime) {
     ExynosDisplay *primaryDisplay = mDevice->getDisplay(HWC_DISPLAY_PRIMARY);
     if (primaryDisplay) {
         nsecs_t out = primaryDisplay->getPendingExpectedPresentTime();
@@ -5915,12 +5938,64 @@ nsecs_t ExynosDisplay::getTarget() {
         }
     }
     ALOGE("Could not get hint session time target from primary display");
-    // if it fails return some vaguely reasonable time
-    return systemTime(SYSTEM_TIME_MONOTONIC) + 10000000;
+    return getPredictedPresentTime(startTime);
+}
+
+nsecs_t ExynosDisplay::getPredictedPresentTime(nsecs_t startTime) {
+    auto lastRetireFenceSignalTime = getSignalTime(mLastRetireFence);
+    auto expectedPresentTime = startTime - 1;
+    if (lastRetireFenceSignalTime != SIGNAL_TIME_INVALID &&
+        lastRetireFenceSignalTime != SIGNAL_TIME_PENDING) {
+        expectedPresentTime = lastRetireFenceSignalTime + mVsyncPeriod;
+        mRetireFencePreviousSignalTime = lastRetireFenceSignalTime;
+    } else if (sync_wait(mLastRetireFence, 0) < 0) {
+        // if last retire fence was not signaled, then try previous signal time
+        if (mRetireFencePreviousSignalTime.has_value()) {
+            expectedPresentTime = *mRetireFencePreviousSignalTime + 2 * mVsyncPeriod;
+        }
+        // the last retire fence acquire time can be useful where the previous fence signal time may
+        // not be recorded yet, but it's only accurate when there is fence wait time
+        if (mRetireFenceAcquireTime.has_value()) {
+            expectedPresentTime =
+                    max(expectedPresentTime, *mRetireFenceAcquireTime + 2 * mVsyncPeriod);
+        }
+    }
+    if (expectedPresentTime < startTime) {
+        ALOGV("Could not predict expected present time, fall back on target of one vsync");
+        expectedPresentTime = startTime + mVsyncPeriod;
+    }
+    return expectedPresentTime;
+}
+
+nsecs_t ExynosDisplay::getSignalTime(int32_t fd) const {
+    if (fd == -1) {
+        return SIGNAL_TIME_INVALID;
+    }
+
+    struct sync_file_info *finfo = sync_file_info(fd);
+    if (finfo == nullptr) {
+        return SIGNAL_TIME_INVALID;
+    }
+
+    if (finfo->status != 1) {
+        const auto status = finfo->status;
+        sync_file_info_free(finfo);
+        return status < 0 ? SIGNAL_TIME_INVALID : SIGNAL_TIME_PENDING;
+    }
+
+    uint64_t timestamp = 0;
+    struct sync_fence_info *pinfo = sync_get_fence_info(finfo);
+    for (size_t i = 0; i < finfo->num_fences; i++) {
+        if (pinfo[i].timestamp_ns > timestamp) {
+            timestamp = pinfo[i].timestamp_ns;
+        }
+    }
+
+    sync_file_info_free(finfo);
+    return nsecs_t(timestamp);
 }
 
 std::optional<nsecs_t> ExynosDisplay::getPredictedDuration(bool duringValidation) {
-    nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
     AveragesKey beforeFenceKey(mLayers.size(), duringValidation, true);
     AveragesKey afterFenceKey(mLayers.size(), duringValidation, false);
     if (mRollingAverages.count(beforeFenceKey) == 0 || mRollingAverages.count(afterFenceKey) == 0) {
@@ -5928,14 +6003,11 @@ std::optional<nsecs_t> ExynosDisplay::getPredictedDuration(bool duringValidation
     }
     nsecs_t beforeReleaseFence = mRollingAverages[beforeFenceKey].average;
     nsecs_t afterReleaseFence = mRollingAverages[afterFenceKey].average;
-    return std::make_optional(afterReleaseFence +
-                              (mLastTarget.has_value()
-                                       ? std::max(beforeReleaseFence, *mLastTarget - now)
-                                       : beforeReleaseFence));
+    return std::make_optional(afterReleaseFence + beforeReleaseFence);
 }
 
 void ExynosDisplay::updateAverages(nsecs_t endTime) {
-    if (!mRetireFenceAcquireTime.has_value()) {
+    if (!mRetireFenceWaitTime.has_value() || !mRetireFenceAcquireTime.has_value()) {
         return;
     }
     nsecs_t beforeFenceTime =
