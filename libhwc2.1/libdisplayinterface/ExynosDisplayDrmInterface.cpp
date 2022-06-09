@@ -36,7 +36,6 @@ using namespace std::chrono_literals;
 constexpr uint32_t MAX_PLANE_NUM = 3;
 constexpr uint32_t CBCR_INDEX = 1;
 constexpr float DISPLAY_LUMINANCE_UNIT = 10000;
-constexpr auto nsecsPerMs = std::chrono::nanoseconds(1ms).count();
 constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
 constexpr auto vsyncPeriodTag = "VsyncPeriod";
 
@@ -691,47 +690,42 @@ int32_t ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
 void ExynosDisplayDrmInterface::Callback(
         int display, int64_t timestamp)
 {
-    Mutex::Autolock lock(mExynosDisplay->getDisplayMutex());
-    bool configApplied = mVsyncCallback.Callback(display, timestamp);
+    {
+        Mutex::Autolock lock(mExynosDisplay->getDisplayMutex());
+        bool configApplied = mVsyncCallback.Callback(display, timestamp);
 
-    if (configApplied) {
-        if (mVsyncCallback.getDesiredVsyncPeriod()) {
-            mExynosDisplay->resetConfigRequestStateLocked();
-            mDrmConnector->set_active_mode(mActiveModeState.mode);
-            mVsyncCallback.resetDesiredVsyncPeriod();
+        if (configApplied) {
+            if (mVsyncCallback.getDesiredVsyncPeriod()) {
+                mExynosDisplay->resetConfigRequestStateLocked();
+                mDrmConnector->set_active_mode(mActiveModeState.mode);
+                mVsyncCallback.resetDesiredVsyncPeriod();
+            }
+
+            /*
+             * Disable vsync if vsync config change is done
+             */
+            if (!mVsyncCallback.getVSyncEnabled()) {
+                mDrmVSyncWorker.VSyncControl(false);
+                mVsyncCallback.resetVsyncTimeStamp();
+            }
+        } else {
+            mExynosDisplay->updateConfigRequestAppliedTime();
         }
 
-        /*
-         * Disable vsync if vsync config change is done
-         */
-        if (!mVsyncCallback.getVSyncEnabled()) {
-            mDrmVSyncWorker.VSyncControl(false);
-            mVsyncCallback.resetVsyncTimeStamp();
+        if (!mExynosDisplay->mPlugState || !mVsyncCallback.getVSyncEnabled()) {
+            return;
         }
-    } else {
-        mExynosDisplay->updateConfigRequestAppliedTime();
-    }
-
-    if (!mExynosDisplay->mPlugState || !mVsyncCallback.getVSyncEnabled()) {
-        return;
     }
 
     ExynosDevice *exynosDevice = mExynosDisplay->mDevice;
-    auto vsync_2_4CallbackInfo =
-        exynosDevice->mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4];
-    if (vsync_2_4CallbackInfo.funcPointer && vsync_2_4CallbackInfo.callbackData) {
-        ((HWC2_PFN_VSYNC_2_4)vsync_2_4CallbackInfo.funcPointer)(
-                vsync_2_4CallbackInfo.callbackData,
-                mExynosDisplay->mDisplayId,
-                timestamp, mExynosDisplay->mVsyncPeriod);
+
+    if (exynosDevice->onVsync_2_4(mExynosDisplay->mDisplayId, timestamp,
+                                  mExynosDisplay->mVsyncPeriod)) {
         ATRACE_INT(vsyncPeriodTag, static_cast<int32_t>(mExynosDisplay->mVsyncPeriod));
         return;
     }
 
-    auto vsyncCallbackInfo = exynosDevice->mCallbackInfos[HWC2_CALLBACK_VSYNC];
-    if (vsyncCallbackInfo.funcPointer && vsyncCallbackInfo.callbackData)
-        ((HWC2_PFN_VSYNC)vsyncCallbackInfo.funcPointer)(vsyncCallbackInfo.callbackData,
-                                                        mExynosDisplay->mDisplayId, timestamp);
+    exynosDevice->onVsync(mExynosDisplay->mDisplayId, timestamp);
 }
 
 bool ExynosDisplayDrmInterface::ExynosVsyncCallback::Callback(
@@ -753,9 +747,10 @@ bool ExynosDisplayDrmInterface::ExynosVsyncCallback::Callback(
 
     /*
      * mDesiredVsyncPeriod is nanoseconds
-     * Compare with milliseconds
+     * Compare with 20% margin
      */
-    if (mDesiredVsyncPeriod / nsecsPerMs == mVsyncPeriod / nsecsPerMs) return true;
+    if (abs(static_cast<int32_t>(mDesiredVsyncPeriod - mVsyncPeriod)) < (mDesiredVsyncPeriod / 5))
+        return true;
 
     return false;
 }
@@ -826,8 +821,7 @@ int32_t ExynosDisplayDrmInterface::setVsyncEnabled(uint32_t enabled)
     mVsyncCallback.enableVSync(HWC2_VSYNC_ENABLE == enabled);
 
     ExynosDevice *exynosDevice = mExynosDisplay->mDevice;
-    auto vsync_2_4CallbackInfo = exynosDevice->mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4];
-    if (vsync_2_4CallbackInfo.funcPointer && vsync_2_4CallbackInfo.callbackData) {
+    if (exynosDevice->isCallbackAvailable(HWC2_CALLBACK_VSYNC_2_4)) {
         ATRACE_INT(vsyncPeriodTag, 0);
     }
 
@@ -1807,11 +1801,16 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
 
     auto expectedPresentTime = mExynosDisplay->getPendingExpectedPresentTime();
     if (expectedPresentTime != 0) {
-        if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(),
-                                            mDrmCrtc->expected_present_time_property(),
-                                            expectedPresentTime)) < 0) {
-            HWC_LOGE(mExynosDisplay, "%s: Fail to set expected_present_time property (%d)",
-                     __func__, ret);
+        /* TODO: don't pass expected present time before we can provide accurate time that desire
+         * refresh rate take effect (b/202346402)
+         */
+        if (!mVsyncCallback.getDesiredVsyncPeriod()) {
+            if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(),
+                                                mDrmCrtc->expected_present_time_property(),
+                                                expectedPresentTime)) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to set expected_present_time property (%d)",
+                         __func__, ret);
+            }
         }
         mExynosDisplay->applyExpectedPresentTime();
     }
