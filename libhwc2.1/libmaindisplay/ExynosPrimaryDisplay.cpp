@@ -116,10 +116,9 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device)
     mEarlyWakeupDispFd = fopen(EARLY_WAKUP_NODE_0_BASE, "w");
     if (mEarlyWakeupDispFd == nullptr)
         ALOGE("open %s failed! %s", EARLY_WAKUP_NODE_0_BASE, strerror(errno));
-    mBrightnessController =
-            std::make_unique<BrightnessController>(mIndex,
-                                     [this]() { mDevice->invalidate(); },
-                                     [this]() { updatePresentColorConversionInfo(); });
+    mBrightnessController = std::make_unique<BrightnessController>(
+            mIndex, [this]() { mDevice->onRefresh(); },
+            [this]() { updatePresentColorConversionInfo(); });
 }
 
 ExynosPrimaryDisplay::~ExynosPrimaryDisplay()
@@ -496,6 +495,22 @@ int32_t ExynosPrimaryDisplay::SetCurrentPanelGammaSource(const DisplayType type,
 
 int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
     ATRACE_CALL();
+    if (enabled) {
+        ATRACE_NAME("wait for peak refresh rate");
+        for (int32_t i = 0; i <= kLhbmWaitForPeakRefreshRate; i++) {
+            if (!isCurrentPeakRefreshRate()) {
+                if (i == kLhbmWaitForPeakRefreshRate) {
+                    ALOGW("setLhbmState(on) wait for peak refresh rate timeout !");
+                    return TIMED_OUT;
+                }
+                usleep(mVsyncPeriod / 1000 + 1);
+            } else {
+                ALOGI_IF(i, "waited %d vsync to reach peak refresh rate", i);
+                break;
+            }
+        }
+    }
+
     requestLhbm(enabled);
     ALOGI("setLhbmState =%d", enabled);
 
@@ -511,7 +526,7 @@ int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
             mDisplayInterface->waitVBlank();
             ATRACE_NAME("frames to reach LHBM peak brightness");
             for (int32_t i = mFramesToReachLhbmPeakBrightness; i > 0; i--) {
-                mDevice->invalidate();
+                mDevice->onRefresh();
                 mDisplayInterface->waitVBlank();
             }
         }
