@@ -32,14 +32,21 @@
 #include "ExynosExternalDisplay.h"
 #include "ExynosHWCDebug.h"
 #include "ExynosHWCHelper.h"
+#include "ExynosLayer.h"
 
 extern struct exynos_hwc_control exynosHWCControl;
 
 using namespace SOC_VERSION;
+constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
+constexpr auto nsecsPerMs = std::chrono::nanoseconds(1ms).count();
 
 static const std::map<const DisplayType, const std::string> panelSysfsPath =
         {{DisplayType::DISPLAY_PRIMARY, "/sys/devices/platform/exynos-drm/primary-panel/"},
          {DisplayType::DISPLAY_SECONDARY, "/sys/devices/platform/exynos-drm/secondary-panel/"}};
+
+static constexpr const char* PROPERTY_BOOT_MODE = "persist.vendor.display.primary.boot_config";
+static constexpr const char *PROPERTY_DEFAULT_BOOT_MODE =
+        "vendor.display.primary.default_boot_config";
 
 static std::string loadPanelGammaCalibration(const std::string &file) {
     std::ifstream ifs(file);
@@ -75,7 +82,8 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device)
         mRefreshRateDelayNanos(0),
         mLastRefreshRateAppliedNanos(0),
         mAppliedActiveConfig(0),
-        mDisplayIdleTimerEnabled(false) {
+        mDisplayIdleTimerEnabled(false),
+        mDisplayNeedHandleIdleExit(false) {
     // TODO : Hard coded here
     mNumMaxPriorityAllowed = 5;
 
@@ -83,6 +91,8 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device)
     mType = HWC_DISPLAY_PRIMARY;
     mIndex = index;
     mDisplayId = getDisplayId(mType, mIndex);
+    mFramesToReachLhbmPeakBrightness =
+            property_get_int32("vendor.primarydisplay.lhbm.frames_to_reach_peak_brightness", 3);
 
     // Prepare multi resolution
     // Will be exynosHWCControl.multiResoultion
@@ -106,8 +116,9 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device)
     mEarlyWakeupDispFd = fopen(EARLY_WAKUP_NODE_0_BASE, "w");
     if (mEarlyWakeupDispFd == nullptr)
         ALOGE("open %s failed! %s", EARLY_WAKUP_NODE_0_BASE, strerror(errno));
-    mBrightnessController =
-            std::make_unique<BrightnessController>(mIndex, [this]() { mDevice->invalidate(); });
+    mBrightnessController = std::make_unique<BrightnessController>(
+            mIndex, [this]() { mDevice->onRefresh(); },
+            [this]() { updatePresentColorConversionInfo(); });
 }
 
 ExynosPrimaryDisplay::~ExynosPrimaryDisplay()
@@ -115,6 +126,10 @@ ExynosPrimaryDisplay::~ExynosPrimaryDisplay()
     if (mEarlyWakeupDispFd) {
         fclose(mEarlyWakeupDispFd);
         mEarlyWakeupDispFd = nullptr;
+    }
+
+    if (mDisplayNeedHandleIdleExitOfs.is_open()) {
+        mDisplayNeedHandleIdleExitOfs.close();
     }
 }
 
@@ -189,6 +204,73 @@ int32_t ExynosPrimaryDisplay::applyPendingConfig() {
     return ExynosDisplay::setActiveConfigInternal(config, true);
 }
 
+int32_t ExynosPrimaryDisplay::setBootDisplayConfig(int32_t config) {
+    auto hwcConfig = static_cast<hwc2_config_t>(config);
+
+    const auto &it = mDisplayConfigs.find(hwcConfig);
+    if (it == mDisplayConfigs.end()) {
+        DISPLAY_LOGE("%s: invalid config %d", __func__, config);
+        return HWC2_ERROR_BAD_CONFIG;
+    }
+
+    const auto &mode = it->second;
+    if (mode.vsyncPeriod == 0)
+        return HWC2_ERROR_BAD_CONFIG;
+
+    int refreshRate = round(nsecsPerSec / mode.vsyncPeriod * 0.1f) * 10;
+    char modeStr[PROPERTY_VALUE_MAX];
+    int ret = snprintf(modeStr, sizeof(modeStr), "%dx%d@%d",
+             mode.width, mode.height, refreshRate);
+    if (ret <= 0)
+        return HWC2_ERROR_BAD_CONFIG;
+
+    ALOGD("%s: mode=%s (%d) vsyncPeriod=%d", __func__, modeStr, config,
+            mode.vsyncPeriod);
+    ret = property_set(PROPERTY_BOOT_MODE, modeStr);
+
+    return !ret ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
+}
+
+int32_t ExynosPrimaryDisplay::clearBootDisplayConfig() {
+    auto ret = property_set(PROPERTY_BOOT_MODE, nullptr);
+
+    ALOGD("%s: clearing boot mode", __func__);
+    return !ret ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
+}
+
+int32_t ExynosPrimaryDisplay::getPreferredDisplayConfigInternal(int32_t *outConfig) {
+    char modeStr[PROPERTY_VALUE_MAX], defaultModeStr[PROPERTY_VALUE_MAX];
+    property_get(PROPERTY_DEFAULT_BOOT_MODE, defaultModeStr, "");
+    auto ret = property_get(PROPERTY_BOOT_MODE, modeStr, defaultModeStr);
+
+    if (ret <= 0) {
+        return mDisplayInterface->getDefaultModeId(outConfig);
+    }
+
+    int width, height;
+    int fps = 0;
+
+    ret = sscanf(modeStr, "%dx%d@%d", &width, &height, &fps);
+    if ((ret < 3) || !fps) {
+        ALOGD("%s: unable to find boot config for mode: %s", __func__, modeStr);
+        return HWC2_ERROR_BAD_CONFIG;
+    }
+
+    const auto vsyncPeriod = nsecsPerSec / fps;
+
+    for (auto const& [config, mode] : mDisplayConfigs) {
+        long delta = abs(vsyncPeriod - mode.vsyncPeriod);
+        if ((width == mode.width) && (height == mode.height) &&
+            (delta < nsecsPerMs)) {
+            ALOGD("%s: found preferred display config for mode: %s=%d",
+                  __func__, modeStr, config);
+            *outConfig = config;
+            return HWC2_ERROR_NONE;
+        }
+    }
+    return HWC2_ERROR_BAD_CONFIG;
+}
+
 int32_t ExynosPrimaryDisplay::setPowerOn() {
     ATRACE_CALL();
     updateAppliedActiveConfig(0, 0);
@@ -231,6 +313,9 @@ int32_t ExynosPrimaryDisplay::setPowerOff() {
         closeFencesForSkipFrame(RENDERING_STATE_VALIDATED);
     mRenderingState = RENDERING_STATE_NONE;
 
+    // in the case user turns off screen when LHBM is on
+    // TODO: b/236433238 considering a lock for mLhbmOn state
+    mLhbmOn = false;
     return HWC2_ERROR_NONE;
 }
 
@@ -302,6 +387,7 @@ void ExynosPrimaryDisplay::firstPowerOn() {
     SetCurrentPanelGammaSource(DisplayType::DISPLAY_PRIMARY, PanelGammaSource::GAMMA_CALIBRATION);
     mFirstPowerOn = false;
     getDisplayIdleTimerEnabled(mDisplayIdleTimerEnabled);
+    initDisplayHandleIdleExit();
 }
 
 bool ExynosPrimaryDisplay::getHDRException(ExynosLayer* __unused layer)
@@ -411,33 +497,69 @@ int32_t ExynosPrimaryDisplay::SetCurrentPanelGammaSource(const DisplayType type,
 }
 
 int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
+    // NOTE: mLhbmOn could be set to false at any time by setPowerOff in another
+    // thread. Make sure no side effect if that happens. Or add lock if we have
+    // to when new code is added.
     ATRACE_CALL();
-    requestLhbm(enabled);
-    ALOGI("setLhbmState =%d", enabled);
-
-    std::unique_lock<std::mutex> lk(lhbm_mutex_);
-    mLhbmChanged = false;
-
-    if (!lhbm_cond_.wait_for(lk, std::chrono::milliseconds(1000),
-                             [this] { return mLhbmChanged; })) {
-        ALOGI("setLhbmState =%d timeout !", enabled);
-        return TIMED_OUT;
-    } else {
-        if (enabled)
-            mDisplayInterface->waitVBlank();
-        return NO_ERROR;
+    if (enabled) {
+        ATRACE_NAME("wait for peak refresh rate");
+        for (int32_t i = 0; i <= kLhbmWaitForPeakRefreshRate; i++) {
+            if (!isCurrentPeakRefreshRate()) {
+                if (i == kLhbmWaitForPeakRefreshRate) {
+                    ALOGW("setLhbmState(on) wait for peak refresh rate timeout !");
+                    return TIMED_OUT;
+                }
+                usleep(mVsyncPeriod / 1000 + 1);
+            } else {
+                ALOGI_IF(i, "waited %d vsync to reach peak refresh rate", i);
+                break;
+            }
+        }
     }
+
+    requestLhbm(enabled);
+    constexpr uint32_t kSysfsCheckTimeoutMs = 500;
+    ALOGI("setLhbmState =%d", enabled);
+    bool succeed = mBrightnessController->checkSysfsStatus(
+                                    BrightnessController::kLocalHbmModeFileNode,
+                                    std::to_string(enabled ? 1 : 0),
+                                    ms2ns(kSysfsCheckTimeoutMs));
+    if (!succeed) {
+        ALOGE("failed to update lhbm mode");
+        return -ENODEV;
+    }
+
+    {
+        // lhbm takes effect at next vblank
+        ATRACE_NAME("lhbm_wait_apply");
+        if (mDisplayInterface->waitVBlank()) {
+            ALOGE("%s failed to wait vblank", __func__);
+            return -ENODEV;
+        }
+    }
+
+    if (enabled) {
+        for (int32_t i = mFramesToReachLhbmPeakBrightness; i > 0; i--) {
+            ATRACE_NAME("lhbm_wait_peak_brightness");
+            mDevice->onRefresh();
+            if (mDisplayInterface->waitVBlank()) {
+                ALOGE("%s failed to wait vblank, %d", __func__, i);
+                return -ENODEV;
+            }
+        }
+    }
+
+    mLhbmOn = enabled;
+    if (mPowerModeState == HWC2_POWER_MODE_OFF && mLhbmOn) {
+        mLhbmOn = false;
+        ALOGE("%s power off during request lhbm on", __func__);
+        return -EINVAL;
+    }
+    return NO_ERROR;
 }
 
 bool ExynosPrimaryDisplay::getLhbmState() {
     return mLhbmOn;
-}
-
-void ExynosPrimaryDisplay::notifyLhbmState(bool enabled) {
-    std::lock_guard<std::mutex> lk(lhbm_mutex_);
-    mLhbmChanged = true;
-    lhbm_cond_.notify_one();
-    mLhbmOn = enabled;
 }
 
 void ExynosPrimaryDisplay::setEarlyWakeupDisplay() {
@@ -524,6 +646,67 @@ int32_t ExynosPrimaryDisplay::setDisplayIdleTimerEnabled(const bool enabled) {
     return NO_ERROR;
 }
 
+void ExynosPrimaryDisplay::initDisplayHandleIdleExit() {
+    if (bool support; getDisplayIdleTimerSupport(support) || support == false) {
+        return;
+    }
+
+    const std::string path =
+            getPanelSysfsPath(DisplayType::DISPLAY_PRIMARY) + "panel_need_handle_idle_exit";
+    mDisplayNeedHandleIdleExitOfs.open(path, std::ofstream::out);
+    if (!mDisplayNeedHandleIdleExitOfs.is_open()) {
+        ALOGI("%s() '%s' doesn't exist(%s)", __func__, path.c_str(), strerror(errno));
+    }
+
+    setDisplayNeedHandleIdleExit(false, true);
+}
+
+void ExynosPrimaryDisplay::setDisplayNeedHandleIdleExit(const bool needed, const bool force) {
+    if (!mDisplayNeedHandleIdleExitOfs.is_open()) {
+        return;
+    }
+
+    if (needed == mDisplayNeedHandleIdleExit && !force) {
+        return;
+    }
+
+    mDisplayNeedHandleIdleExitOfs << needed;
+    if (mDisplayNeedHandleIdleExitOfs.fail()) {
+        ALOGW("%s() failed to write panel_need_handle_idle_exit(%d) to sysfs node %s", __func__,
+              needed, strerror(errno));
+        return;
+    }
+
+    mDisplayNeedHandleIdleExitOfs.flush();
+    if (mDisplayNeedHandleIdleExitOfs.fail()) {
+        ALOGW("%s() failed to flush panel_need_handle_idle_exit(%d) to sysfs node %s", __func__,
+              needed, strerror(errno));
+        return;
+    }
+
+    ALOGI("%s() writes panel_need_handle_idle_exit(%d) to sysfs node", __func__, needed);
+    mDisplayNeedHandleIdleExit = needed;
+}
+
+void ExynosPrimaryDisplay::handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) {
+    Mutex::Autolock lock(mDisplayMutex);
+    uint32_t btsRefreshRate = getBtsRefreshRate();
+    if (idleTeRefreshRate <= btsRefreshRate) {
+        return;
+    }
+
+    bool needed = false;
+    for (size_t i = 0; i < mLayers.size(); i++) {
+        if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
+            !mLayers[i]->checkDownscaleCap(idleTeRefreshRate)) {
+            needed = true;
+            break;
+        }
+    }
+
+    setDisplayNeedHandleIdleExit(needed, false);
+}
+
 int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int fps) {
     mMinIdleRefreshRate = fps;
 
@@ -586,6 +769,8 @@ int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos,
 
 void ExynosPrimaryDisplay::dump(String8 &result) {
     ExynosDisplay::dump(result);
+    result.appendFormat("Display idle timer: %s\n",
+                        (mDisplayIdleTimerEnabled) ? "enabled" : "disabled");
     result.appendFormat("Min idle refresh rate: %d\n", mMinIdleRefreshRate);
     result.appendFormat("Refresh rate delay: %" PRId64 " ns\n", mRefreshRateDelayNanos);
     for (uint32_t i = 0; i < toUnderlying(DispIdleTimerRequester::MAX); i++) {
@@ -660,4 +845,36 @@ void ExynosPrimaryDisplay::updateAppliedActiveConfig(const hwc2_config_t newConf
     }
 
     mAppliedActiveConfig = newConfig;
+}
+
+void ExynosPrimaryDisplay::checkBtsReassignResource(const uint32_t vsyncPeriod,
+                                                    const uint32_t btsVsyncPeriod) {
+    ATRACE_CALL();
+    uint32_t refreshRate = static_cast<uint32_t>(round(nsecsPerSec / vsyncPeriod * 0.1f) * 10);
+
+    if (vsyncPeriod < btsVsyncPeriod) {
+        for (size_t i = 0; i < mLayers.size(); i++) {
+            if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
+                !mLayers[i]->checkDownscaleCap(refreshRate)) {
+                mLayers[i]->setGeometryChanged(GEOMETRY_DEVICE_CONFIG_CHANGED);
+                break;
+            }
+        }
+    } else if (vsyncPeriod > btsVsyncPeriod) {
+        for (size_t i = 0; i < mLayers.size(); i++) {
+            if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP) {
+                float srcWidth = mLayers[i]->mSourceCrop.right - mLayers[i]->mSourceCrop.left;
+                float srcHeight = mLayers[i]->mSourceCrop.bottom - mLayers[i]->mSourceCrop.top;
+                float resolution = srcWidth * srcHeight * refreshRate / 1000;
+                float ratioVertical = static_cast<float>(mLayers[i]->mDisplayFrame.bottom -
+                                                         mLayers[i]->mDisplayFrame.top) /
+                        mYres;
+
+                if (mLayers[i]->mOtfMPP->checkDownscaleCap(resolution, ratioVertical)) {
+                    mLayers[i]->setGeometryChanged(GEOMETRY_DEVICE_CONFIG_CHANGED);
+                    break;
+                }
+            }
+        }
+    }
 }

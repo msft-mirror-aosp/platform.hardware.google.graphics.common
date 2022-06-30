@@ -953,7 +953,7 @@ class ExynosDisplay {
          *     HWC2_ERROR_BAD_CONFIG - when the configuration is invalid
          *     HWC2_ERROR_UNSUPPORTED - when the display does not support boot display config
          */
-        int32_t setBootDisplayConfig(int32_t config);
+        virtual int32_t setBootDisplayConfig(int32_t config);
 
         /**
          * clearBootDisplayConfig(...)
@@ -967,7 +967,7 @@ class ExynosDisplay {
          *     HWC2_ERROR_BAD_DISPLAY - when the display is invalid
          *     HWC2_ERROR_UNSUPPORTED - when the display does not support boot display config
          */
-        int32_t clearBootDisplayConfig();
+        virtual int32_t clearBootDisplayConfig();
 
         /**
          * getPreferredBootDisplayConfig(..., config*)
@@ -990,6 +990,8 @@ class ExynosDisplay {
          *     HWC2_ERROR_UNSUPPORTED - when the display does not support boot display config
          */
         int32_t getPreferredBootDisplayConfig(int32_t* outConfig);
+
+        virtual int32_t getPreferredDisplayConfigInternal(int32_t *outConfig);
 
         /* setAutoLowLatencyMode(displayToken, on)
          * Descriptor: HWC2_FUNCTION_SET_AUTO_LOW_LATENCY_MODE
@@ -1069,14 +1071,15 @@ class ExynosDisplay {
          *       composer requests. If dataspace field is set to UNKNOWN, it means
          *       the hardware composer requests nothing, the client must ignore the
          *       returned client target property structure.
-         *
+         *   outDimmingStage - where should the SDR dimming happen. HWC3 only.
          * Returns HWC2_ERROR_NONE or one of the following errors:
          *   HWC2_ERROR_BAD_DISPLAY - an invalid display handle was passed in
          *   HWC2_ERROR_NOT_VALIDATED - validateDisplay has not been called for this
          *       display
          */
         virtual int32_t getClientTargetProperty(
-                hwc_client_target_property_t* outClientTargetProperty);
+                hwc_client_target_property_t* outClientTargetProperty,
+                HwcDimmingStage *outDimmingStage = nullptr);
 
         /*
          * HWC3
@@ -1098,7 +1101,7 @@ class ExynosDisplay {
         bool needNotChangeConfig(hwc2_config_t config);
         int32_t updateInternalDisplayConfigVariables(
                 hwc2_config_t config, bool updateVsync = true);
-        int32_t resetConfigRequestStateLocked();
+        int32_t resetConfigRequestStateLocked(hwc2_config_t config);
         int32_t updateConfigRequestAppliedTime();
         int32_t updateVsyncAppliedTimeLine(int64_t actualChangeTime);
         int32_t getDisplayVsyncPeriodInternal(
@@ -1108,8 +1111,10 @@ class ExynosDisplay {
         int32_t getConfigAppliedTime(const uint64_t desiredTime,
                 const uint64_t actualChangeTime,
                 int64_t &appliedTime, int64_t &refreshTime);
-        void updateBtsVsyncPeriod(uint32_t vsyncPeriod, bool forceUpdate = false);
+        void updateBtsVsyncPeriod(uint32_t vsyncPeriod, bool configApplied = false);
         uint32_t getBtsRefreshRate() const;
+        virtual void checkBtsReassignResource(const uint32_t __unused vsyncPeriod,
+                                              const uint32_t __unused btsVsyncPeriod) {}
 
         /* TODO : TBD */
         int32_t setCursorPositionAsync(uint32_t x_pos, uint32_t y_pos);
@@ -1183,7 +1188,6 @@ class ExynosDisplay {
 
         virtual int32_t setLhbmState(bool __unused enabled) { return NO_ERROR; }
         virtual bool getLhbmState() { return false; };
-        virtual void notifyLhbmState(bool __unused enabled) {}
         virtual void setEarlyWakeupDisplay() {}
         virtual void setExpectedPresentTime(uint64_t __unused timestamp) {}
         virtual uint64_t getPendingExpectedPresentTime() { return 0; }
@@ -1191,6 +1195,11 @@ class ExynosDisplay {
         virtual int32_t getDisplayIdleTimerSupport(bool& outSupport);
         virtual int32_t setDisplayIdleTimer(const int32_t __unused timeoutMs) {
             return HWC2_ERROR_UNSUPPORTED;
+        }
+        virtual void handleDisplayIdleEnter(const uint32_t __unused idleTeRefreshRate) {}
+
+        virtual PanelCalibrationStatus getPanelCalibrationStatus() {
+            return PanelCalibrationStatus::UNCALIBRATED;
         }
 
         /* getDisplayPreAssignBit support mIndex up to 1.
@@ -1210,6 +1219,7 @@ class ExynosDisplay {
         virtual int32_t setActiveConfigInternal(hwc2_config_t config, bool force);
 
         void updateRefreshRateHint();
+        bool isFullScreenComposition();
 
     public:
         /**
@@ -1232,6 +1242,13 @@ class ExynosDisplay {
         // is the hint session both enabled and supported
         bool usePowerHintSession();
 
+        void setMinDisplayVsyncPeriod(uint32_t period) { mMinDisplayVsyncPeriod = period; }
+
+        bool isCurrentPeakRefreshRate(void) {
+            return ((mConfigRequestState == hwc_request_state_t::SET_CONFIG_STATE_NONE) &&
+                    (mVsyncPeriod == mMinDisplayVsyncPeriod));
+        }
+
     private:
         bool skipStaticLayerChanged(ExynosCompositionInfo& compositionInfo);
 
@@ -1245,6 +1262,9 @@ class ExynosDisplay {
         //exceeds this threshold.
         static constexpr float kHdrFullScreen = 0.5;
         uint32_t mHdrFullScrenAreaThreshold;
+
+        // vsync period of peak refresh rate
+        uint32_t mMinDisplayVsyncPeriod;
 
         /* Display hint to notify power hal */
         class PowerHalHintWorker : public Worker {
@@ -1401,6 +1421,8 @@ class ExynosDisplay {
         };
 
         static const constexpr int kAveragesBufferSize = 3;
+        static const constexpr nsecs_t SIGNAL_TIME_PENDING = INT64_MAX;
+        static const constexpr nsecs_t SIGNAL_TIME_INVALID = -1;
         std::unordered_map<uint32_t, RollingAverage<kAveragesBufferSize>> mRollingAverages;
         PowerHalHintWorker mPowerHalHint;
 
@@ -1413,13 +1435,17 @@ class ExynosDisplay {
         std::optional<nsecs_t> mRetireFenceWaitTime;
         // tracks the time right after we finish waiting for the fence
         std::optional<nsecs_t> mRetireFenceAcquireTime;
+        // tracks the time when the retire fence previously signaled
+        std::optional<nsecs_t> mRetireFencePreviousSignalTime;
         // tracks the expected present time of the last frame
-        std::optional<nsecs_t> mLastTarget;
+        std::optional<nsecs_t> mLastExpectedPresentTime;
         // tracks the expected present time of the current frame
-        nsecs_t mCurrentTarget;
+        nsecs_t mExpectedPresentTime;
         // set once at the start of composition to ensure consistency
         bool mUsePowerHints = false;
-        nsecs_t getTarget();
+        nsecs_t getExpectedPresentTime(nsecs_t startTime);
+        nsecs_t getPredictedPresentTime(nsecs_t startTime);
+        nsecs_t getSignalTime(int32_t fd) const;
         void updateAverages(nsecs_t endTime);
         std::optional<nsecs_t> getPredictedDuration(bool duringValidation);
         atomic_bool mDebugRCDLayerEnabled = true;

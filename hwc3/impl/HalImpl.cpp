@@ -14,15 +14,17 @@
  * limitations under the License.
  */
 
+#include "HalImpl.h"
+
+#include <aidl/android/hardware/graphics/composer3/IComposerCallback.h>
 #include <android-base/logging.h>
 #include <hardware/hwcomposer2.h>
 
-#include "ExynosDeviceModule.h"
 #include "ExynosDevice.h"
+#include "ExynosDeviceModule.h"
 #include "ExynosDisplay.h"
 #include "ExynosHWCService.h"
 #include "ExynosLayer.h"
-#include "HalImpl.h"
 #include "TranslateHwcAidl.h"
 #include "Util.h"
 
@@ -126,6 +128,8 @@ void HalImpl::initCaps() {
         h2a::translate(hwcCap, cap);
         mCaps.insert(cap);
     }
+
+    mCaps.insert(Capability::BOOT_DISPLAY_CONFIG);
 }
 
 int32_t HalImpl::getHalDisplay(int64_t display, ExynosDisplay*& halDisplay) {
@@ -185,6 +189,10 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
                      reinterpret_cast<hwc2_function_pointer_t>(hook::vsyncPeriodTimingChanged));
     mDevice->registerCallback(HWC2_CALLBACK_SEAMLESS_POSSIBLE, this,
                      reinterpret_cast<hwc2_function_pointer_t>(hook::seamlessPossible));
+
+    // register HWC3 Callback
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this,
+                                  reinterpret_cast<hwc2_function_pointer_t>(hook::vsyncIdle));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -193,6 +201,9 @@ void HalImpl::unregisterEventCallback() {
     mDevice->registerCallback(HWC2_CALLBACK_VSYNC_2_4, this, nullptr);
     mDevice->registerCallback(HWC2_CALLBACK_VSYNC_PERIOD_TIMING_CHANGED, this, nullptr);
     mDevice->registerCallback(HWC2_CALLBACK_SEAMLESS_POSSIBLE, this, nullptr);
+
+    // unregister HWC3 Callback
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this, nullptr);
 
     mEventCallback = nullptr;
 }
@@ -414,7 +425,7 @@ int32_t HalImpl::getDisplayPhysicalOrientation(int64_t display,
     RET_IF_ERR(halDisplay->getMountOrientation(&hwcOrientation));
     h2a::translate(hwcOrientation, *orientation);
 
-    return HWC2_ERROR_UNSUPPORTED;
+    return HWC2_ERROR_NONE;
 }
 
 int32_t HalImpl::getDozeSupport(int64_t display, bool& support) {
@@ -953,7 +964,8 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
                                  uint32_t* outDisplayRequestMask,
                                  std::vector<int64_t>* outRequestedLayers,
                                  std::vector<int32_t>* outRequestMasks,
-                                 ClientTargetProperty* outClientTargetProperty) {
+                                 ClientTargetProperty* outClientTargetProperty,
+                                 DimmingStage* outDimmingStage) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
@@ -982,7 +994,9 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
     h2a::translate(hwcRequestedLayers, *outRequestedLayers);
 
     hwc_client_target_property hwcProperty;
-    if (!halDisplay->getClientTargetProperty(&hwcProperty)) {
+    HwcDimmingStage hwcDimmingStage;
+    if (!halDisplay->getClientTargetProperty(&hwcProperty, &hwcDimmingStage)) {
+        h2a::translate(hwcDimmingStage, *outDimmingStage);
         h2a::translate(hwcProperty, *outClientTargetProperty);
     } // else ignore this error
 

@@ -32,6 +32,7 @@
 #include <utils/Vector.h>
 
 #include <atomic>
+#include <map>
 #include <thread>
 
 #include "ExynosHWC.h"
@@ -58,6 +59,7 @@
 
 using HbmState = ::aidl::com::google::hardware::pixel::display::HbmState;
 using LbeState = ::aidl::com::google::hardware::pixel::display::LbeState;
+using PanelCalibrationStatus = ::aidl::com::google::hardware::pixel::display::PanelCalibrationStatus;
 
 using namespace android;
 
@@ -183,6 +185,9 @@ class ExynosDevice {
         /** TODO : Array size shuld be checked */
         exynos_callback_info_t mCallbackInfos[HWC2_CALLBACK_SEAMLESS_POSSIBLE + 1];
 
+        std::map<uint32_t, exynos_callback_info_t> mHwc3CallbackInfos;
+        Mutex mDeviceCallbackMutex;
+
         /**
          * Thread variables
          */
@@ -199,7 +204,7 @@ class ExynosDevice {
         uint32_t mDisplayMode;
 
         // Variable for fence tracer
-        hwc_fence_info mFenceInfo[MAX_FD_NUM];
+        std::map<int, HwcFenceInfo> mFenceInfos;
 
         /**
          * This will be initialized with differnt class
@@ -271,8 +276,13 @@ class ExynosDevice {
          */
         int32_t registerCallback (
                 int32_t descriptor, hwc2_callback_data_t callbackData, hwc2_function_pointer_t point);
-
-        void invalidate();
+        bool isCallbackAvailable(int32_t descriptor);
+        void onHotPlug(uint32_t displayId, bool status);
+        void onRefresh();
+        void onVsync(uint32_t displayId, int64_t timestamp);
+        bool onVsync_2_4(uint32_t displayId, int64_t timestamp, uint32_t vsyncPeriod);
+        void onVsyncPeriodTimingChanged(uint32_t displayId,
+                                        hwc_vsync_period_change_timeline_t *timeline);
 
         void setHWCDebug(unsigned int debug);
         uint32_t getHWCDebug();
@@ -319,6 +329,10 @@ class ExynosDevice {
         uint32_t getSpecialPlaneId(uint32_t index);
         uint64_t getSpecialPlaneAttr(uint32_t index);
 
+        int32_t registerHwc3Callback(uint32_t descriptor, hwc2_callback_data_t callbackData,
+                                     hwc2_function_pointer_t point);
+        void onVsyncIdle(hwc2_display_t displayId);
+
     protected:
         void initDeviceInterface(uint32_t interfaceType);
     protected:
@@ -328,6 +342,7 @@ class ExynosDevice {
         Condition mCaptureCondition;
         std::atomic<bool> mIsWaitingReadbackReqDone = false;
         void setVBlankOffDelay(int vblankOffDelay);
+        bool isCallbackRegisteredLocked(int32_t descriptor);
 
     public:
         bool isLbeSupported();
@@ -342,6 +357,8 @@ class ExynosDevice {
         int setRefreshRateThrottle(const int delayMs);
 
         bool isColorCalibratedByDevice();
+
+        PanelCalibrationStatus getPanelCalibrationStatus();
 
     public:
         void enterToTUI() { mIsInTUI = true; };

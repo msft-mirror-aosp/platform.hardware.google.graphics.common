@@ -36,12 +36,12 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual int32_t setLhbmState(bool enabled);
 
         virtual bool getLhbmState();
-        virtual void notifyLhbmState(bool enabled);
         virtual void setEarlyWakeupDisplay();
         virtual void setExpectedPresentTime(uint64_t timestamp);
         virtual uint64_t getPendingExpectedPresentTime();
         virtual void applyExpectedPresentTime();
         virtual int32_t setDisplayIdleTimer(const int32_t timeoutMs) override;
+        virtual void handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) override;
 
         virtual void initDisplayInterface(uint32_t interfaceType);
         virtual int32_t doDisplayConfigInternal(hwc2_config_t config) override;
@@ -52,6 +52,12 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual void dump(String8& result) override;
         virtual void updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                const int64_t ts) override;
+        virtual void checkBtsReassignResource(const uint32_t vsyncPeriod,
+                                              const uint32_t btsVsyncPeriod) override;
+
+        virtual int32_t setBootDisplayConfig(int32_t config) override;
+        virtual int32_t clearBootDisplayConfig() override;
+        virtual int32_t getPreferredDisplayConfigInternal(int32_t *outConfig) override;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -88,14 +94,15 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         void firstPowerOn();
         int32_t setDisplayIdleTimerEnabled(const bool enabled);
         int32_t getDisplayIdleTimerEnabled(bool& enabled);
+        void setDisplayNeedHandleIdleExit(const bool needed, const bool force);
+        void initDisplayHandleIdleExit();
 
         // LHBM
         FILE* mLhbmFd;
-        bool mLhbmOn;
-        bool mLhbmChanged;
-
-        std::mutex lhbm_mutex_;
-        std::condition_variable lhbm_cond_;
+        std::atomic<bool> mLhbmOn;
+        int32_t mFramesToReachLhbmPeakBrightness;
+        // wait num of vsync periods for peak refresh rate
+        static constexpr uint32_t kLhbmWaitForPeakRefreshRate = 10;
 
         FILE* mEarlyWakeupDispFd;
         static constexpr const char* kWakeupDispFilePath =
@@ -114,6 +121,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
 
         bool mDisplayIdleTimerEnabled;
         int64_t mDisplayIdleTimerNanos[toUnderlying(DispIdleTimerRequester::MAX)];
+        std::ofstream mDisplayNeedHandleIdleExitOfs;
+        bool mDisplayNeedHandleIdleExit;
 };
 
 #endif

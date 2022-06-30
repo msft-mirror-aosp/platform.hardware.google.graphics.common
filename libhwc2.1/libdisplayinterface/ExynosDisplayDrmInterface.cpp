@@ -36,7 +36,6 @@ using namespace std::chrono_literals;
 constexpr uint32_t MAX_PLANE_NUM = 3;
 constexpr uint32_t CBCR_INDEX = 1;
 constexpr float DISPLAY_LUMINANCE_UNIT = 10000;
-constexpr auto nsecsPerMs = std::chrono::nanoseconds(1ms).count();
 constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
 constexpr auto vsyncPeriodTag = "VsyncPeriod";
 
@@ -88,16 +87,34 @@ uint32_t FramebufferManager::getBufHandleFromFd(int fd)
     return gem_handle;
 }
 
-int FramebufferManager::addFB2WithModifiers(uint32_t width, uint32_t height, uint32_t pixel_format,
-                                            const BufHandles handles, const uint32_t pitches[4],
-                                            const uint32_t offsets[4], const uint64_t modifier[4],
-                                            uint32_t *buf_id, uint32_t flags)
-{
-    int ret = drmModeAddFB2WithModifiers(mDrmFd, width, height, pixel_format, handles.data(),
-                                         pitches, offsets, modifier, buf_id, flags);
+int FramebufferManager::addFB2WithModifiers(uint32_t state, uint32_t width, uint32_t height,
+                                            uint32_t drmFormat, const DrmArray<uint32_t> &handles,
+                                            const DrmArray<uint32_t> &pitches,
+                                            const DrmArray<uint32_t> &offsets,
+                                            const DrmArray<uint64_t> &modifier, uint32_t *buf_id,
+                                            uint32_t flags) {
+    if (CC_UNLIKELY(!validateLayerInfo(state, drmFormat, handles, modifier))) {
+        return -EINVAL;
+    }
+
+    int ret = drmModeAddFB2WithModifiers(mDrmFd, width, height, drmFormat, handles.data(),
+                                         pitches.data(), offsets.data(), modifier.data(), buf_id,
+                                         flags);
     if (ret) ALOGE("Failed to add fb error %d\n", ret);
 
     return ret;
+}
+
+bool FramebufferManager::validateLayerInfo(uint32_t state, uint32_t drmFormat,
+                                           const DrmArray<uint32_t> &handles,
+                                           const DrmArray<uint64_t> &modifier) {
+    switch (state) {
+        case exynos_win_config_data::WIN_STATE_RCD:
+            return drmFormat == DRM_FORMAT_C8 && handles[0] != 0 && handles[1] == 0 &&
+                    modifier[0] == 0;
+    }
+
+    return true;
 }
 
 bool FramebufferManager::checkShrink() {
@@ -139,16 +156,16 @@ int32_t FramebufferManager::getBuffer(const exynos_win_config_data &config, uint
     int ret = NO_ERROR;
     int drmFormat = DRM_FORMAT_UNDEFINED;
     uint32_t bpp = 0;
-    uint32_t pitches[HWC_DRM_BO_MAX_PLANES] = {0};
-    uint32_t offsets[HWC_DRM_BO_MAX_PLANES] = {0};
-    uint64_t modifiers[HWC_DRM_BO_MAX_PLANES] = {0};
     uint32_t bufferNum, planeNum = 0;
-    BufHandles handles = {0};
     uint32_t bufWidth, bufHeight = 0;
+    DrmArray<uint32_t> pitches = {0};
+    DrmArray<uint32_t> offsets = {0};
+    DrmArray<uint64_t> modifiers = {0};
+    DrmArray<uint32_t> handles = {0};
 
     if (config.protection) modifiers[0] |= DRM_FORMAT_MOD_PROTECTION;
 
-    if (config.state == config.WIN_STATE_BUFFER) {
+    if (config.state == config.WIN_STATE_BUFFER || config.state == config.WIN_STATE_RCD) {
         bufWidth = config.src.f_w;
         bufHeight = config.src.f_h;
         uint32_t compressType = 0;
@@ -245,28 +262,13 @@ int32_t FramebufferManager::getBuffer(const exynos_win_config_data &config, uint
         if (fbId != 0) {
             return NO_ERROR;
         }
-    } else if (config.state == config.WIN_STATE_RCD) {
-        bufWidth = config.src.f_w;
-        bufHeight = config.src.f_h;
-        drmFormat = DRM_FORMAT_C8;
-        bufferNum = 1;
-        handles[0] = getBufHandleFromFd(config.fd_idma[0]);
-        bpp = 1;
-        pitches[0] = config.src.f_w * bpp;
-        fbId = findCachedFbId(config.layer,
-                              [bufferDesc = Framebuffer::BufferDesc{config.buffer_id, drmFormat,
-                                                                    config.protection}](
-                                      auto &buffer) { return buffer->bufferDesc == bufferDesc; });
-        if (fbId != 0) {
-            return NO_ERROR;
-        }
     } else {
         ALOGE("%s:: unknown config state(%d)", __func__, config.state);
         return -EINVAL;
     }
 
-    ret = addFB2WithModifiers(bufWidth, bufHeight, drmFormat, handles, pitches, offsets, modifiers,
-                              &fbId, modifiers[0] ? DRM_MODE_FB_MODIFIERS : 0);
+    ret = addFB2WithModifiers(config.state, bufWidth, bufHeight, drmFormat, handles, pitches,
+                              offsets, modifiers, &fbId, modifiers[0] ? DRM_MODE_FB_MODIFIERS : 0);
 
     for (uint32_t bufferIndex = 0; bufferIndex < bufferNum; bufferIndex++) {
         freeBufHandle(handles[bufferIndex]);
@@ -412,6 +414,13 @@ int32_t ExynosDisplayDrmInterface::getDisplayIdleTimerSupport(bool &outSupport) 
         outSupport = (support > 0);
     }
 
+    return NO_ERROR;
+}
+
+int32_t ExynosDisplayDrmInterface::getDefaultModeId(int32_t *modeId) {
+    if (modeId == nullptr) return HWC2_ERROR_BAD_PARAMETER;
+
+    *modeId = mDrmConnector->get_preferred_mode_id();
     return NO_ERROR;
 }
 
@@ -681,47 +690,42 @@ int32_t ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
 void ExynosDisplayDrmInterface::Callback(
         int display, int64_t timestamp)
 {
-    Mutex::Autolock lock(mExynosDisplay->getDisplayMutex());
-    bool configApplied = mVsyncCallback.Callback(display, timestamp);
+    {
+        Mutex::Autolock lock(mExynosDisplay->getDisplayMutex());
+        bool configApplied = mVsyncCallback.Callback(display, timestamp);
 
-    if (configApplied) {
-        if (mVsyncCallback.getDesiredVsyncPeriod()) {
-            mExynosDisplay->resetConfigRequestStateLocked();
-            mDrmConnector->set_active_mode(mActiveModeState.mode);
-            mVsyncCallback.resetDesiredVsyncPeriod();
+        if (configApplied) {
+            if (mVsyncCallback.getDesiredVsyncPeriod()) {
+                mExynosDisplay->resetConfigRequestStateLocked(mActiveModeState.mode.id());
+                mDrmConnector->set_active_mode(mActiveModeState.mode);
+                mVsyncCallback.resetDesiredVsyncPeriod();
+            }
+
+            /*
+             * Disable vsync if vsync config change is done
+             */
+            if (!mVsyncCallback.getVSyncEnabled()) {
+                mDrmVSyncWorker.VSyncControl(false);
+                mVsyncCallback.resetVsyncTimeStamp();
+            }
+        } else {
+            mExynosDisplay->updateConfigRequestAppliedTime();
         }
 
-        /*
-         * Disable vsync if vsync config change is done
-         */
-        if (!mVsyncCallback.getVSyncEnabled()) {
-            mDrmVSyncWorker.VSyncControl(false);
-            mVsyncCallback.resetVsyncTimeStamp();
+        if (!mExynosDisplay->mPlugState || !mVsyncCallback.getVSyncEnabled()) {
+            return;
         }
-    } else {
-        mExynosDisplay->updateConfigRequestAppliedTime();
-    }
-
-    if (!mExynosDisplay->mPlugState || !mVsyncCallback.getVSyncEnabled()) {
-        return;
     }
 
     ExynosDevice *exynosDevice = mExynosDisplay->mDevice;
-    auto vsync_2_4CallbackInfo =
-        exynosDevice->mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4];
-    if (vsync_2_4CallbackInfo.funcPointer && vsync_2_4CallbackInfo.callbackData) {
-        ((HWC2_PFN_VSYNC_2_4)vsync_2_4CallbackInfo.funcPointer)(
-                vsync_2_4CallbackInfo.callbackData,
-                mExynosDisplay->mDisplayId,
-                timestamp, mExynosDisplay->mVsyncPeriod);
+
+    if (exynosDevice->onVsync_2_4(mExynosDisplay->mDisplayId, timestamp,
+                                  mExynosDisplay->mVsyncPeriod)) {
         ATRACE_INT(vsyncPeriodTag, static_cast<int32_t>(mExynosDisplay->mVsyncPeriod));
         return;
     }
 
-    auto vsyncCallbackInfo = exynosDevice->mCallbackInfos[HWC2_CALLBACK_VSYNC];
-    if (vsyncCallbackInfo.funcPointer && vsyncCallbackInfo.callbackData)
-        ((HWC2_PFN_VSYNC)vsyncCallbackInfo.funcPointer)(vsyncCallbackInfo.callbackData,
-                                                        mExynosDisplay->mDisplayId, timestamp);
+    exynosDevice->onVsync(mExynosDisplay->mDisplayId, timestamp);
 }
 
 bool ExynosDisplayDrmInterface::ExynosVsyncCallback::Callback(
@@ -743,9 +747,10 @@ bool ExynosDisplayDrmInterface::ExynosVsyncCallback::Callback(
 
     /*
      * mDesiredVsyncPeriod is nanoseconds
-     * Compare with milliseconds
+     * Compare with 20% margin
      */
-    if (mDesiredVsyncPeriod / nsecsPerMs == mVsyncPeriod / nsecsPerMs) return true;
+    if (abs(static_cast<int32_t>(mDesiredVsyncPeriod - mVsyncPeriod)) < (mDesiredVsyncPeriod / 5))
+        return true;
 
     return false;
 }
@@ -798,9 +803,6 @@ int32_t ExynosDisplayDrmInterface::setPowerMode(int32_t mode)
         HWC_LOGE(mExynosDisplay, "setPower mode ret (%d)", ret);
     }
 
-    if (mode == HWC_POWER_MODE_OFF) {
-        mExynosDisplay->notifyLhbmState(false);
-    }
     return ret;
 }
 
@@ -816,8 +818,7 @@ int32_t ExynosDisplayDrmInterface::setVsyncEnabled(uint32_t enabled)
     mVsyncCallback.enableVSync(HWC2_VSYNC_ENABLE == enabled);
 
     ExynosDevice *exynosDevice = mExynosDisplay->mDevice;
-    auto vsync_2_4CallbackInfo = exynosDevice->mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4];
-    if (vsync_2_4CallbackInfo.funcPointer && vsync_2_4CallbackInfo.callbackData) {
+    if (exynosDevice->isCallbackAvailable(HWC2_CALLBACK_VSYNC_2_4)) {
         ATRACE_INT(vsyncPeriodTag, 0);
     }
 
@@ -831,7 +832,14 @@ int32_t ExynosDisplayDrmInterface::chosePreferredConfig()
     if (err != HWC2_ERROR_NONE || !num_configs)
         return err;
 
-    hwc2_config_t config = mDrmConnector->get_preferred_mode_id();
+    hwc2_config_t config;
+    int32_t bootConfig;
+    err = mExynosDisplay->getPreferredDisplayConfigInternal(&bootConfig);
+    if (err == HWC2_ERROR_NONE) {
+        config = static_cast<hwc2_config_t>(bootConfig);
+    } else {
+        config = mDrmConnector->get_preferred_mode_id();
+    }
     ALOGI("Preferred mode id: %d, state: %d", config, mDrmConnector->state());
 
     if ((err = setActiveConfig(config)) < 0) {
@@ -868,6 +876,7 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
         /* key: (width<<32 | height) */
         std::map<uint64_t, uint32_t> groupIds;
         uint32_t groupId = 0;
+        uint32_t min_vsync_period = UINT_MAX;
 
         for (const DrmMode &mode : mDrmConnector->modes()) {
             displayConfigs_t configs;
@@ -888,11 +897,14 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
             configs.Xdpi = mm_width ? (mode.h_display() * kUmPerInch) / mm_width : -1;
             // Dots per 1000 inches
             configs.Ydpi = mm_height ? (mode.v_display() * kUmPerInch) / mm_height : -1;
+            // find min vsync period
+            if (configs.vsyncPeriod <= min_vsync_period) min_vsync_period = configs.vsyncPeriod;
             mExynosDisplay->mDisplayConfigs.insert(std::make_pair(mode.id(), configs));
             ALOGD("config group(%d), w(%d), h(%d), vsync(%d), xdpi(%d), ydpi(%d)",
                     configs.groupId, configs.width, configs.height,
                     configs.vsyncPeriod, configs.Xdpi, configs.Ydpi);
         }
+        mExynosDisplay->setMinDisplayVsyncPeriod(min_vsync_period);
     }
 
     uint32_t num_modes = static_cast<uint32_t>(mDrmConnector->modes().size());
@@ -1053,6 +1065,9 @@ int32_t ExynosDisplayDrmInterface::setActiveConfigWithConstraints(
     if ((mActiveModeState.blob_id != 0) &&
         (mActiveModeState.mode.id() == config)) {
         ALOGD("%s:: same mode %d", __func__, config);
+        /* trigger resetConfigRequestStateLocked() */
+        mVsyncCallback.setDesiredVsyncPeriod(nsecsPerSec / mActiveModeState.mode.v_refresh());
+        mDrmVSyncWorker.VSyncControl(true);
         return HWC2_ERROR_NONE;
     }
 
@@ -1115,8 +1130,9 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
     bool reconfig = false;
 
-    if ((mode.h_display() != mActiveModeState.mode.h_display()) ||
-        (mode.v_display() != mActiveModeState.mode.v_display())) {
+    if ((mActiveModeState.blob_id != 0) &&
+        ((mode.h_display() != mActiveModeState.mode.h_display()) ||
+         (mode.v_display() != mActiveModeState.mode.v_display()))) {
         ret = clearDisplayPlanes(drmReq);
         if (ret != HWC2_ERROR_NONE) {
             HWC_LOGE(mExynosDisplay, "%s: Failed to clear planes due to resolution change",
@@ -1124,7 +1140,6 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
         } else {
             ALOGD("%s: switching display resolution, clearing planes", __func__);
         }
-        flags |= DRM_MODE_ATOMIC_NONBLOCK;
         reconfig = true;
     }
 
@@ -1707,8 +1722,8 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     for (size_t i = 0; i < mExynosDisplay->mDpuData.rcdConfigs.size(); ++i) {
         exynos_win_config_data &config = mExynosDisplay->mDpuData.rcdConfigs[i];
         if (config.state == config.WIN_STATE_RCD) {
-            const int channelId =
-                    mExynosDisplay->mDevice->getSpecialPlaneId(0); // TODO: get PlaneId by display
+            const int channelId = mExynosDisplay->mDevice->getSpecialPlaneId(
+                    mExynosDisplay->mIndex); // TODO: b/227584297
             auto &plane = mDrmDevice->planes().at(channelId);
             uint32_t fbId = 0;
             if ((ret = setupCommitFromDisplayConfig(drmReq, config, i, plane, fbId)) < 0) {
@@ -1768,6 +1783,12 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     if (needModesetForReadback)
         flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 
+    /* For Histogram */
+    if (dqeEnable && (ret = setDisplayHistogramSetting(drmReq)) != 0) {
+        HWC_LOGE(mExynosDisplay, "Failed to set display histogram setting (%d)", ret);
+        return ret;
+    }
+
     if ((ret = updateColorSettings(drmReq, dqeEnable)) != 0) {
         HWC_LOGE(mExynosDisplay, "failed to update color settings (%d)", ret);
         return ret;
@@ -1784,11 +1805,16 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
 
     auto expectedPresentTime = mExynosDisplay->getPendingExpectedPresentTime();
     if (expectedPresentTime != 0) {
-        if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(),
-                                            mDrmCrtc->expected_present_time_property(),
-                                            expectedPresentTime)) < 0) {
-            HWC_LOGE(mExynosDisplay, "%s: Fail to set expected_present_time property (%d)",
-                     __func__, ret);
+        /* TODO: don't pass expected present time before we can provide accurate time that desire
+         * refresh rate take effect (b/202346402)
+         */
+        if (!mVsyncCallback.getDesiredVsyncPeriod()) {
+            if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(),
+                                                mDrmCrtc->expected_present_time_property(),
+                                                expectedPresentTime)) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to set expected_present_time property (%d)",
+                         __func__, ret);
+            }
         }
         mExynosDisplay->applyExpectedPresentTime();
     }
@@ -1819,13 +1845,6 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
                 nsecsPerSec/mActiveModeState.mode.v_refresh());
         /* Enable vsync to check vsync period */
         mDrmVSyncWorker.VSyncControl(true);
-    }
-
-    if (mipi_sync_type &
-            (1 << mMipiSyncEnums[toUnderlying(HalMipiSyncType::HAL_MIPI_CMD_SYNC_LHBM)])) {
-        // Notify that lhbm request is handled.
-        // still need one more vblank to complete
-        mExynosDisplay->notifyLhbmState(mExynosDisplay->mBrightnessController->isLhbmOn());
     }
 
     return NO_ERROR;
