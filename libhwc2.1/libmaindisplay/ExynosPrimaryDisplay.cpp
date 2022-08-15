@@ -313,6 +313,9 @@ int32_t ExynosPrimaryDisplay::setPowerOff() {
         closeFencesForSkipFrame(RENDERING_STATE_VALIDATED);
     mRenderingState = RENDERING_STATE_NONE;
 
+    // in the case user turns off screen when LHBM is on
+    // TODO: b/236433238 considering a lock for mLhbmOn state
+    mLhbmOn = false;
     return HWC2_ERROR_NONE;
 }
 
@@ -494,39 +497,69 @@ int32_t ExynosPrimaryDisplay::SetCurrentPanelGammaSource(const DisplayType type,
 }
 
 int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
+    // NOTE: mLhbmOn could be set to false at any time by setPowerOff in another
+    // thread. Make sure no side effect if that happens. Or add lock if we have
+    // to when new code is added.
     ATRACE_CALL();
-    requestLhbm(enabled);
-    ALOGI("setLhbmState =%d", enabled);
-
-    std::unique_lock<std::mutex> lk(lhbm_mutex_);
-    mLhbmChanged = false;
-
-    if (!lhbm_cond_.wait_for(lk, std::chrono::milliseconds(1000),
-                             [this] { return mLhbmChanged; })) {
-        ALOGI("setLhbmState =%d timeout !", enabled);
-        return TIMED_OUT;
-    } else {
-        if (enabled) {
-            mDisplayInterface->waitVBlank();
-            ATRACE_NAME("frames to reach LHBM peak brightness");
-            for (int32_t i = mFramesToReachLhbmPeakBrightness; i > 0; i--) {
-                mDevice->onRefresh();
-                mDisplayInterface->waitVBlank();
+    if (enabled) {
+        ATRACE_NAME("wait for peak refresh rate");
+        for (int32_t i = 0; i <= kLhbmWaitForPeakRefreshRate; i++) {
+            if (!isCurrentPeakRefreshRate()) {
+                if (i == kLhbmWaitForPeakRefreshRate) {
+                    ALOGW("setLhbmState(on) wait for peak refresh rate timeout !");
+                    return TIMED_OUT;
+                }
+                usleep(mVsyncPeriod / 1000 + 1);
+            } else {
+                ALOGI_IF(i, "waited %d vsync to reach peak refresh rate", i);
+                break;
             }
         }
-        return NO_ERROR;
     }
+
+    requestLhbm(enabled);
+    constexpr uint32_t kSysfsCheckTimeoutMs = 500;
+    ALOGI("setLhbmState =%d", enabled);
+    bool succeed = mBrightnessController->checkSysfsStatus(
+                                    BrightnessController::kLocalHbmModeFileNode,
+                                    std::to_string(enabled ? 1 : 0),
+                                    ms2ns(kSysfsCheckTimeoutMs));
+    if (!succeed) {
+        ALOGE("failed to update lhbm mode");
+        return -ENODEV;
+    }
+
+    {
+        // lhbm takes effect at next vblank
+        ATRACE_NAME("lhbm_wait_apply");
+        if (mDisplayInterface->waitVBlank()) {
+            ALOGE("%s failed to wait vblank", __func__);
+            return -ENODEV;
+        }
+    }
+
+    if (enabled) {
+        for (int32_t i = mFramesToReachLhbmPeakBrightness; i > 0; i--) {
+            ATRACE_NAME("lhbm_wait_peak_brightness");
+            mDevice->onRefresh();
+            if (mDisplayInterface->waitVBlank()) {
+                ALOGE("%s failed to wait vblank, %d", __func__, i);
+                return -ENODEV;
+            }
+        }
+    }
+
+    mLhbmOn = enabled;
+    if (mPowerModeState == HWC2_POWER_MODE_OFF && mLhbmOn) {
+        mLhbmOn = false;
+        ALOGE("%s power off during request lhbm on", __func__);
+        return -EINVAL;
+    }
+    return NO_ERROR;
 }
 
 bool ExynosPrimaryDisplay::getLhbmState() {
     return mLhbmOn;
-}
-
-void ExynosPrimaryDisplay::notifyLhbmState(bool enabled) {
-    std::lock_guard<std::mutex> lk(lhbm_mutex_);
-    mLhbmChanged = true;
-    lhbm_cond_.notify_one();
-    mLhbmOn = enabled;
 }
 
 void ExynosPrimaryDisplay::setEarlyWakeupDisplay() {
