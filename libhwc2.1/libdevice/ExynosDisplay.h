@@ -1101,7 +1101,7 @@ class ExynosDisplay {
         bool needNotChangeConfig(hwc2_config_t config);
         int32_t updateInternalDisplayConfigVariables(
                 hwc2_config_t config, bool updateVsync = true);
-        int32_t resetConfigRequestStateLocked();
+        int32_t resetConfigRequestStateLocked(hwc2_config_t config);
         int32_t updateConfigRequestAppliedTime();
         int32_t updateVsyncAppliedTimeLine(int64_t actualChangeTime);
         int32_t getDisplayVsyncPeriodInternal(
@@ -1188,7 +1188,6 @@ class ExynosDisplay {
 
         virtual int32_t setLhbmState(bool __unused enabled) { return NO_ERROR; }
         virtual bool getLhbmState() { return false; };
-        virtual void notifyLhbmState(bool __unused enabled) {}
         virtual void setEarlyWakeupDisplay() {}
         virtual void setExpectedPresentTime(uint64_t __unused timestamp) {}
         virtual uint64_t getPendingExpectedPresentTime() { return 0; }
@@ -1198,6 +1197,10 @@ class ExynosDisplay {
             return HWC2_ERROR_UNSUPPORTED;
         }
         virtual void handleDisplayIdleEnter(const uint32_t __unused idleTeRefreshRate) {}
+
+        virtual PanelCalibrationStatus getPanelCalibrationStatus() {
+            return PanelCalibrationStatus::UNCALIBRATED;
+        }
 
         /* getDisplayPreAssignBit support mIndex up to 1.
            It supports only dual LCD and 2 external displays */
@@ -1239,6 +1242,13 @@ class ExynosDisplay {
         // is the hint session both enabled and supported
         bool usePowerHintSession();
 
+        void setMinDisplayVsyncPeriod(uint32_t period) { mMinDisplayVsyncPeriod = period; }
+
+        bool isCurrentPeakRefreshRate(void) {
+            return ((mConfigRequestState == hwc_request_state_t::SET_CONFIG_STATE_NONE) &&
+                    (mVsyncPeriod == mMinDisplayVsyncPeriod));
+        }
+
     private:
         bool skipStaticLayerChanged(ExynosCompositionInfo& compositionInfo);
 
@@ -1252,6 +1262,9 @@ class ExynosDisplay {
         //exceeds this threshold.
         static constexpr float kHdrFullScreen = 0.5;
         uint32_t mHdrFullScrenAreaThreshold;
+
+        // vsync period of peak refresh rate
+        uint32_t mMinDisplayVsyncPeriod;
 
         /* Display hint to notify power hal */
         class PowerHalHintWorker : public Worker {
