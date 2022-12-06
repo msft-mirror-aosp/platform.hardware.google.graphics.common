@@ -33,11 +33,25 @@ bool ComposerClient::init() {
         return false;
     }
 
+    mCommandEngine = std::make_unique<ComposerCommandEngine>(mHal, mResources.get());
+    if (mCommandEngine == nullptr) {
+        return false;
+    }
+    if (!mCommandEngine->init()) {
+        mCommandEngine = nullptr;
+        return false;
+    }
+
     return true;
 }
 
 ComposerClient::~ComposerClient() {
     DEBUG_FUNC();
+    // not initialized
+    if (!mCommandEngine) {
+        return;
+    }
+
     LOG(DEBUG) << "destroying composer client";
 
     mHal->unregisterEventCallback();
@@ -97,19 +111,7 @@ ndk::ScopedAStatus ComposerClient::destroyVirtualDisplay(int64_t display) {
 ndk::ScopedAStatus ComposerClient::executeCommands(const std::vector<DisplayCommand>& commands,
                                                    std::vector<CommandResultPayload>* results) {
     DEBUG_FUNC();
-    ComposerCommandEngine engine(mHal, mResources.get());
-
-    auto err = engine.init();
-    if (err != ::android::NO_ERROR) {
-        LOG(ERROR) << "executeCommands(): init ComposerCommandEngine failed " << err;
-        return TO_BINDER_STATUS(err);
-    }
-
-    err = engine.execute(commands, results);
-    if (err != ::android::NO_ERROR) {
-        LOG(ERROR) << "executeCommands(): execute failed " << err;
-        return TO_BINDER_STATUS(err);
-    }
+    auto err = mCommandEngine->execute(commands, results);
     return TO_BINDER_STATUS(err);
 }
 
