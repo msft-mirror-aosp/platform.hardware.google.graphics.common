@@ -35,6 +35,7 @@
 #include "ExynosMPP.h"
 #include "ExynosResourceManager.h"
 #include "worker.h"
+#include "DeconHeader.h"
 
 #define HWC_CLEARDISPLAY_WITH_COLORMAP
 #define HWC_PRINT_FRAME_NUM     10
@@ -141,15 +142,21 @@ enum class PanelGammaSource {
 };
 
 enum class hwc_request_state_t {
-    SET_CONFIG_STATE_NONE = 0,
+    SET_CONFIG_STATE_DONE = 0,
     SET_CONFIG_STATE_PENDING,
     SET_CONFIG_STATE_REQUESTED,
 };
 
+enum class VrrThrottleRequester : uint32_t {
+    PIXEL_DISP = 0,
+    TEST,
+    LHBM,
+    MAX,
+};
+
 enum class DispIdleTimerRequester : uint32_t {
     SF = 0,
-    PIXEL_DISP,
-    TEST,
+    VRR_THROTTLE,
     MAX,
 };
 
@@ -279,6 +286,22 @@ class ExynosSortedLayer : public Vector <ExynosLayer*>
         static int compare(ExynosLayer * const *lhs, ExynosLayer *const *rhs);
 };
 
+class displayTDMInfo {
+    public:
+        /* Could be extended */
+        typedef struct resourceAmount {
+            uint32_t totalAmount;
+        } resourceAmount_t;
+        std::map<tdm_attr_t, resourceAmount_t> mAmount;
+
+        uint32_t initTDMInfo(resourceAmount_t amount, tdm_attr_t attr) {
+            mAmount[attr] = amount;
+            return 0;
+        }
+
+        resourceAmount_t getAvailableAmount(tdm_attr_t attr) { return mAmount[attr]; }
+};
+
 class ExynosCompositionInfo : public ExynosMPPSource {
     public:
         ExynosCompositionInfo():ExynosCompositionInfo(COMPOSITION_NONE){};
@@ -361,13 +384,15 @@ struct DisplayControl {
     bool forceReserveMPP = false;
     /** Skip M2MMPP processing **/
     bool skipM2mProcessing = true;
+    /** Enable multi-thread present **/
+    bool multiThreadedPresent = false;
 };
 
 class ExynosDisplay {
     public:
-        uint32_t mDisplayId;
-        uint32_t mType;
-        uint32_t mIndex;
+        const uint32_t mDisplayId;
+        const uint32_t mType;
+        const uint32_t mIndex;
         String8 mDeconNodeName;
         uint32_t mXres;
         uint32_t mYres;
@@ -380,19 +405,21 @@ class ExynosDisplay {
         int                     mPsrMode;
 
         /* Constructor */
-        ExynosDisplay(uint32_t index, ExynosDevice *device);
+        ExynosDisplay(uint32_t type, uint32_t index, ExynosDevice* device,
+                      const std::string& displayName);
         /* Destructor */
         virtual ~ExynosDisplay();
 
         ExynosDevice *mDevice;
 
-        String8 mDisplayName;
+        const String8 mDisplayName;
+        const String8 mDisplayTraceName;
         HwcMountOrientation mMountOrientation = HwcMountOrientation::ROT_0;
         Mutex mDisplayMutex;
 
         /** State variables */
         bool mPlugState;
-        hwc2_power_mode_t mPowerModeState;
+        std::optional<hwc2_power_mode_t> mPowerModeState;
         hwc2_vsync_t mVsyncState;
         bool mHasSingleBuffer;
         bool mPauseDisplay = false;
@@ -537,7 +564,7 @@ class ExynosDisplay {
         int32_t initializeValidateInfos();
         int32_t addClientCompositionLayer(uint32_t layerIndex);
         int32_t removeClientCompositionLayer(uint32_t layerIndex);
-        int32_t addExynosCompositionLayer(uint32_t layerIndex);
+        int32_t addExynosCompositionLayer(uint32_t layerIndex, float totalUsedCapa);
 
         /**
          * Dynamic AFBC Control solution : To get the prepared information is applied to current or not.
@@ -991,7 +1018,7 @@ class ExynosDisplay {
          */
         int32_t getPreferredBootDisplayConfig(int32_t* outConfig);
 
-        virtual int32_t getPreferredDisplayConfigInternal(int32_t *outConfig);
+        virtual int32_t getPreferredDisplayConfigInternal(int32_t* outConfig);
 
         /* setAutoLowLatencyMode(displayToken, on)
          * Descriptor: HWC2_FUNCTION_SET_AUTO_LOW_LATENCY_MODE
@@ -1180,12 +1207,14 @@ class ExynosDisplay {
             return PanelGammaSource::GAMMA_DEFAULT;
         }
         virtual void initLbe(){};
+        virtual bool isLbeSupported() { return false; }
         virtual void setLbeState(LbeState __unused state) {}
         virtual void setLbeAmbientLight(int __unused value) {}
         virtual LbeState getLbeState() { return LbeState::OFF; }
 
         int32_t checkPowerHalExtHintSupport(const std::string& mode);
 
+        virtual bool isLhbmSupported() { return false; }
         virtual int32_t setLhbmState(bool __unused enabled) { return NO_ERROR; }
         virtual bool getLhbmState() { return false; };
         virtual void setEarlyWakeupDisplay() {}
@@ -1193,6 +1222,7 @@ class ExynosDisplay {
         virtual uint64_t getPendingExpectedPresentTime() { return 0; }
         virtual void applyExpectedPresentTime() {}
         virtual int32_t getDisplayIdleTimerSupport(bool& outSupport);
+        virtual int32_t getDisplayMultiThreadedPresentSupport(bool& outSupport);
         virtual int32_t setDisplayIdleTimer(const int32_t __unused timeoutMs) {
             return HWC2_ERROR_UNSUPPORTED;
         }
@@ -1201,6 +1231,8 @@ class ExynosDisplay {
         virtual PanelCalibrationStatus getPanelCalibrationStatus() {
             return PanelCalibrationStatus::UNCALIBRATED;
         }
+        virtual bool isDbmSupported() { return false; }
+        virtual int32_t setDbmState(bool __unused enabled) { return NO_ERROR; }
 
         /* getDisplayPreAssignBit support mIndex up to 1.
            It supports only dual LCD and 2 external displays */
@@ -1232,7 +1264,7 @@ class ExynosDisplay {
 
         virtual int setMinIdleRefreshRate(const int __unused fps) { return NO_ERROR; }
         virtual int setRefreshRateThrottleNanos(const int64_t __unused delayNanos,
-                                                const DispIdleTimerRequester __unused requester) {
+                                                const VrrThrottleRequester __unused requester) {
             return NO_ERROR;
         }
 
@@ -1242,12 +1274,19 @@ class ExynosDisplay {
         // is the hint session both enabled and supported
         bool usePowerHintSession();
 
-        void setMinDisplayVsyncPeriod(uint32_t period) { mMinDisplayVsyncPeriod = period; }
-
-        bool isCurrentPeakRefreshRate(void) {
-            return ((mConfigRequestState == hwc_request_state_t::SET_CONFIG_STATE_NONE) &&
-                    (mVsyncPeriod == mMinDisplayVsyncPeriod));
+        void setPeakRefreshRate(float rr) { mPeakRefreshRate = rr; }
+        float getPeakRefreshRate() {
+            float opRate = mOperationRateManager ? mOperationRateManager->getOperationRate() : 0;
+            return opRate ?: mPeakRefreshRate;
         }
+
+        // check if there are any dimmed layers
+        bool isMixedComposition();
+        bool isPriorFrameMixedCompostion() { return mPriorFrameMixedComposition; }
+        int lookupDisplayConfigs(const int32_t& width,
+                                 const int32_t& height,
+                                 const int32_t& fps,
+                                 int32_t* outConfig);
 
     private:
         bool skipStaticLayerChanged(ExynosCompositionInfo& compositionInfo);
@@ -1263,13 +1302,17 @@ class ExynosDisplay {
         static constexpr float kHdrFullScreen = 0.5;
         uint32_t mHdrFullScrenAreaThreshold;
 
-        // vsync period of peak refresh rate
-        uint32_t mMinDisplayVsyncPeriod;
+        // peak refresh rate
+        float mPeakRefreshRate = -1.0f;
+
+        // track if the last frame is a mixed composition, to detect mixed
+        // composition to non-mixed composition transition.
+        bool mPriorFrameMixedComposition;
 
         /* Display hint to notify power hal */
         class PowerHalHintWorker : public Worker {
         public:
-            PowerHalHintWorker();
+            PowerHalHintWorker(uint32_t displayId, const String8& displayTraceName);
             virtual ~PowerHalHintWorker();
             int Init();
 
@@ -1342,8 +1385,15 @@ class ExynosDisplay {
             // whether idle hint is supported
             bool mIdleHintIsSupported;
 
+            String8 mDisplayTraceName;
+            std::string mIdleHintStr;
+            std::string mRefreshRateHintPrefixStr;
+
             hwc2_power_mode_t mPowerModeState;
             uint32_t mVsyncPeriod;
+
+            uint32_t mConnectRetryCount;
+            bool isPowerHalExist() { return mConnectRetryCount < 10; }
 
             ndk::ScopedAIBinder_DeathRecipient mDeathRecipient;
 
@@ -1424,6 +1474,9 @@ class ExynosDisplay {
         static const constexpr nsecs_t SIGNAL_TIME_PENDING = INT64_MAX;
         static const constexpr nsecs_t SIGNAL_TIME_INVALID = -1;
         std::unordered_map<uint32_t, RollingAverage<kAveragesBufferSize>> mRollingAverages;
+        // mPowerHalHint should be declared only after mDisplayId and mDisplayTraceName have been
+        // declared since mDisplayId and mDisplayTraceName are needed as the parameter of
+        // PowerHalHintWorker's constructor
         PowerHalHintWorker mPowerHalHint;
 
         std::optional<nsecs_t> mValidateStartTime;
@@ -1462,6 +1515,78 @@ class ExynosDisplay {
                 hwc2_config_t config,
                 hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
                 hwc_vsync_period_change_timeline_t* outTimeline);
+
+    public:
+        /* Override for each display's meaning of 'enabled state'
+         * Primary : Power on, this function overrided in primary display module
+         * Exteranal : Plug-in, default */
+        virtual bool isEnabled() { return mPlugState; }
+
+        // Resource TDM (Time-Division Multiplexing)
+        std::map<uint32_t, displayTDMInfo> mDisplayTDMInfo;
+
+        class RotatingLogFileWriter {
+        public:
+            RotatingLogFileWriter(uint32_t maxFileCount, uint32_t thresholdSizePerFile,
+                                  std::string extension = ".txt")
+                  : mMaxFileCount(maxFileCount),
+                    mThresholdSizePerFile(thresholdSizePerFile),
+                    mPrefixName(""),
+                    mExtension(extension),
+                    mLastFileIndex(-1),
+                    mFile(nullptr) {}
+
+            ~RotatingLogFileWriter() {
+                if (mFile) {
+                    fclose(mFile);
+                }
+            }
+
+            bool chooseOpenedFile();
+            void write(const String8& content) {
+                if (mFile) {
+                    fwrite(content.string(), 1, content.size(), mFile);
+                }
+            }
+            void flush() {
+                if (mFile) {
+                    fflush(mFile);
+                }
+            }
+            void setPrefixName(const std::string& prefixName) { mPrefixName = prefixName; }
+
+        private:
+            FILE* openLogFile(const std::string& filename, const std::string& mode);
+            std::optional<nsecs_t> getLastModifiedTimestamp(const std::string& filename);
+
+            uint32_t mMaxFileCount;
+            uint32_t mThresholdSizePerFile;
+            std::string mPrefixName;
+            std::string mExtension;
+            int32_t mLastFileIndex;
+            FILE* mFile;
+        };
+        RotatingLogFileWriter mErrLogFileWriter;
+        RotatingLogFileWriter mDebugDumpFileWriter;
+        RotatingLogFileWriter mFenceFileWriter;
+
+    protected:
+        class OperationRateManager {
+        public:
+            OperationRateManager() {}
+            virtual ~OperationRateManager() {}
+
+            virtual int32_t onLowPowerMode(bool __unused enabled) { return 0; }
+            virtual int32_t onPeakRefreshRate(uint32_t __unused rate) { return 0; }
+            virtual int32_t onConfig(hwc2_config_t __unused cfg) { return 0; }
+            virtual int32_t onBrightness(uint32_t __unused dbv) { return 0; }
+            virtual int32_t onPowerMode(int32_t __unused mode) { return 0; }
+            virtual int32_t getOperationRate() { return 0; }
+        };
+
+    public:
+        std::unique_ptr<OperationRateManager> mOperationRateManager;
+        bool isOperationRateSupported() { return mOperationRateManager != nullptr; }
 };
 
 #endif //_EXYNOSDISPLAY_H

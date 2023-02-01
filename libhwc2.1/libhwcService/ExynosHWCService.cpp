@@ -437,7 +437,7 @@ int32_t ExynosHWCService::setDisplayLhbm(int32_t display_id, uint32_t on) {
     auto display = mHWCCtx->device->getDisplay(display_id);
 
     if (display != nullptr) {
-        display->requestLhbm(!!on);
+        display->setLhbmState(!!on);
         return NO_ERROR;
     }
 
@@ -466,7 +466,7 @@ int32_t ExynosHWCService::setRefreshRateThrottle(uint32_t display_id, int32_t de
                 ->setRefreshRateThrottleNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                       std::chrono::milliseconds(delayMs))
                                                       .count(),
-                                              DispIdleTimerRequester::TEST);
+                                              VrrThrottleRequester::TEST);
     }
 
     return -EINVAL;
@@ -499,6 +499,30 @@ int32_t ExynosHWCService::triggerDisplayIdleEnter(uint32_t displayIndex,
     mHWCCtx->device->onVsyncIdle(primaryDisplay->getId());
     primaryDisplay->handleDisplayIdleEnter(idleTeRefreshRate);
 
+    return NO_ERROR;
+}
+
+int32_t ExynosHWCService::setDisplayDbm(int32_t display_id, uint32_t on) {
+    if (on > 1) return -EINVAL;
+
+    auto display = mHWCCtx->device->getDisplay(display_id);
+
+    if (display == nullptr) return -EINVAL;
+
+    ALOGD("ExynosHWCService::%s() display(%u) on=%d", __func__, display_id, on);
+    display->setDbmState(!!on);
+    mHWCCtx->device->onRefresh();
+    return NO_ERROR;
+}
+
+int32_t ExynosHWCService::setDisplayMultiThreadedPresent(const int32_t& displayId,
+                                                         const bool& enable) {
+    auto display = mHWCCtx->device->getDisplay(displayId);
+
+    if (display == nullptr) return -EINVAL;
+
+    display->mDisplayControl.multiThreadedPresent = enable;
+    ALOGD("ExynosHWCService::%s() display(%u) enable=%d", __func__, displayId, enable);
     return NO_ERROR;
 }
 

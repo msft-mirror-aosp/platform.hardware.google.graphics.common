@@ -30,8 +30,10 @@
 #include "BrightnessController.h"
 #include "ExynosHWCDebug.h"
 #include "ExynosHWCHelper.h"
+#include "ExynosPrimaryDisplay.h"
 
 using namespace std::chrono_literals;
+using namespace SOC_VERSION;
 
 constexpr uint32_t MAX_PLANE_NUM = 3;
 constexpr uint32_t CBCR_INDEX = 1;
@@ -447,6 +449,7 @@ ExynosDisplayDrmInterface::~ExynosDisplayDrmInterface()
 void ExynosDisplayDrmInterface::init(ExynosDisplay *exynosDisplay)
 {
     mExynosDisplay = exynosDisplay;
+    mDisplayTraceName = mExynosDisplay->mDisplayTraceName;
     mDrmDevice = NULL;
     mDrmCrtc = NULL;
     mDrmConnector = NULL;
@@ -592,6 +595,27 @@ void ExynosDisplayDrmInterface::updateMountOrientation()
     ALOGW("%s ignore unrecoganized orientation %" PRId64, __func__, drmOrientation);
 }
 
+void ExynosDisplayDrmInterface::parseRCDId(const DrmProperty &property) {
+    if (mExynosDisplay->mType != HWC_DISPLAY_PRIMARY) {
+        ALOGW("%s invalid display type: %d", __func__, mExynosDisplay->mType);
+        return;
+    }
+
+    if (property.id() == 0) {
+        static_cast<ExynosPrimaryDisplay *>(mExynosDisplay)->mRcdId = -1;
+        return;
+    }
+
+    auto [err, rcd_id] = property.value();
+    if (err < 0) {
+        ALOGW("%s failed to get drm prop value", __func__);
+        return;
+    }
+
+    if (getSpecialChannelId(rcd_id) >= 0)
+        static_cast<ExynosPrimaryDisplay *>(mExynosDisplay)->mRcdId = rcd_id;
+}
+
 uint32_t ExynosDisplayDrmInterface::getDrmDisplayId(uint32_t type, uint32_t index)
 {
     return type+index;
@@ -661,7 +685,7 @@ int32_t ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
 
     getLowPowerDrmModeModeInfo();
 
-    mDrmVSyncWorker.Init(mDrmDevice, drmDisplayId);
+    mDrmVSyncWorker.Init(mDrmDevice, drmDisplayId, mDisplayTraceName);
     mDrmVSyncWorker.RegisterCallback(std::shared_ptr<VsyncCallback>(this));
 
     if (!mDrmDevice->planes().empty()) {
@@ -677,6 +701,8 @@ int32_t ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
     parseColorModeEnums(mDrmCrtc->color_mode_property());
     parseMipiSyncEnums(mDrmConnector->mipi_sync());
     updateMountOrientation();
+
+    if (mExynosDisplay->mType == HWC_DISPLAY_PRIMARY) parseRCDId(mDrmCrtc->rcd_plane_id_property());
 
     if (mExynosDisplay->mBrightnessController &&
             mExynosDisplay->mBrightnessController->initDrm(*mDrmDevice, *mDrmConnector)) {
@@ -721,7 +747,7 @@ void ExynosDisplayDrmInterface::Callback(
 
     if (exynosDevice->onVsync_2_4(mExynosDisplay->mDisplayId, timestamp,
                                   mExynosDisplay->mVsyncPeriod)) {
-        ATRACE_INT(vsyncPeriodTag, static_cast<int32_t>(mExynosDisplay->mVsyncPeriod));
+        DISPLAY_ATRACE_INT(vsyncPeriodTag, static_cast<int32_t>(mExynosDisplay->mVsyncPeriod));
         return;
     }
 
@@ -819,7 +845,7 @@ int32_t ExynosDisplayDrmInterface::setVsyncEnabled(uint32_t enabled)
 
     ExynosDevice *exynosDevice = mExynosDisplay->mDevice;
     if (exynosDevice->isCallbackAvailable(HWC2_CALLBACK_VSYNC_2_4)) {
-        ATRACE_INT(vsyncPeriodTag, 0);
+        DISPLAY_ATRACE_INT(vsyncPeriodTag, 0);
     }
 
     return NO_ERROR;
@@ -832,23 +858,41 @@ int32_t ExynosDisplayDrmInterface::chosePreferredConfig()
     if (err != HWC2_ERROR_NONE || !num_configs)
         return err;
 
-    hwc2_config_t config;
-    int32_t bootConfig;
-    err = mExynosDisplay->getPreferredDisplayConfigInternal(&bootConfig);
-    if (err == HWC2_ERROR_NONE) {
-        config = static_cast<hwc2_config_t>(bootConfig);
+    int32_t config = -1;
+    char modeStr[PROPERTY_VALUE_MAX] = "\0";
+    int32_t width = 0, height = 0, fps = 0;
+    if (property_get("vendor.display.preferred_mode", modeStr, "") > 0 &&
+        sscanf(modeStr, "%dx%d@%d", &width, &height, &fps) == 3) {
+        err = mExynosDisplay->lookupDisplayConfigs(width, height, fps, &config);
     } else {
-        config = mDrmConnector->get_preferred_mode_id();
-    }
-    ALOGI("Preferred mode id: %d, state: %d", config, mDrmConnector->state());
-
-    if ((err = setActiveConfig(config)) < 0) {
-        ALOGE("failed to set default config, err %d", err);
-        return err;
+        err = HWC2_ERROR_BAD_CONFIG;
     }
 
-    mExynosDisplay->updateInternalDisplayConfigVariables(config);
-    return err;
+    const int32_t drmPreferredConfig = mDrmConnector->get_preferred_mode_id();
+    if (err != HWC2_ERROR_NONE) {
+        config = drmPreferredConfig;
+    }
+    ALOGI("Preferred mode id: %d(%s), state: %d", config, modeStr, mDrmConnector->state());
+
+    auto &configs = mExynosDisplay->mDisplayConfigs;
+    if (config != drmPreferredConfig &&
+        (configs[config].width != configs[drmPreferredConfig].width ||
+         configs[config].height != configs[drmPreferredConfig].height)) {
+        // HWC cannot send a resolution change commit here until 1st frame update because of
+        // some panels requirement. Therefore, it calls setActiveConfigWithConstraints() help
+        // set mDesiredModeState correctly, and then trigger modeset in the 1s frame update.
+        if ((err = setActiveConfigWithConstraints(config)) < 0) {
+            ALOGE("failed to setActiveConfigWithConstraints(), err %d", err);
+            return err;
+        }
+    } else {
+        if ((err = setActiveConfig(config)) < 0) {
+            ALOGE("failed to set default config, err %d", err);
+            return err;
+        }
+    }
+
+    return mExynosDisplay->updateInternalDisplayConfigVariables(config);
 }
 
 int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
@@ -876,11 +920,12 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
         /* key: (width<<32 | height) */
         std::map<uint64_t, uint32_t> groupIds;
         uint32_t groupId = 0;
-        uint32_t min_vsync_period = UINT_MAX;
+        float peakRr = -1;
 
         for (const DrmMode &mode : mDrmConnector->modes()) {
             displayConfigs_t configs;
-            configs.vsyncPeriod = nsecsPerSec/ mode.v_refresh();
+            float rr = mode.v_refresh();
+            configs.vsyncPeriod = nsecsPerSec / rr;
             configs.width = mode.h_display();
             configs.height = mode.v_display();
             uint64_t key = ((uint64_t)configs.width<<32) | configs.height;
@@ -897,14 +942,15 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
             configs.Xdpi = mm_width ? (mode.h_display() * kUmPerInch) / mm_width : -1;
             // Dots per 1000 inches
             configs.Ydpi = mm_height ? (mode.v_display() * kUmPerInch) / mm_height : -1;
-            // find min vsync period
-            if (configs.vsyncPeriod <= min_vsync_period) min_vsync_period = configs.vsyncPeriod;
+            // find peak rr
+            if (rr > peakRr)
+                  peakRr = rr;
             mExynosDisplay->mDisplayConfigs.insert(std::make_pair(mode.id(), configs));
             ALOGD("config group(%d), w(%d), h(%d), vsync(%d), xdpi(%d), ydpi(%d)",
                     configs.groupId, configs.width, configs.height,
                     configs.vsyncPeriod, configs.Xdpi, configs.Ydpi);
         }
-        mExynosDisplay->setMinDisplayVsyncPeriod(min_vsync_period);
+        mExynosDisplay->setPeakRefreshRate(peakRr);
     }
 
     uint32_t num_modes = static_cast<uint32_t>(mDrmConnector->modes().size());
@@ -947,7 +993,12 @@ int32_t ExynosDisplayDrmInterface::getDisplayVsyncPeriod(hwc2_vsync_period_t* ou
 
 int32_t ExynosDisplayDrmInterface::getConfigChangeDuration()
 {
-    /* TODO: Get from driver */
+    const auto [ret, duration] = mDrmConnector->vrr_switch_duration().value();
+
+    if (!ret && duration > 0) {
+        return duration;
+    }
+
     return 2;
 };
 
@@ -1055,6 +1106,10 @@ int32_t ExynosDisplayDrmInterface::setActiveConfigWithConstraints(
 {
     ALOGD("%s:: %s config(%d) test(%d)", __func__, mExynosDisplay->mDisplayName.string(), config,
           test);
+
+    if (mExynosDisplay->mOperationRateManager) {
+        mExynosDisplay->mOperationRateManager->onConfig(config);
+    }
     auto mode = std::find_if(mDrmConnector->modes().begin(), mDrmConnector->modes().end(),
             [config](DrmMode const &m) { return m.id() == config;});
     if (mode == mDrmConnector->modes().end()) {
@@ -1071,7 +1126,7 @@ int32_t ExynosDisplayDrmInterface::setActiveConfigWithConstraints(
         return HWC2_ERROR_NONE;
     }
 
-    if (mDesiredModeState.needs_modeset) {
+    if (mDesiredModeState.needsModeSet()) {
         ALOGD("Previous mode change request is not applied");
     }
 
@@ -1085,34 +1140,42 @@ int32_t ExynosDisplayDrmInterface::setActiveConfigWithConstraints(
             return HWC2_ERROR_BAD_CONFIG;
         }
     }
-    if (test) {
-        if ((ret = setDisplayMode(drmReq, modeBlob? modeBlob : mDesiredModeState.blob_id)) < 0) {
-            HWC_LOGE(mExynosDisplay, "%s: Fail to apply display mode",
-                    __func__);
-            return ret;
-        }
-        ret = drmReq.commit(DRM_MODE_ATOMIC_TEST_ONLY, true);
-        if (ret) {
-            drmReq.addOldBlob(modeBlob);
-            HWC_LOGE(mExynosDisplay, "%s:: Failed to commit pset ret=%d in applyDisplayMode()\n",
-                    __func__, ret);
-            return ret;
+    const auto isResSwitch =
+            (mActiveModeState.blob_id != 0) && mActiveModeState.isFullModeSwitch(*mode);
+
+    if (!test) {
+        if (modeBlob) { /* only replace desired mode if it has changed */
+            mDesiredModeState.setMode(*mode, modeBlob, drmReq);
+        } else {
+            ALOGD("%s:: same desired mode %d", __func__, config);
         }
     } else {
-        mDesiredModeState.needs_modeset = true;
-    }
+        if (!isResSwitch) {
+            ret = setDisplayMode(drmReq, modeBlob ? modeBlob : mDesiredModeState.blob_id);
+            if (ret < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to apply display mode", __func__);
+                return ret;
+            }
+            ret = drmReq.commit(DRM_MODE_ATOMIC_TEST_ONLY, true);
+            if (ret) {
+                drmReq.addOldBlob(modeBlob);
+                HWC_LOGE(mExynosDisplay,
+                         "%s:: Failed to commit pset ret=%d in applyDisplayMode()\n", __func__,
+                         ret);
+                return ret;
+            }
+        }
 
-    if (modeBlob != 0) {
-        mDesiredModeState.setMode(*mode, modeBlob, drmReq);
+        if (modeBlob) {
+            mDrmDevice->DestroyPropertyBlob(modeBlob);
+        }
     }
     return HWC2_ERROR_NONE;
 }
 int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     /* Don't skip when power was off */
-    if (!(mExynosDisplay->mSkipFrame) &&
-        (mActiveModeState.blob_id != 0) &&
-        (mActiveModeState.mode.id() == mode.id()) &&
-        (mActiveModeState.needs_modeset == false)) {
+    if (!(mExynosDisplay->mSkipFrame) && (mActiveModeState.blob_id != 0) &&
+        (mActiveModeState.mode.id() == mode.id()) && !mActiveModeState.needsModeSet()) {
         ALOGD("%s:: same mode %d", __func__, mode.id());
         return HWC2_ERROR_NONE;
     }
@@ -1130,16 +1193,7 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
     bool reconfig = false;
 
-    if ((mActiveModeState.blob_id != 0) &&
-        ((mode.h_display() != mActiveModeState.mode.h_display()) ||
-         (mode.v_display() != mActiveModeState.mode.v_display()))) {
-        ret = clearDisplayPlanes(drmReq);
-        if (ret != HWC2_ERROR_NONE) {
-            HWC_LOGE(mExynosDisplay, "%s: Failed to clear planes due to resolution change",
-                     __func__);
-        } else {
-            ALOGD("%s: switching display resolution, clearing planes", __func__);
-        }
+    if (mActiveModeState.isFullModeSwitch(mode)) {
         reconfig = true;
     }
 
@@ -1159,7 +1213,7 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
 
     mDrmConnector->set_active_mode(mode);
     mActiveModeState.setMode(mode, modeBlob, drmReq);
-    mActiveModeState.needs_modeset = false;
+    mActiveModeState.clearPendingModeState();
 
     if (reconfig) {
         mDrmConnector->ResetLpMode();
@@ -1184,6 +1238,16 @@ int32_t ExynosDisplayDrmInterface::setActiveConfig(hwc2_config_t config) {
         ALOGE("%s:: %s config(%d) failed", __func__, mExynosDisplay->mDisplayName.string(), config);
     }
 
+    return 0;
+}
+
+int32_t ExynosDisplayDrmInterface::getPanelResolution() {
+    for (auto it = mDrmConnector->modes().begin(); it != mDrmConnector->modes().end(); it++) {
+        if (it->h_display() * it->v_display() > mPanelResolutionHsize * mPanelResolutionVsize) {
+            mPanelResolutionHsize = it->h_display();
+            mPanelResolutionVsize = it->v_display();
+        }
+    }
     return 0;
 }
 
@@ -1328,11 +1392,11 @@ int32_t ExynosDisplayDrmInterface::updateHdrCapabilities()
 
 int ExynosDisplayDrmInterface::getDeconChannel(ExynosMPP *otfMPP)
 {
-    int32_t channelNum = sizeof(IDMA_CHANNEL_MAP)/sizeof(dpp_channel_map_t);
+    int32_t channelNum = sizeof(idma_channel_map)/sizeof(dpp_channel_map_t);
     for (int i = 0; i < channelNum; i++) {
-        if((IDMA_CHANNEL_MAP[i].type == otfMPP->mPhysicalType) &&
-           (IDMA_CHANNEL_MAP[i].index == otfMPP->mPhysicalIndex))
-            return IDMA_CHANNEL_MAP[i].channel;
+        if((idma_channel_map[i].type == otfMPP->mPhysicalType) &&
+           (idma_channel_map[i].index == otfMPP->mPhysicalIndex))
+            return idma_channel_map[i].channel;
     }
     return -EINVAL;
 }
@@ -1603,9 +1667,13 @@ int32_t ExynosDisplayDrmInterface::updateColorSettings(DrmModeAtomicReq &drmReq,
             }
 
             auto &plane = mDrmDevice->planes().at(channelId);
-            if ((ret = setPlaneColorSetting(drmReq, plane, config)) != 0) {
+            uint32_t solidColor = config.color;
+            if ((ret = setPlaneColorSetting(drmReq, plane, config, solidColor)) != 0) {
                 HWC_LOGE(mExynosDisplay, "Failed to set plane color setting, config[%zu]", i);
                 return ret;
+            }
+            if (config.state == config.WIN_STATE_COLOR && solidColor != config.color) {
+                config.color = solidColor;
             }
         }
     }
@@ -1621,6 +1689,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     android::String8 result;
     bool hasSecureFrameBuffer = false;
 
+    mFrameCounter++;
     funcReturnCallback retCallback([&]() {
         if ((ret == NO_ERROR) && !drmReq.getError()) {
             mFBManager.flip(hasSecureFrameBuffer);
@@ -1651,7 +1720,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     }
 
     uint64_t mipi_sync_type = 0;
-    if (mDesiredModeState.needs_modeset) {
+    if (mDesiredModeState.needsModeSet()) {
         if (mExynosDisplay->checkRrCompensationEnabled()) {
             mipi_sync_type |=
                 1 << mMipiSyncEnums[toUnderlying(HalMipiSyncType::HAL_MIPI_CMD_SYNC_REFRESH_RATE)];
@@ -1691,6 +1760,13 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
         return ret;
     }
 
+    // Update of color settings could change layer's solid color. So it should
+    // be called before use of layer's solid color.
+    if ((ret = updateColorSettings(drmReq, dqeEnable)) != 0) {
+        HWC_LOGE(mExynosDisplay, "failed to update color settings (%d)", ret);
+        return ret;
+    }
+
     for (size_t i = 0; i < mExynosDisplay->mDpuData.configs.size(); i++) {
         exynos_win_config_data& config = mExynosDisplay->mDpuData.configs[i];
         if ((config.state == config.WIN_STATE_BUFFER) ||
@@ -1721,15 +1797,18 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
 
     for (size_t i = 0; i < mExynosDisplay->mDpuData.rcdConfigs.size(); ++i) {
         exynos_win_config_data &config = mExynosDisplay->mDpuData.rcdConfigs[i];
-        if (config.state == config.WIN_STATE_RCD) {
-            const int channelId = mExynosDisplay->mDevice->getSpecialPlaneId(
-                    mExynosDisplay->mIndex); // TODO: b/227584297
-            auto &plane = mDrmDevice->planes().at(channelId);
-            uint32_t fbId = 0;
-            if ((ret = setupCommitFromDisplayConfig(drmReq, config, i, plane, fbId)) < 0) {
-                HWC_LOGE(mExynosDisplay, "setupCommitFromDisplayConfig failed, config[%zu]", i);
+        if ((config.state == config.WIN_STATE_RCD) &&
+            (mExynosDisplay->mType == HWC_DISPLAY_PRIMARY)) {
+            const int32_t rcdId = static_cast<ExynosPrimaryDisplay *>(mExynosDisplay)->mRcdId;
+            const int32_t channelId = getSpecialChannelId(rcdId);
+            if (channelId >= 0) {
+                auto &plane = mDrmDevice->planes().at(channelId);
+                uint32_t fbId = 0;
+                if ((ret = setupCommitFromDisplayConfig(drmReq, config, i, plane, fbId)) < 0) {
+                    HWC_LOGE(mExynosDisplay, "setupCommitFromDisplayConfig failed, config[%zu]", i);
+                }
+                planeEnableInfo[plane->id()] = 1;
             }
-            planeEnableInfo[plane->id()] = 1;
         }
     }
 
@@ -1741,6 +1820,10 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
             if ((exynosMPP != NULL) && (mExynosDisplay != NULL) &&
                 (exynosMPP->mAssignedState & MPP_ASSIGN_STATE_RESERVED) &&
                 (exynosMPP->mReservedDisplay != (int32_t)mExynosDisplay->mDisplayId))
+                continue;
+
+            if ((exynosMPP == NULL) && (mExynosDisplay->mType == HWC_DISPLAY_PRIMARY) &&
+                (plane->id() != static_cast<ExynosPrimaryDisplay *>(mExynosDisplay)->mRcdId))
                 continue;
 
             if ((ret = drmReq.atomicAddProperty(plane->id(),
@@ -1759,8 +1842,11 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
 
     if (mExynosDisplay->mBrightnessController) {
         bool ghbmSync, lhbmSync, blSync;
+        bool mixedComposition = mExynosDisplay->isMixedComposition()
+                                || mExynosDisplay->isPriorFrameMixedCompostion();
         ret = mExynosDisplay->mBrightnessController->prepareFrameCommit(*mExynosDisplay,
-                                        *mDrmConnector, drmReq, ghbmSync, lhbmSync, blSync);
+                                        *mDrmConnector, drmReq, mixedComposition,
+                                        ghbmSync, lhbmSync, blSync);
         if (ret < 0) {
             HWC_LOGE(mExynosDisplay, "%s: Fail to config brightness", __func__);
         } else {
@@ -1780,7 +1866,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     }
 
     uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
-    if (needModesetForReadback)
+    if (needModesetForReadback || !mDesiredModeState.isSeamless())
         flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 
     /* For Histogram */
@@ -1789,17 +1875,16 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
         return ret;
     }
 
-    if ((ret = updateColorSettings(drmReq, dqeEnable)) != 0) {
-        HWC_LOGE(mExynosDisplay, "failed to update color settings (%d)", ret);
-        return ret;
-    }
-
     if (mDrmConnector->mipi_sync().id() && (mipi_sync_type != 0)) {
-        ATRACE_NAME("mipi_sync"); // mark this commit
-        if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(),
-                                            mDrmConnector->mipi_sync(),
-                                            mipi_sync_type)) < 0) {
-            HWC_LOGE(mExynosDisplay, "%s: Fail to set mipi_sync property (%d)", __func__, ret);
+        // skip mipi sync in Doze mode
+        bool inDoze = isDozeModeAvailable() && mDozeDrmMode.id() == mActiveModeState.mode.id();
+        if (!inDoze) {
+            ATRACE_NAME("mipi_sync"); // mark this commit
+            if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(),
+                                                mDrmConnector->mipi_sync(),
+                                                mipi_sync_type)) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to set mipi_sync property (%d)", __func__, ret);
+            }
         }
     }
 
@@ -1839,8 +1924,12 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
         }
     }
 
-    if (mDesiredModeState.needs_modeset) {
+    if (mDesiredModeState.needsModeSet()) {
         mDesiredModeState.apply(mActiveModeState, drmReq);
+        if (!mActiveModeState.isSeamless()) {
+            mDrmConnector->ResetLpMode();
+            getLowPowerDrmModeModeInfo();
+        }
         mVsyncCallback.setDesiredVsyncPeriod(
                 nsecsPerSec/mActiveModeState.mode.v_refresh());
         /* Enable vsync to check vsync period */
@@ -1898,6 +1987,8 @@ int32_t ExynosDisplayDrmInterface::clearDisplayPlanes(DrmModeAtomicReq &drmReq)
 
 int32_t ExynosDisplayDrmInterface::clearDisplay(bool needModeClear)
 {
+    ExynosDevice *exynosDevice = mExynosDisplay->mDevice;
+    const bool isAsyncOff = needModeClear && exynosDevice->isDispOffAsyncSupported();
     int ret = NO_ERROR;
     DrmModeAtomicReq drmReq(this);
 
@@ -1918,7 +2009,7 @@ int32_t ExynosDisplayDrmInterface::clearDisplay(bool needModeClear)
     }
 
     /* Disable ModeSet */
-    if (needModeClear) {
+    if (needModeClear && !isAsyncOff) {
         if ((ret = clearDisplayMode(drmReq)) < 0) {
             HWC_LOGE(mExynosDisplay, "%s: Failed to apply display mode", __func__);
             return ret;
@@ -1932,8 +2023,24 @@ int32_t ExynosDisplayDrmInterface::clearDisplay(bool needModeClear)
         return ret;
     }
 
-    if (needModeClear)
-        mActiveModeState.needs_modeset = true;
+    /* During async off we're clearing planes within a single refresh cycle
+     * and then offloading display off asynchronously.
+     */
+    if (isAsyncOff) {
+        if ((ret = clearDisplayMode(drmReq)) < 0) {
+            HWC_LOGE(mExynosDisplay, "%s: Failed to apply display mode", __func__);
+            return ret;
+        }
+
+        ret = drmReq.commit(DRM_MODE_ATOMIC_ALLOW_MODESET | DRM_MODE_ATOMIC_NONBLOCK, true);
+        if (ret) {
+            HWC_LOGE(mExynosDisplay, "%s:: Failed to commit pset ret=%d in clearDisplay()\n",
+                     __func__, ret);
+            return ret;
+        }
+    }
+
+    if (needModeClear) mActiveModeState.forceModeSet();
 
     return NO_ERROR;
 }
@@ -2369,4 +2476,17 @@ int32_t ExynosDisplayDrmInterface::getDisplayIdentificationData(
     *outPort = mDrmConnector->id();
 
     return HWC2_ERROR_NONE;
+}
+
+int32_t ExynosDisplayDrmInterface::getSpecialChannelId(uint32_t planeId) {
+    ExynosDevice *exynosDevice = mExynosDisplay->mDevice;
+    for (int i = 0; i < exynosDevice->getSpecialPlaneNum(); i++) {
+        const int32_t channelId = exynosDevice->getSpecialPlaneId(i);
+        auto &plane = mDrmDevice->planes().at(channelId);
+        if (plane->id() == planeId) return channelId;
+    }
+
+    ALOGE("%s: Failed to get RCD planeId.", __func__);
+
+    return -EINVAL;
 }

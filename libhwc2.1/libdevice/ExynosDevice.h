@@ -18,6 +18,7 @@
 #define _EXYNOSDEVICE_H
 
 #include <aidl/com/google/hardware/pixel/display/BnDisplay.h>
+#include <aidl/android/hardware/graphics/composer3/OverlayProperties.h>
 #include <cutils/atomic.h>
 #include <displaycolor/displaycolor.h>
 #include <hardware/hwcomposer2.h>
@@ -61,6 +62,7 @@ using HbmState = ::aidl::com::google::hardware::pixel::display::HbmState;
 using LbeState = ::aidl::com::google::hardware::pixel::display::LbeState;
 using PanelCalibrationStatus = ::aidl::com::google::hardware::pixel::display::PanelCalibrationStatus;
 
+using OverlayProperties = aidl::android::hardware::graphics::composer3::OverlayProperties;
 using namespace android;
 
 struct exynos_callback_info_t {
@@ -153,6 +155,7 @@ class ExynosDevice {
          * Display list that managed by Device.
          */
         android::Vector< ExynosDisplay* > mDisplays;
+        std::map<uint32_t, ExynosDisplay *> mDisplayMap;
 
         int mNumVirtualDisplay;
 
@@ -204,7 +207,8 @@ class ExynosDevice {
         uint32_t mDisplayMode;
 
         // Variable for fence tracer
-        std::map<int, HwcFenceInfo> mFenceInfos;
+        std::map<int, HwcFenceInfo> mFenceInfos GUARDED_BY(mFenceMutex);
+        std::mutex mFenceMutex;
 
         /**
          * This will be initialized with differnt class
@@ -232,7 +236,7 @@ class ExynosDevice {
         /**
          * @param display
          */
-        ExynosDisplay* getDisplay(uint32_t display);
+        ExynosDisplay* getDisplay(uint32_t display) { return mDisplayMap[display]; }
 
         /**
          * Device Functions for HWC 2.0
@@ -332,6 +336,10 @@ class ExynosDevice {
         int32_t registerHwc3Callback(uint32_t descriptor, hwc2_callback_data_t callbackData,
                                      hwc2_function_pointer_t point);
         void onVsyncIdle(hwc2_display_t displayId);
+        bool isDispOffAsyncSupported() { return mDisplayOffAsync; };
+        virtual int32_t getOverlaySupport([[maybe_unused]] OverlayProperties* caps){
+            return HWC2_ERROR_UNSUPPORTED;
+        }
 
     protected:
         void initDeviceInterface(uint32_t interfaceType);
@@ -345,29 +353,13 @@ class ExynosDevice {
         bool isCallbackRegisteredLocked(int32_t descriptor);
 
     public:
-        bool isLbeSupported();
-        void setLbeState(LbeState state);
-        void setLbeAmbientLight(int value);
-        LbeState getLbeState();
-
-        bool isLhbmSupported();
-        int32_t setLhbmState(bool enabled);
-        bool getLhbmState();
-        int setMinIdleRefreshRate(const int fps);
-        int setRefreshRateThrottle(const int delayMs);
-
-        bool isColorCalibratedByDevice();
-
-        PanelCalibrationStatus getPanelCalibrationStatus();
-
-    public:
         void enterToTUI() { mIsInTUI = true; };
         void exitFromTUI() { mIsInTUI = false; };
         bool isInTUI() { return mIsInTUI; };
 
     private:
-        bool mLbeSupported;
         bool mIsInTUI;
+        bool mDisplayOffAsync;
 };
 
 #endif //_EXYNOSDEVICE_H
