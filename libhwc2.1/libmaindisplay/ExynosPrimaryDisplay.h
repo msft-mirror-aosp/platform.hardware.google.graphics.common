@@ -20,6 +20,8 @@
 
 #include "../libdevice/ExynosDisplay.h"
 
+using namespace displaycolor;
+
 class ExynosPrimaryDisplay : public ExynosDisplay {
     public:
         /* Methods */
@@ -33,22 +35,32 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
             return currentPanelGammaSource;
         }
 
-        virtual bool isLhbmSupported() { return mLhbmFd ? true : false; }
+        virtual bool isLhbmSupported();
         virtual int32_t setLhbmState(bool enabled);
-        virtual int32_t setDisplayBrightness(float brightness) override;
 
         virtual bool getLhbmState();
-        virtual void notifyLhbmState(bool enabled);
-        virtual void setWakeupDisplay();
+        virtual void setEarlyWakeupDisplay();
+        virtual void setExpectedPresentTime(uint64_t timestamp);
+        virtual uint64_t getPendingExpectedPresentTime();
+        virtual void applyExpectedPresentTime();
+        virtual int32_t setDisplayIdleTimer(const int32_t timeoutMs) override;
+        virtual void handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) override;
 
         virtual void initDisplayInterface(uint32_t interfaceType);
         virtual int32_t doDisplayConfigInternal(hwc2_config_t config) override;
 
         virtual int setMinIdleRefreshRate(const int fps) override;
-        virtual int setRefreshRateThrottleNanos(const int64_t delayNs) override;
+        virtual int setRefreshRateThrottleNanos(const int64_t delayNs,
+                                                const VrrThrottleRequester requester) override;
         virtual void dump(String8& result) override;
         virtual void updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                const int64_t ts) override;
+        virtual void checkBtsReassignResource(const uint32_t vsyncPeriod,
+                                              const uint32_t btsVsyncPeriod) override;
+
+        virtual int32_t setBootDisplayConfig(int32_t config) override;
+        virtual int32_t clearBootDisplayConfig() override;
+        virtual int32_t getPreferredDisplayConfigInternal(int32_t* outConfig) override;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -63,9 +75,15 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual bool getHDRException(ExynosLayer* __unused layer);
         virtual int32_t setActiveConfigInternal(hwc2_config_t config, bool force) override;
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig) override;
+        DisplayType getDisplayTypeFromIndex(uint32_t index) {
+            return (index >= DisplayType::DISPLAY_MAX) ? DisplayType::DISPLAY_PRIMARY
+                                                       : DisplayType(mIndex);
+        };
+
     public:
         // Prepare multi resolution
         ResolutionInfo mResolutionInfo;
+        std::string getPanelSysfsPath(const displaycolor::DisplayType& type);
 
     private:
         static constexpr const char* kDisplayCalFilePath = "/mnt/vendor/persist/display/";
@@ -73,42 +91,56 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         enum PanelGammaSource currentPanelGammaSource = PanelGammaSource::GAMMA_DEFAULT;
 
         bool checkLhbmMode(bool status, nsecs_t timoutNs);
+        void setLHBMRefreshRateThrottle(const uint32_t delayMs);
 
         hwc2_config_t mPendActiveConfig = UINT_MAX;
         bool mFirstPowerOn = true;
+        bool mNotifyPowerOn = false;
+        std::mutex mPowerModeMutex;
+        std::condition_variable mPowerOnCondition;
 
         int32_t applyPendingConfig();
         int32_t setPowerOn();
         int32_t setPowerOff();
         int32_t setPowerDoze(hwc2_power_mode_t mode);
         void firstPowerOn();
-
-        std::string getPanelSysfsPath(const displaycolor::DisplayType& type);
+        int32_t setDisplayIdleTimerEnabled(const bool enabled);
+        int32_t getDisplayIdleTimerEnabled(bool& enabled);
+        void setDisplayNeedHandleIdleExit(const bool needed, const bool force);
+        int32_t setDisplayIdleDelayNanos(int32_t delayNanos,
+                                         const DispIdleTimerRequester requester);
+        void initDisplayHandleIdleExit();
 
         // LHBM
         FILE* mLhbmFd;
-        bool mLhbmOn;
-        bool mLhbmChanged;
+        std::atomic<bool> mLhbmOn;
+        int32_t mFramesToReachLhbmPeakBrightness;
+        // wait num of vsync periods for peak refresh rate
+        static constexpr uint32_t kLhbmWaitForPeakRefreshRate = 10;
+        static constexpr uint32_t kLhbmRefreshRateThrottleMs = 1000;
 
-        std::atomic<bool> mLastRequestedLhbm;
-        std::atomic<bool> mLhbmStatusPending;
-
-        static constexpr const char *kLocalHbmModeFileNode =
-                "/sys/class/backlight/panel0-backlight/local_hbm_mode";
-        std::mutex lhbm_mutex_;
-        std::condition_variable lhbm_cond_;
-
-        FILE* mWakeupDispFd;
+        FILE* mEarlyWakeupDispFd;
         static constexpr const char* kWakeupDispFilePath =
                 "/sys/devices/platform/1c300000.drmdecon/early_wakeup";
+
+        CtrlValue<uint64_t> mExpectedPresentTime;
 
         void calculateTimeline(hwc2_config_t config,
                                hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
                                hwc_vsync_period_change_timeline_t* outTimeline) override;
+        std::mutex mIdleRefreshRateThrottleMutex;
         int mMinIdleRefreshRate;
+        int64_t mVrrThrottleNanos[toUnderlying(VrrThrottleRequester::MAX)];
         int64_t mRefreshRateDelayNanos;
         int64_t mLastRefreshRateAppliedNanos;
         hwc2_config_t mAppliedActiveConfig;
+
+        std::mutex mDisplayIdleDelayMutex;
+        bool mDisplayIdleTimerEnabled;
+        int64_t mDisplayIdleTimerNanos[toUnderlying(DispIdleTimerRequester::MAX)];
+        std::ofstream mDisplayNeedHandleIdleExitOfs;
+        int64_t mDisplayIdleDelayNanos;
+        bool mDisplayNeedHandleIdleExit;
 };
 
 #endif
