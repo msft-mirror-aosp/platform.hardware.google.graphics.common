@@ -89,6 +89,14 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device,
     mFramesToReachLhbmPeakBrightness =
             property_get_int32("vendor.primarydisplay.lhbm.frames_to_reach_peak_brightness", 3);
 
+    // Allow to enable dynamic recomposition after every power on
+    // since it will always be disabled for every power off
+    // TODO(b/268474771): to enable DR by default if video mode panel is detected
+    if (property_get_int32("vendor.display.dynamic_recomposition", 0) & (1 << index)) {
+        mDRDefault = true;
+        mDREnable = true;
+    }
+
     // Prepare multi resolution
     // Will be exynosHWCControl.multiResoultion
     mResolutionInfo.nNum = 1;
@@ -538,16 +546,16 @@ int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
         }
     }
 
-    float peak_rr = getPeakRefreshRate();
-    if (enabled && peak_rr > 0) {
+    if (enabled) {
         ATRACE_NAME("wait for peak refresh rate");
-        bool succ = mBrightnessController->checkSysfsStatus(
-                                                BrightnessController::kRefreshrateFileNode,
-                                                {std::to_string(std::lround(peak_rr))},
-                                                ms2ns(kLhbmWaitForPeakRefreshRateMs));
-        if (!succ) {
-            ALOGE("%s: check refresh rate sysfs node failed", __func__);
-            return -EINVAL;
+        std::unique_lock<std::mutex> lock(mPeakRefreshRateMutex);
+        mNotifyPeakRefreshRate = true;
+        if (!mPeakRefreshRateCondition.wait_for(lock,
+                                                std::chrono::milliseconds(
+                                                        kLhbmWaitForPeakRefreshRateMs),
+                                                [this]() { return isCurrentPeakRefreshRate(); })) {
+            ALOGW("setLhbmState(on) wait for peak refresh rate timeout !");
+            return TIMED_OUT;
         }
     }
 
@@ -832,7 +840,7 @@ void ExynosPrimaryDisplay::handleDisplayIdleEnter(const uint32_t idleTeRefreshRa
     bool needed = false;
     for (size_t i = 0; i < mLayers.size(); i++) {
         if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
-            !mLayers[i]->checkDownscaleCap(idleTeRefreshRate)) {
+            !mLayers[i]->checkBtsCap(idleTeRefreshRate)) {
             needed = true;
             break;
         }
@@ -980,7 +988,7 @@ void ExynosPrimaryDisplay::checkBtsReassignResource(const uint32_t vsyncPeriod,
     if (vsyncPeriod < btsVsyncPeriod) {
         for (size_t i = 0; i < mLayers.size(); i++) {
             if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
-                !mLayers[i]->checkDownscaleCap(refreshRate)) {
+                !mLayers[i]->checkBtsCap(refreshRate)) {
                 mLayers[i]->setGeometryChanged(GEOMETRY_DEVICE_CONFIG_CHANGED);
                 break;
             }
