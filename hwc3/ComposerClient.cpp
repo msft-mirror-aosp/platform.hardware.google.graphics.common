@@ -360,9 +360,10 @@ ndk::ScopedAStatus ComposerClient::getHdrConversionCapabilities(
 }
 
 ndk::ScopedAStatus ComposerClient::setHdrConversionStrategy(
-        const common::HdrConversionStrategy& hdrConversionStrategy) {
+        const common::HdrConversionStrategy& hdrConversionStrategy,
+        common::Hdr* preferredHdrOutputType) {
     DEBUG_FUNC();
-    auto err = mHal->setHdrConversionStrategy(hdrConversionStrategy);
+    auto err = mHal->setHdrConversionStrategy(hdrConversionStrategy, preferredHdrOutputType);
     return TO_BINDER_STATUS(err);
 }
 
@@ -430,6 +431,17 @@ ndk::ScopedAStatus ComposerClient::setIdleTimerEnabled(int64_t display, int32_t 
     DEBUG_DISPLAY_FUNC(display);
     auto err = mHal->setIdleTimerEnabled(display, timeout);
     return TO_BINDER_STATUS(err);
+}
+
+ndk::ScopedAStatus ComposerClient::setRefreshRateChangedCallbackDebugEnabled(int64_t /* display */,
+                                                                             bool /* enabled */) {
+    // TODO(b/267825022) Add implementation for the HAL and pass appropriate binder status
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+void ComposerClient::HalEventCallback::onRefreshRateChangedDebug(
+        const RefreshRateChangedDebugData&) {
+    // TODO(b/267825022) Add implementation for the HAL
 }
 
 void ComposerClient::HalEventCallback::onHotplug(int64_t display, bool connected) {

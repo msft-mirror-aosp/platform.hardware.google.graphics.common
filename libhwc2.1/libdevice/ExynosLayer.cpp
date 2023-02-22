@@ -55,6 +55,8 @@ ExynosLayer::ExynosLayer(ExynosDisplay* display)
         mFrameCount(0),
         mLastFrameCount(0),
         mLastFpsTime(0),
+        mNextLastFrameCount(0),
+        mNextLastFpsTime(0),
         mLastLayerBuffer(NULL),
         mLayerBuffer(NULL),
         mDamageNum(0),
@@ -962,14 +964,16 @@ int32_t ExynosLayer::resetAssignedResource()
     return ret;
 }
 
-bool ExynosLayer::checkDownscaleCap(uint32_t bts_refresh_rate)
-{
+bool ExynosLayer::checkBtsCap(const uint32_t bts_refresh_rate) {
     if (mOtfMPP == nullptr) return true;
 
     exynos_image src_img;
-    exynos_image dst_img;
-
     setSrcExynosImage(&src_img);
+    if (mOtfMPP->checkSpecificRestriction(bts_refresh_rate, src_img)) {
+        return false;
+    }
+
+    exynos_image dst_img;
     setDstExynosImage(&dst_img);
 
     const bool isPerpendicular = !!(src_img.transform & HAL_TRANSFORM_ROT_90);
