@@ -99,6 +99,20 @@ void seamlessPossible(hwc2_callback_data_t callbackData, hwc2_display_t hwcDispl
     hal->getEventCallback()->onSeamlessPossible(display);
 }
 
+void refreshRateChangedDebug(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
+                             hwc2_vsync_period_t hwcVsyncPeriodNanos) {
+    auto hal = static_cast<HalImpl*>(callbackData);
+    int64_t display;
+    int32_t vsyncPeriodNanos;
+
+    h2a::translate(hwcDisplay, display);
+    h2a::translate(hwcVsyncPeriodNanos, vsyncPeriodNanos);
+    hal->getEventCallback()->onRefreshRateChangedDebug(RefreshRateChangedDebugData{
+            .display = display,
+            .vsyncPeriodNanos = vsyncPeriodNanos,
+    });
+}
+
 } // nampesapce hook
 
 HalImpl::HalImpl(std::unique_ptr<ExynosDevice> device) : mDevice(std::move(device)) {
@@ -130,6 +144,7 @@ void HalImpl::initCaps() {
     }
 
     mCaps.insert(Capability::BOOT_DISPLAY_CONFIG);
+    mCaps.insert(Capability::REFRESH_RATE_CHANGED_CALLBACK_DEBUG);
 }
 
 int32_t HalImpl::getHalDisplay(int64_t display, ExynosDisplay*& halDisplay) {
@@ -193,6 +208,9 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
     // register HWC3 Callback
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this,
                                   reinterpret_cast<hwc2_function_pointer_t>(hook::vsyncIdle));
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
+                                  reinterpret_cast<hwc2_function_pointer_t>(
+                                          hook::refreshRateChangedDebug));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -204,6 +222,8 @@ void HalImpl::unregisterEventCallback() {
 
     // unregister HWC3 Callback
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this, nullptr);
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
+                                  nullptr);
 
     mEventCallback = nullptr;
 }
@@ -640,7 +660,7 @@ int32_t HalImpl::getHdrConversionCapabilities(std::vector<common::HdrConversionC
     return HWC2_ERROR_UNSUPPORTED;
 }
 
-int32_t HalImpl::setHdrConversionStrategy(const common::HdrConversionStrategy&) {
+int32_t HalImpl::setHdrConversionStrategy(const common::HdrConversionStrategy&, common::Hdr*) {
     return HWC2_ERROR_UNSUPPORTED;
 }
 
@@ -1062,6 +1082,13 @@ int32_t HalImpl::getDisplayMultiThreadedPresentSupport(const int64_t& display, b
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
     return halDisplay->getDisplayMultiThreadedPresentSupport(outSupport);
+}
+
+int32_t HalImpl::setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool enabled) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    return halDisplay->setRefreshRateChangedCallbackDebugEnabled(enabled);
 }
 
 } // namespace aidl::android::hardware::graphics::composer3::impl
