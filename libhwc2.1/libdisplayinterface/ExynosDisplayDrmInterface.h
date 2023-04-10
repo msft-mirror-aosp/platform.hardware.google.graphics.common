@@ -37,6 +37,9 @@
 /* Max plane number of buffer object */
 #define HWC_DRM_BO_MAX_PLANES 4
 
+/* Monitor Descriptor data is 13 bytes in VESA EDID Standard */
+#define MONITOR_DESCRIPTOR_DATA_LENGTH 13
+
 #ifndef HWC_FORCE_PANIC_PATH
 #define HWC_FORCE_PANIC_PATH "/d/dpu/panic"
 #endif
@@ -153,6 +156,7 @@ class FramebufferManager {
 
         static constexpr size_t MAX_CACHED_LAYERS = 16;
         static constexpr size_t MAX_CACHED_BUFFERS_PER_LAYER = 32;
+        static constexpr size_t MAX_CACHED_SECURE_BUFFERS_PER_G2D_LAYER = 3;
 };
 
 inline bool isFramebuffer(const ExynosLayer *layer) {
@@ -491,6 +495,7 @@ class ExynosDisplayDrmInterface :
 
         DrmReadbackInfo mReadbackInfo;
         FramebufferManager mFBManager;
+        std::array<uint8_t, MONITOR_DESCRIPTOR_DATA_LENGTH> mMonitorDescription;
 
     private:
         int32_t getDisplayFakeEdid(uint8_t &outPort, uint32_t &outDataSize, uint8_t *outData);

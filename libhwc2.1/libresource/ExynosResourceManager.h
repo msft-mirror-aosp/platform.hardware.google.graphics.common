@@ -132,7 +132,7 @@ class ExynosResourceManager {
         int32_t updateSupportedMPPFlag(ExynosDisplay * display);
         int32_t resetResources();
         int32_t preAssignResources();
-        void preAssignWindows();
+        void preAssignWindows(ExynosDisplay *display);
         int32_t preProcessLayer(ExynosDisplay *display);
         int32_t resetAssignedResources(ExynosDisplay *display, bool forceReset = false);
         virtual int32_t assignCompositionTarget(ExynosDisplay *display, uint32_t targetType);
@@ -239,7 +239,6 @@ class ExynosResourceManager {
         }
         virtual uint32_t setDisplaysTDMInfo() { return 0; }
         virtual uint32_t initDisplaysTDMInfo() { return 0; }
-        virtual uint32_t calculateHWResourceAmount(ExynosMPPSource __unused *mppSrc) { return 0; }
         virtual uint32_t calculateHWResourceAmount(ExynosDisplay __unused *display,
                                                    ExynosMPPSource __unused *mppSrc) {
             return 0;

@@ -27,6 +27,7 @@
 #include <chrono>
 #include <set>
 
+#include "DeconHeader.h"
 #include "ExynosDisplayInterface.h"
 #include "ExynosHWC.h"
 #include "ExynosHWCDebug.h"
@@ -34,8 +35,8 @@
 #include "ExynosHwc3Types.h"
 #include "ExynosMPP.h"
 #include "ExynosResourceManager.h"
+#include "drmeventlistener.h"
 #include "worker.h"
-#include "DeconHeader.h"
 
 #define HWC_CLEARDISPLAY_WITH_COLORMAP
 #define HWC_PRINT_FRAME_NUM     10
@@ -286,20 +287,20 @@ class ExynosSortedLayer : public Vector <ExynosLayer*>
         static int compare(ExynosLayer * const *lhs, ExynosLayer *const *rhs);
 };
 
-class displayTDMInfo {
+class DisplayTDMInfo {
     public:
         /* Could be extended */
-        typedef struct resourceAmount {
+        typedef struct ResourceAmount {
             uint32_t totalAmount;
-        } resourceAmount_t;
-        std::map<tdm_attr_t, resourceAmount_t> mAmount;
+        } ResourceAmount_t;
+        std::map<tdm_attr_t, ResourceAmount_t> mAmount;
 
-        uint32_t initTDMInfo(resourceAmount_t amount, tdm_attr_t attr) {
+        uint32_t initTDMInfo(ResourceAmount_t amount, tdm_attr_t attr) {
             mAmount[attr] = amount;
             return 0;
         }
 
-        resourceAmount_t getAvailableAmount(tdm_attr_t attr) { return mAmount[attr]; }
+        ResourceAmount_t getAvailableAmount(tdm_attr_t attr) { return mAmount[attr]; }
 };
 
 class ExynosCompositionInfo : public ExynosMPPSource {
@@ -449,8 +450,15 @@ class ExynosDisplay {
          * Geometry change info is described by bit map.
          * This flag is cleared when resource assignment for all displays
          * is done.
+         * Geometry changed to layer REFRESH_RATE_INDICATOR will be excluded.
          */
         uint64_t  mGeometryChanged;
+
+        /**
+         * The number of buffer updates in the current frame.
+         * Buffer update for layer REFRESH_RATE_INDICATOR will be excluded.
+         */
+        uint32_t mBufferUpdates;
 
         /**
          * Rendering step information that is seperated by
@@ -555,10 +563,6 @@ class ExynosDisplay {
 
         hwc2_config_t mActiveConfig = UINT_MAX;
 
-        bool mNotifyPeakRefreshRate = false;
-        std::mutex mPeakRefreshRateMutex;
-        std::condition_variable mPeakRefreshRateCondition;
-
         void initDisplay();
 
         int getId();
@@ -588,6 +592,8 @@ class ExynosDisplay {
         virtual void doPreProcessing();
 
         int checkLayerFps();
+
+        int switchDynamicReCompMode(dynamic_recomp_mode mode);
 
         int checkDynamicReCompMode();
 
@@ -1192,6 +1198,7 @@ class ExynosDisplay {
         void setHWCControl(uint32_t ctrl, int32_t val);
         void setGeometryChanged(uint64_t changedBit);
         void clearGeometryChanged();
+        bool isFrameUpdate();
 
         virtual void setDDIScalerEnable(int width, int height);
         virtual int getDDIScalerMode(int width, int height);
@@ -1278,11 +1285,10 @@ class ExynosDisplay {
         // is the hint session both enabled and supported
         bool usePowerHintSession();
 
-        void setMinDisplayVsyncPeriod(uint32_t period) { mMinDisplayVsyncPeriod = period; }
-
-        bool isCurrentPeakRefreshRate(void) {
-            return ((mConfigRequestState == hwc_request_state_t::SET_CONFIG_STATE_DONE) &&
-                    (mVsyncPeriod == mMinDisplayVsyncPeriod));
+        void setPeakRefreshRate(float rr) { mPeakRefreshRate = rr; }
+        uint32_t getPeakRefreshRate() {
+            float opRate = mOperationRateManager ? mOperationRateManager->getOperationRate() : 0;
+            return static_cast<uint32_t>(std::round(opRate ?: mPeakRefreshRate));
         }
 
         // check if there are any dimmed layers
@@ -1296,7 +1302,7 @@ class ExynosDisplay {
     private:
         bool skipStaticLayerChanged(ExynosCompositionInfo& compositionInfo);
 
-        bool skipSignalIdleForVideoLayer();
+        bool skipSignalIdle();
 
         /// minimum possible dim rate in the case hbm peak is 1000 nits and norml
         // display brightness is 2 nits
@@ -1307,8 +1313,8 @@ class ExynosDisplay {
         static constexpr float kHdrFullScreen = 0.5;
         uint32_t mHdrFullScrenAreaThreshold;
 
-        // vsync period of peak refresh rate
-        uint32_t mMinDisplayVsyncPeriod;
+        // peak refresh rate
+        float mPeakRefreshRate = -1.0f;
 
         // track if the last frame is a mixed composition, to detect mixed
         // composition to non-mixed composition transition.
@@ -1528,7 +1534,7 @@ class ExynosDisplay {
         virtual bool isEnabled() { return mPlugState; }
 
         // Resource TDM (Time-Division Multiplexing)
-        std::map<uint32_t, displayTDMInfo> mDisplayTDMInfo;
+        std::map<uint32_t, DisplayTDMInfo> mDisplayTDMInfo;
 
         class RotatingLogFileWriter {
         public:
@@ -1592,6 +1598,34 @@ class ExynosDisplay {
     public:
         std::unique_ptr<OperationRateManager> mOperationRateManager;
         bool isOperationRateSupported() { return mOperationRateManager != nullptr; }
+
+        class RefreshRateIndicatorHandler : public DrmSysfsEventHandler {
+        public:
+            RefreshRateIndicatorHandler(ExynosDisplay* display);
+            int32_t init();
+            virtual void handleSysfsEvent() override;
+            virtual int getFd() override { return mFd.get(); };
+            bool isIgnoringLastUpdate() { return mIgnoringLastUpdate; }
+            void updateRefreshRate(int refreshRate);
+
+        private:
+            void updateRefreshRateLocked(int refreshRate) REQUIRES(mMutex);
+
+            ExynosDisplay* mDisplay;
+            int mLastRefreshRate GUARDED_BY(mMutex);
+            nsecs_t mLastCallbackTime GUARDED_BY(mMutex);
+            std::atomic_bool mIgnoringLastUpdate = false;
+            UniqueFd mFd;
+            std::mutex mMutex;
+
+            static constexpr auto kRefreshRateStatePathFormat =
+                    "/sys/class/backlight/panel%d-backlight/state";
+        };
+
+        std::shared_ptr<RefreshRateIndicatorHandler> mRefreshRateIndicatorHandler;
+        int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled);
+        void updateRefreshRateIndicator();
+        nsecs_t getLastLayerUpdateTime();
 };
 
 #endif //_EXYNOSDISPLAY_H

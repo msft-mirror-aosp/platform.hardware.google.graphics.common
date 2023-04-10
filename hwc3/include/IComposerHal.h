@@ -25,6 +25,7 @@
 #include <aidl/android/hardware/graphics/common/ColorTransform.h>
 #include <aidl/android/hardware/graphics/common/Dataspace.h>
 #include <aidl/android/hardware/graphics/common/FRect.h>
+#include <aidl/android/hardware/graphics/common/Hdr.h>
 #include <aidl/android/hardware/graphics/common/HdrConversionCapability.h>
 #include <aidl/android/hardware/graphics/common/HdrConversionStrategy.h>
 #include <aidl/android/hardware/graphics/common/PixelFormat.h>
@@ -70,6 +71,7 @@
 #include <aidl/android/hardware/graphics/composer3/PresentFence.h>
 #include <aidl/android/hardware/graphics/composer3/PresentOrValidate.h>
 #include <aidl/android/hardware/graphics/composer3/ReadbackBufferAttributes.h>
+#include <aidl/android/hardware/graphics/composer3/RefreshRateChangedDebugData.h>
 #include <aidl/android/hardware/graphics/composer3/ReleaseFences.h>
 #include <aidl/android/hardware/graphics/composer3/RenderIntent.h>
 #include <aidl/android/hardware/graphics/composer3/VirtualDisplay.h>
@@ -105,6 +107,7 @@ class IComposerHal {
                                                 const VsyncPeriodChangeTimeline& timeline) = 0;
         virtual void onVsyncIdle(int64_t display) = 0;
         virtual void onSeamlessPossible(int64_t display) = 0;
+        virtual void onRefreshRateChangedDebug(const RefreshRateChangedDebugData& data) = 0;
     };
     virtual void registerEventCallback(EventCallback* callback) = 0;
     virtual void unregisterEventCallback() = 0;
@@ -164,7 +167,8 @@ class IComposerHal {
     virtual int32_t clearBootDisplayConfig(int64_t display) = 0;
     virtual int32_t getPreferredBootDisplayConfig(int64_t display, int32_t* config) = 0;
     virtual int32_t getHdrConversionCapabilities(std::vector<common::HdrConversionCapability>*) = 0;
-    virtual int32_t setHdrConversionStrategy(const common::HdrConversionStrategy&) = 0;
+    virtual int32_t setHdrConversionStrategy(const common::HdrConversionStrategy&,
+                                             common::Hdr*) = 0;
     virtual int32_t setAutoLowLatencyMode(int64_t display, bool on) = 0;
     virtual int32_t setClientTarget(int64_t display, buffer_handle_t target,
                                     const ndk::ScopedFileDescriptor& fence,
@@ -227,6 +231,7 @@ class IComposerHal {
     virtual int32_t setLayerBlockingRegion(
             int64_t display, int64_t layer,
             const std::vector<std::optional<common::Rect>>& blockingRegion) = 0;
+    virtual int32_t setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool enabled) = 0;
 };
 
 } // namespace aidl::android::hardware::graphics::composer3::detail

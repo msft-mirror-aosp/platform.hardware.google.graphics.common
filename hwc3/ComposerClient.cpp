@@ -171,16 +171,6 @@ ndk::ScopedAStatus ComposerClient::getDisplayCapabilities(int64_t display,
         caps->push_back(DisplayCapability::DISPLAY_IDLE_TIMER);
     }
 
-    err = mHal->getDisplayMultiThreadedPresentSupport(display, support);
-    if (err != ::android::OK) {
-        LOG(ERROR) << "failed to getDisplayMultiThreadedPresentSupport: " << err;
-        return TO_BINDER_STATUS(err);
-    }
-
-    if (support) {
-        caps->push_back(DisplayCapability::MULTI_THREADED_PRESENT);
-    }
-
     return TO_BINDER_STATUS(err);
 }
 
@@ -360,9 +350,10 @@ ndk::ScopedAStatus ComposerClient::getHdrConversionCapabilities(
 }
 
 ndk::ScopedAStatus ComposerClient::setHdrConversionStrategy(
-        const common::HdrConversionStrategy& hdrConversionStrategy) {
+        const common::HdrConversionStrategy& hdrConversionStrategy,
+        common::Hdr* preferredHdrOutputType) {
     DEBUG_FUNC();
-    auto err = mHal->setHdrConversionStrategy(hdrConversionStrategy);
+    auto err = mHal->setHdrConversionStrategy(hdrConversionStrategy, preferredHdrOutputType);
     return TO_BINDER_STATUS(err);
 }
 
@@ -430,6 +421,22 @@ ndk::ScopedAStatus ComposerClient::setIdleTimerEnabled(int64_t display, int32_t 
     DEBUG_DISPLAY_FUNC(display);
     auto err = mHal->setIdleTimerEnabled(display, timeout);
     return TO_BINDER_STATUS(err);
+}
+
+ndk::ScopedAStatus ComposerClient::setRefreshRateChangedCallbackDebugEnabled(int64_t display,
+                                                                             bool enabled) {
+    DEBUG_DISPLAY_FUNC(display);
+    auto err = mHal->setRefreshRateChangedCallbackDebugEnabled(display, enabled);
+    return TO_BINDER_STATUS(err);
+}
+
+void ComposerClient::HalEventCallback::onRefreshRateChangedDebug(
+        const RefreshRateChangedDebugData& data) {
+    DEBUG_DISPLAY_FUNC(data.display);
+    auto ret = mCallback->onRefreshRateChangedDebug(data);
+    if (!ret.isOk()) {
+        LOG(ERROR) << "failed to send onRefreshRateChangedDebug:" << ret.getDescription();
+    }
 }
 
 void ComposerClient::HalEventCallback::onHotplug(int64_t display, bool connected) {

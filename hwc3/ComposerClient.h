@@ -49,6 +49,7 @@ public:
                                           const VsyncPeriodChangeTimeline& timeline) override;
           void onVsyncIdle(int64_t display) override;
           void onSeamlessPossible(int64_t display) override;
+          void onRefreshRateChangedDebug(const RefreshRateChangedDebugData& data) override;
 
       private:
         void cleanDisplayResources(int64_t display);
@@ -117,7 +118,8 @@ public:
     ndk::ScopedAStatus getPreferredBootDisplayConfig(int64_t display, int32_t* config) override;
     ndk::ScopedAStatus getHdrConversionCapabilities(
             std::vector<common::HdrConversionCapability>*) override;
-    ndk::ScopedAStatus setHdrConversionStrategy(const common::HdrConversionStrategy&) override;
+    ndk::ScopedAStatus setHdrConversionStrategy(const common::HdrConversionStrategy&,
+                                                common::Hdr* preferredHdrOutputType) override;
     ndk::ScopedAStatus setAutoLowLatencyMode(int64_t display, bool on) override;
     ndk::ScopedAStatus setClientTargetSlotCount(int64_t display, int32_t count) override;
     ndk::ScopedAStatus setColorMode(int64_t display, ColorMode mode, RenderIntent intent) override;
@@ -130,6 +132,8 @@ public:
                                          const ndk::ScopedFileDescriptor& releaseFence) override;
     ndk::ScopedAStatus setVsyncEnabled(int64_t display, bool enabled) override;
     ndk::ScopedAStatus setIdleTimerEnabled(int64_t display, int32_t timeout) override;
+    ndk::ScopedAStatus setRefreshRateChangedCallbackDebugEnabled(int64_t /* display */,
+                                                                 bool /* enabled */) override;
 
 protected:
     ::ndk::SpAIBinder createBinder() override;
