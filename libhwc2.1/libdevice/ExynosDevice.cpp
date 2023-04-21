@@ -185,8 +185,7 @@ ExynosDevice::ExynosDevice()
     mResourceManager->initDisplaysTDMInfo();
 
     if (mInterfaceType == INTERFACE_TYPE_DRM) {
-        /* disable vblank immediately after updates */
-        setVBlankOffDelay(-1);
+        setVBlankOffDelay(1);
     }
 
     char value[PROPERTY_VALUE_MAX];
@@ -227,6 +226,7 @@ void ExynosDevice::initDeviceInterface(uint32_t interfaceType)
                     display->mDisplayInterface) != NO_ERROR) {
             ALOGD("Remove display[%d], Failed to initialize display interface", i);
             mDisplays.removeAt(i);
+            mDisplayMap.erase(display->mDisplayId);
             delete display;
         } else {
             i++;
@@ -799,13 +799,12 @@ bool ExynosDevice::checkNonInternalConnection()
     return false;
 }
 
-void ExynosDevice::getCapabilities(uint32_t *outCount, int32_t* outCapabilities)
-{
+void ExynosDevice::getCapabilitiesLegacy(uint32_t *outCount, int32_t *outCapabilities) {
     uint32_t capabilityNum = 0;
 #ifdef HWC_SUPPORT_COLOR_TRANSFORM
     capabilityNum++;
 #endif
-#ifdef HWC_SKIP_VALIDATE
+#ifndef HWC_NO_SUPPORT_SKIP_VALIDATE
     capabilityNum++;
 #endif
     if (outCapabilities == NULL) {
@@ -816,14 +815,34 @@ void ExynosDevice::getCapabilities(uint32_t *outCount, int32_t* outCapabilities)
         ALOGE("%s:: invalid outCount(%d), should be(%d)", __func__, *outCount, capabilityNum);
         return;
     }
-#if defined(HWC_SUPPORT_COLOR_TRANSFORM) || defined(HWC_SKIP_VALIDATE)
+#if defined(HWC_SUPPORT_COLOR_TRANSFORM) || !defined(HWC_NO_SUPPORT_SKIP_VALIDATE)
     uint32_t index = 0;
 #endif
 #ifdef HWC_SUPPORT_COLOR_TRANSFORM
     outCapabilities[index++] = HWC2_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
 #endif
-#ifdef HWC_SKIP_VALIDATE
+#ifndef HWC_NO_SUPPORT_SKIP_VALIDATE
     outCapabilities[index++] = HWC2_CAPABILITY_SKIP_VALIDATE;
+#endif
+    return;
+}
+
+void ExynosDevice::getCapabilities(uint32_t *outCount, int32_t *outCapabilities) {
+    uint32_t capabilityNum = 0;
+#ifdef HWC_SUPPORT_COLOR_TRANSFORM
+    capabilityNum++;
+#endif
+    if (outCapabilities == NULL) {
+        *outCount = capabilityNum;
+        return;
+    }
+    if (capabilityNum != *outCount) {
+        ALOGE("%s:: invalid outCount(%d), should be(%d)", __func__, *outCount, capabilityNum);
+        return;
+    }
+#if defined(HWC_SUPPORT_COLOR_TRANSFORM)
+    uint32_t index = 0;
+    outCapabilities[index++] = HWC2_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
 #endif
     return;
 }
@@ -1188,4 +1207,20 @@ void ExynosDevice::onVsyncIdle(hwc2_display_t displayId) {
             reinterpret_cast<void (*)(hwc2_callback_data_t callbackData,
                                       hwc2_display_t hwcDisplay)>(callbackInfo.funcPointer);
     callbackFunc(callbackInfo.callbackData, displayId);
+}
+
+void ExynosDevice::onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t vsyncPeriod) {
+    Mutex::Autolock lock(mDeviceCallbackMutex);
+    const auto &refreshRateCallback =
+            mHwc3CallbackInfos.find(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug);
+
+    if (refreshRateCallback == mHwc3CallbackInfos.end()) return;
+
+    const auto &callbackInfo = refreshRateCallback->second;
+    if (callbackInfo.funcPointer == nullptr || callbackInfo.callbackData == nullptr) return;
+
+    auto callbackFunc =
+            reinterpret_cast<void (*)(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
+                                      hwc2_vsync_period_t)>(callbackInfo.funcPointer);
+    callbackFunc(callbackInfo.callbackData, displayId, vsyncPeriod);
 }
