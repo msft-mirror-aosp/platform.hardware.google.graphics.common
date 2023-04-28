@@ -852,22 +852,23 @@ void ExynosCompositionInfo::initializeInfos(ExynosDisplay *display)
     mHasCompositionLayer = false;
     mFirstIndex = -1;
     mLastIndex = -1;
-    if (mType != COMPOSITION_CLIENT) {
-        mTargetBuffer = NULL;
-        mDataSpace = HAL_DATASPACE_UNKNOWN;
-        if (mAcquireFence >= 0) {
-            ALOGD("ExynosCompositionInfo(%d):: mAcquire is not initialized(%d)", mType, mAcquireFence);
-            if (display != NULL)
-                fence_close(mAcquireFence, display, FENCE_TYPE_UNDEFINED, FENCE_IP_UNDEFINED);
-        }
-        mAcquireFence = -1;
+    mTargetBuffer = NULL;
+    mDataSpace = HAL_DATASPACE_UNKNOWN;
+
+    if (mAcquireFence >= 0) {
+        ALOGD("ExynosCompositionInfo(%d):: mAcquire is not initialized(%d)", mType, mAcquireFence);
+        if (display != NULL)
+            fence_close(mAcquireFence, display, FENCE_TYPE_UNDEFINED, FENCE_IP_UNDEFINED);
     }
+    mAcquireFence = -1;
+
     if (mReleaseFence >= 0) {
         ALOGD("ExynosCompositionInfo(%d):: mReleaseFence is not initialized(%d)", mType, mReleaseFence);
         if (display!= NULL)
             fence_close(mReleaseFence, display, FENCE_TYPE_UNDEFINED, FENCE_IP_UNDEFINED);
     }
     mReleaseFence = -1;
+
     mWindowIndex = -1;
     mOtfMPP = NULL;
     mM2mMPP = NULL;
@@ -1061,6 +1062,8 @@ ExynosDisplay::ExynosDisplay(uint32_t type, uint32_t index, ExynosDevice *device
     mPowerHalHint.Init();
 
     mUseDpu = true;
+    mHpdStatus = false;
+
     return;
 }
 
@@ -4085,6 +4088,12 @@ int32_t ExynosDisplay::setActiveConfigWithConstraints(hwc2_config_t config,
 
     if (isBadConfig(config)) return HWC2_ERROR_BAD_CONFIG;
 
+    if (!isConfigSettingEnabled()) {
+        mPendingConfig = config;
+        DISPLAY_LOGI("%s: config setting disabled, set pending config=%d", __func__, config);
+        return HWC2_ERROR_NONE;
+    }
+
     if (mDisplayConfigs[mActiveConfig].groupId != mDisplayConfigs[config].groupId) {
         if (vsyncPeriodChangeConstraints->seamlessRequired) {
             DISPLAY_LOGD(eDebugDisplayConfig, "Case : Seamless is not allowed");
@@ -6160,6 +6169,34 @@ bool ExynosDisplay::RotatingLogFileWriter::chooseOpenedFile() {
     return false;
 }
 
+void ExynosDisplay::invalidate() {
+    mDevice->onRefresh(mDisplayId);
+}
+
+bool ExynosDisplay::checkHotplugEventUpdated(bool &hpdStatus) {
+    if (mDisplayInterface == nullptr) {
+        ALOGW("%s: mDisplayInterface == nullptr", __func__);
+        return false;
+    }
+
+    hpdStatus = mDisplayInterface->readHotplugStatus();
+
+    DISPLAY_LOGI("[%s] mDisplayId(%d), mIndex(%d), HPD Status(previous :%d, current : %d)",
+                                       __func__, mDisplayId, mIndex, mHpdStatus, hpdStatus);
+
+    return (mHpdStatus != hpdStatus);
+}
+
+void ExynosDisplay::handleHotplugEvent(bool hpdStatus) {
+    mHpdStatus = hpdStatus;
+}
+
+void ExynosDisplay::hotplug() {
+    mDevice->onHotPlug(mDisplayId, mHpdStatus);
+    ALOGI("HPD callback(%s, mDisplayId %d) was called",
+                            mHpdStatus ? "connection" : "disconnection", mDisplayId);
+}
+
 ExynosDisplay::RefreshRateIndicatorHandler::RefreshRateIndicatorHandler(ExynosDisplay *display)
       : mDisplay(display), mLastRefreshRate(0), mLastCallbackTime(0) {}
 
@@ -6277,4 +6314,35 @@ void ExynosDisplay::updateRefreshRateIndicator() {
     if (!mRefreshRateIndicatorHandler || !mRefreshRateIndicatorHandler->isIgnoringLastUpdate())
         return;
     mRefreshRateIndicatorHandler->handleSysfsEvent();
+}
+
+uint32_t ExynosDisplay::getPeakRefreshRate() {
+    float opRate = mOperationRateManager ? mOperationRateManager->getOperationRate() : 0;
+    return static_cast<uint32_t>(std::round(opRate ?: mPeakRefreshRate));
+}
+
+VsyncPeriodNanos ExynosDisplay::getVsyncPeriod(const int32_t config) {
+    const auto &it = mDisplayConfigs.find(config);
+    if (it == mDisplayConfigs.end()) return 0;
+    return mDisplayConfigs[config].vsyncPeriod;
+}
+
+uint32_t ExynosDisplay::getRefreshRate(const int32_t config) {
+    VsyncPeriodNanos period = getVsyncPeriod(config);
+    if (!period) return 0;
+    constexpr float nsecsPerSec = std::chrono::nanoseconds(1s).count();
+    return round(nsecsPerSec / period * 0.1f) * 10;
+}
+
+uint32_t ExynosDisplay::getConfigId(const int32_t refreshRate, const int32_t width,
+                                    const int32_t height) {
+    for (auto entry : mDisplayConfigs) {
+        auto config = entry.first;
+        auto displayCfg = entry.second;
+        if (getRefreshRate(config) == refreshRate && displayCfg.width == width &&
+            displayCfg.height == height) {
+            return config;
+        }
+    }
+    return UINT_MAX;
 }
