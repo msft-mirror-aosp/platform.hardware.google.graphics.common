@@ -1172,6 +1172,7 @@ int32_t ExynosDisplay::destroyLayer(hwc2_layer_t outLayer) {
     }
 
     mDisplayInterface->destroyLayer(layer);
+    layer->resetAssignedResource();
 
     delete layer;
 
@@ -4844,6 +4845,7 @@ int32_t ExynosDisplay::setCompositionTargetExynosImage(uint32_t targetType, exyn
         else
             src_img->zOrder = 1000;
     }
+    src_img->needPreblending = compositionInfo->mNeedPreblending;
 
     dst_img->fullWidth = mXres;
     dst_img->fullHeight = mYres;
