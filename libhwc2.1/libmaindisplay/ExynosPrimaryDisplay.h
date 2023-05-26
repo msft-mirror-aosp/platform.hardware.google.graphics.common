@@ -64,6 +64,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual int32_t setBootDisplayConfig(int32_t config) override;
         virtual int32_t clearBootDisplayConfig() override;
         virtual int32_t getPreferredDisplayConfigInternal(int32_t* outConfig) override;
+        virtual bool isConfigSettingEnabled() override;
+        virtual void enableConfigSetting(bool en) override;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -98,7 +100,6 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         bool checkLhbmMode(bool status, nsecs_t timoutNs);
         void setLHBMRefreshRateThrottle(const uint32_t delayMs);
 
-        hwc2_config_t mPendActiveConfig = UINT_MAX;
         bool mFirstPowerOn = true;
         bool mNotifyPowerOn = false;
         std::mutex mPowerModeMutex;
@@ -115,14 +116,25 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         int32_t setDisplayIdleDelayNanos(int32_t delayNanos,
                                          const DispIdleTimerRequester requester);
         void initDisplayHandleIdleExit();
+        void setLhbmDisplayConfig(uint32_t refreshRate);
+        void restoreLhbmDisplayConfig();
 
         // LHBM
         FILE* mLhbmFd;
         std::atomic<bool> mLhbmOn;
         int32_t mFramesToReachLhbmPeakBrightness;
+        bool mConfigSettingDisabled = false;
+        int64_t mConfigSettingDisabledTimestamp = 0;
         // timeout value of waiting for peak refresh rate
-        static constexpr uint32_t kLhbmWaitForPeakRefreshRateMs = 200;
-        static constexpr uint32_t kLhbmRefreshRateThrottleMs = 1000;
+        static constexpr uint32_t kLhbmWaitForPeakRefreshRateMs = 100U;
+        static constexpr uint32_t kLhbmRefreshRateThrottleMs = 1000U;
+        static constexpr uint32_t kConfigDisablingMaxDurationMs = 1000U;
+        static constexpr uint32_t kSysfsCheckTimeoutMs = 500U;
+
+        int32_t getTimestampDeltaMs(int64_t endNs, int64_t beginNs) {
+            if (endNs == 0) endNs = systemTime(SYSTEM_TIME_MONOTONIC);
+            return (endNs - beginNs) / 1000000;
+        }
 
         FILE* mEarlyWakeupDispFd;
         static constexpr const char* kWakeupDispFilePath =

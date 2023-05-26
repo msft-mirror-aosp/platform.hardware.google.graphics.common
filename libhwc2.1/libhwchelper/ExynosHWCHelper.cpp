@@ -676,9 +676,9 @@ uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_P010_SPN:
         return 2 * __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP_10B:
-        return 2 * __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
+        return 2 * __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP:
-        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L50:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L75:
@@ -699,6 +699,8 @@ uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
     case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M_10B_SBWC:
         return SBWC_10B_Y_SIZE(width, height) +
             SBWC_10B_Y_HEADER_SIZE(width, height);
+    case MALI_GRALLOC_FORMAT_INTERNAL_NV21:
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 2);
     }
 
     return NV12M_Y_SIZE(width, height) + ((width % 128) == 0 ? 0 : 256);
@@ -726,9 +728,9 @@ uint32_t getExynosBufferCbCrLength(uint32_t width, uint32_t height, int format)
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_P010_SPN:
         return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP_10B:
-        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP:
-        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8) / 2;
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16) / 2;
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L50:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L75:
