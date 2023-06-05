@@ -547,6 +547,8 @@ bool ExynosPrimaryDisplay::isConfigSettingEnabled() {
 }
 
 void ExynosPrimaryDisplay::enableConfigSetting(bool en) {
+    DISPLAY_ATRACE_INT("ConfigSettingDisabled", !en);
+
     if (!en) {
         mConfigSettingDisabled = true;
         mConfigSettingDisabledTimestamp = systemTime(SYSTEM_TIME_MONOTONIC);
@@ -556,39 +558,44 @@ void ExynosPrimaryDisplay::enableConfigSetting(bool en) {
     mConfigSettingDisabled = false;
 }
 
-void ExynosPrimaryDisplay::setLhbmDisplayConfig(uint32_t refreshRate) {
-    auto config = getConfigId(refreshRate, mDisplayConfigs[mActiveConfig].width,
-                              mDisplayConfigs[mActiveConfig].height);
-
+int32_t ExynosPrimaryDisplay::setLhbmDisplayConfigLocked(uint32_t peakRate) {
+    auto hwConfig = mDisplayInterface->getActiveModeId();
+    auto config = getConfigId(peakRate, mDisplayConfigs[hwConfig].width,
+                              mDisplayConfigs[hwConfig].height);
     if (config == UINT_MAX) {
-        DISPLAY_LOGE("%s: failed to get config for rate=%d", __func__, refreshRate);
-        return;
+        DISPLAY_LOGE("%s: failed to get config for rate=%d", __func__, peakRate);
+        return -EINVAL;
     }
-    if (mPendingConfig == UINT_MAX) mPendingConfig = mActiveConfig;
 
-    if (ExynosDisplay::setActiveConfigInternal(config, true) == HWC2_ERROR_NONE) {
-        DISPLAY_LOGI("%s: succeeded to set config=%d rate=%d", __func__, config, refreshRate);
+    if (mPendingConfig == UINT_MAX && mActiveConfig != config) mPendingConfig = mActiveConfig;
+    if (config != hwConfig) {
+        if (ExynosDisplay::setActiveConfigInternal(config, true) == HWC2_ERROR_NONE) {
+            DISPLAY_LOGI("%s: succeeded to set config=%d rate=%d", __func__, config, peakRate);
+        } else {
+            DISPLAY_LOGW("%s: failed to set config=%d rate=%d", __func__, config, peakRate);
+        }
     } else {
-        DISPLAY_LOGW("%s: failed to set config=%d rate=%d", __func__, config, refreshRate);
+        DISPLAY_LOGI("%s: keep config=%d rate=%d", __func__, config, peakRate);
     }
+    enableConfigSetting(false);
+    return OK;
 }
 
-void ExynosPrimaryDisplay::restoreLhbmDisplayConfig() {
-    if (mPendingConfig == UINT_MAX) return;
-
-    hwc2_config_t pendingCfg = mPendingConfig;
-    if (mPendingConfig != mActiveConfig) {
+void ExynosPrimaryDisplay::restoreLhbmDisplayConfigLocked() {
+    enableConfigSetting(true);
+    hwc2_config_t pendingConfig = mPendingConfig;
+    auto hwConfig = mDisplayInterface->getActiveModeId();
+    if (pendingConfig != UINT_MAX && pendingConfig != hwConfig) {
         if (applyPendingConfig() == HWC2_ERROR_NONE) {
-            DISPLAY_LOGI("%s: succeeded to set config=%d rate=%d", __func__, pendingCfg,
-                         getRefreshRate(pendingCfg));
+            DISPLAY_LOGI("%s: succeeded to set config=%d rate=%d", __func__, pendingConfig,
+                         getRefreshRate(pendingConfig));
         } else {
-            DISPLAY_LOGE("%s: failed to set config=%d rate=%d", __func__, pendingCfg,
-                         getRefreshRate(pendingCfg));
+            DISPLAY_LOGE("%s: failed to set config=%d rate=%d", __func__, pendingConfig,
+                         getRefreshRate(pendingConfig));
         }
     } else {
         mPendingConfig = UINT_MAX;
-        DISPLAY_LOGI("%s: keep config=%d rate=%d", __func__, pendingCfg,
-                     getRefreshRate(pendingCfg));
+        DISPLAY_LOGI("%s: keep config=%d rate=%d", __func__, hwConfig, getRefreshRate(hwConfig));
     }
 }
 
@@ -636,10 +643,8 @@ int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
     if (!enabled) {
         ATRACE_NAME("disable_lhbm");
         {
-            ATRACE_NAME("apply_pending_rate");
             Mutex::Autolock lock(mDisplayMutex);
-            enableConfigSetting(true);
-            restoreLhbmDisplayConfig();
+            restoreLhbmDisplayConfigLocked();
         }
         requestLhbm(false);
         {
@@ -660,7 +665,7 @@ int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
     ATRACE_NAME("enable_lhbm");
     int64_t lhbmWaitForRrNanos, lhbmEnablingNanos, lhbmEnablingDoneNanos;
     bool enablingStateSupported = !mFramesToReachLhbmPeakBrightness;
-    uint32_t peakRate;
+    uint32_t peakRate = 0;
     auto rrSysfs = mBrightnessController->GetPanelRefreshRateSysfile();
     lhbmWaitForRrNanos = systemTime(SYSTEM_TIME_MONOTONIC);
     {
@@ -670,12 +675,10 @@ int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
             DISPLAY_LOGE("%s: invalid peak rate=%d", __func__, peakRate);
             return -EINVAL;
         }
-        if (getRefreshRate(mActiveConfig) != peakRate) {
-            ATRACE_NAME("request_peak_rate");
-            setLhbmDisplayConfig(peakRate);
-        }
-        enableConfigSetting(false);
+        ret = setLhbmDisplayConfigLocked(peakRate);
+        if (ret != OK) return ret;
     }
+
     if (mBrightnessController->fileExists(rrSysfs)) {
         ATRACE_NAME("wait_for_peak_rate_cmd");
         ret = mBrightnessController->checkSysfsStatus(rrSysfs, {std::to_string(peakRate)},
@@ -754,8 +757,7 @@ int32_t ExynosPrimaryDisplay::setLhbmState(bool enabled) {
     return NO_ERROR;
 enable_err:
     Mutex::Autolock lock(mDisplayMutex);
-    enableConfigSetting(true);
-    restoreLhbmDisplayConfig();
+    restoreLhbmDisplayConfigLocked();
     return ret;
 }
 
@@ -769,6 +771,7 @@ void ExynosPrimaryDisplay::setLHBMRefreshRateThrottle(const uint32_t delayMs) {
     if (delayMs) {
         // make new throttle take effect
         mLastRefreshRateAppliedNanos = systemTime(SYSTEM_TIME_MONOTONIC);
+        DISPLAY_ATRACE_INT64("LastRefreshRateAppliedMs", ns2ms(mLastRefreshRateAppliedNanos));
     }
 
     setRefreshRateThrottleNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -976,6 +979,7 @@ int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int fps) {
 
 int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos,
                                                       const VrrThrottleRequester requester) {
+    ATRACE_CALL();
     ALOGI("%s() requester(%u) set delay to %" PRId64 "ns", __func__, toUnderlying(requester),
           delayNanos);
     if (delayNanos < 0) {
@@ -993,12 +997,12 @@ int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos,
         }
     }
 
+    DISPLAY_ATRACE_INT64("RefreshRateDelay", ns2ms(maxDelayNanos));
     if (mRefreshRateDelayNanos == maxDelayNanos) {
         return NO_ERROR;
     }
 
     mRefreshRateDelayNanos = maxDelayNanos;
-
     return setDisplayIdleDelayNanos(mRefreshRateDelayNanos, DispIdleTimerRequester::VRR_THROTTLE);
 }
 
@@ -1023,6 +1027,7 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
 void ExynosPrimaryDisplay::calculateTimeline(
         hwc2_config_t config, hwc_vsync_period_change_constraints_t *vsyncPeriodChangeConstraints,
         hwc_vsync_period_change_timeline_t *outTimeline) {
+    ATRACE_CALL();
     int64_t desiredUpdateTime = vsyncPeriodChangeConstraints->desiredTimeNanos;
     const int64_t origDesiredUpdateTime = desiredUpdateTime;
     const int64_t threshold = mRefreshRateDelayNanos;
@@ -1050,31 +1055,30 @@ void ExynosPrimaryDisplay::calculateTimeline(
     getConfigAppliedTime(mVsyncPeriodChangeConstraints.desiredTimeNanos, actualChangeTime,
                          outTimeline->newVsyncAppliedTimeNanos, outTimeline->refreshTimeNanos);
 
-    if (isDelayed) {
-        DISPLAY_LOGD(eDebugDisplayConfig,
-                     "requested config : %d(%d)->%d(%d) is delayed! "
-                     "delta %" PRId64 ", delay %" PRId64 ", threshold %" PRId64 ", "
-                     "desired %" PRId64 "->%" PRId64 ", newVsyncAppliedTimeNanos : %" PRId64
-                     ", refreshTimeNanos:%" PRId64,
-                     mActiveConfig, mDisplayConfigs[mActiveConfig].vsyncPeriod, config,
-                     mDisplayConfigs[config].vsyncPeriod, lastUpdateDelta,
-                     threshold - lastUpdateDelta, threshold, origDesiredUpdateTime,
-                     mVsyncPeriodChangeConstraints.desiredTimeNanos,
-                     outTimeline->newVsyncAppliedTimeNanos, outTimeline->refreshTimeNanos);
-    } else {
-        DISPLAY_LOGD(eDebugDisplayConfig,
-                     "requested config : %d(%d)->%d(%d), "
-                     "lastUpdateDelta %" PRId64 ", threshold %" PRId64 ", "
-                     "desired %" PRId64 ", newVsyncAppliedTimeNanos : %" PRId64 "",
-                     mActiveConfig, mDisplayConfigs[mActiveConfig].vsyncPeriod, config,
-                     mDisplayConfigs[config].vsyncPeriod, lastUpdateDelta, threshold,
-                     mVsyncPeriodChangeConstraints.desiredTimeNanos,
-                     outTimeline->newVsyncAppliedTimeNanos);
-    }
+    const nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
+    DISPLAY_LOGD_AND_ATRACE_NAME(eDebugDisplayConfig,
+                                 "requested config : %d(%d)->%d(%d), isDelay:%d,"
+                                 " delta %" PRId64 ", delay %" PRId64 ", threshold %" PRId64 ", "
+                                 "now:%" PRId64 ", desired %" PRId64 "->%" PRId64
+                                 ", newVsyncAppliedTimeNanos : %" PRId64
+                                 ", refreshTimeNanos:%" PRId64
+                                 ", mLastRefreshRateAppliedNanos:%" PRId64,
+                                 mActiveConfig, mDisplayConfigs[mActiveConfig].vsyncPeriod, config,
+                                 mDisplayConfigs[config].vsyncPeriod, isDelayed,
+                                 ns2ms(lastUpdateDelta), ns2ms(threshold - lastUpdateDelta),
+                                 ns2ms(threshold), ns2ms(now), ns2ms(origDesiredUpdateTime),
+                                 ns2ms(mVsyncPeriodChangeConstraints.desiredTimeNanos),
+                                 ns2ms(outTimeline->newVsyncAppliedTimeNanos),
+                                 ns2ms(outTimeline->refreshTimeNanos),
+                                 ns2ms(mLastRefreshRateAppliedNanos));
+
+    const int64_t diffMs = ns2ms(outTimeline->refreshTimeNanos - now);
+    DISPLAY_ATRACE_INT64("TimeToChangeConfig", diffMs);
 }
 
 void ExynosPrimaryDisplay::updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                      const int64_t ts) {
+    ATRACE_CALL();
     if (mAppliedActiveConfig == 0 ||
         getDisplayVsyncPeriodFromConfig(mAppliedActiveConfig) !=
                 getDisplayVsyncPeriodFromConfig(newConfig)) {
@@ -1083,6 +1087,7 @@ void ExynosPrimaryDisplay::updateAppliedActiveConfig(const hwc2_config_t newConf
                      " -> %" PRIu64 ")",
                      __func__, mAppliedActiveConfig, newConfig, mLastRefreshRateAppliedNanos, ts);
         mLastRefreshRateAppliedNanos = ts;
+        DISPLAY_ATRACE_INT64("LastRefreshRateAppliedMs", ns2ms(mLastRefreshRateAppliedNanos));
     }
 
     mAppliedActiveConfig = newConfig;
