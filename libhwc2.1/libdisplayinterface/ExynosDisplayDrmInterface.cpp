@@ -985,11 +985,18 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
         uint32_t* outNumConfigs,
         hwc2_config_t* outConfigs)
 {
+    std::lock_guard<std::recursive_mutex> lock(mDrmConnector->modesLock());
+
     if (!outConfigs) {
         int ret = mDrmConnector->UpdateModes();
-        if (ret) {
+        if (ret < 0) {
             ALOGE("Failed to update display modes %d", ret);
             return HWC2_ERROR_BAD_DISPLAY;
+        }
+
+        if (ret == 0) {
+            // no need to update mExynosDisplay->mDisplayConfigs
+            goto no_mode_changes;
         }
 
         if (mDrmConnector->state() == DRM_MODE_CONNECTED) {
@@ -1048,6 +1055,7 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
         mExynosDisplay->setPeakRefreshRate(peakRr);
     }
 
+no_mode_changes:
     uint32_t num_modes = static_cast<uint32_t>(mDrmConnector->modes().size());
     if (!outConfigs) {
         *outNumConfigs = num_modes;
@@ -1068,6 +1076,8 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
 
 void ExynosDisplayDrmInterface::dumpDisplayConfigs()
 {
+    std::lock_guard<std::recursive_mutex> lock(mDrmConnector->modesLock());
+
     uint32_t num_modes = static_cast<uint32_t>(mDrmConnector->modes().size());
     for (uint32_t i = 0; i < num_modes; i++) {
         auto mode = mDrmConnector->modes().at(i);
@@ -1199,6 +1209,8 @@ int32_t ExynosDisplayDrmInterface::setColorMode(int32_t mode)
 int32_t ExynosDisplayDrmInterface::setActiveConfigWithConstraints(
         hwc2_config_t config, bool test)
 {
+    std::lock_guard<std::recursive_mutex> lock(mDrmConnector->modesLock());
+
     ALOGD("%s:: %s config(%d) test(%d)", __func__, mExynosDisplay->mDisplayName.string(), config,
           test);
 
@@ -1320,6 +1332,8 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
 }
 
 int32_t ExynosDisplayDrmInterface::setActiveConfig(hwc2_config_t config) {
+    std::lock_guard<std::recursive_mutex> lock(mDrmConnector->modesLock());
+
     auto mode = std::find_if(mDrmConnector->modes().begin(), mDrmConnector->modes().end(),
                              [config](DrmMode const &m) { return m.id() == config; });
     if (mode == mDrmConnector->modes().end()) {
@@ -1342,6 +1356,8 @@ int32_t ExynosDisplayDrmInterface::setActiveConfig(hwc2_config_t config) {
 }
 
 int32_t ExynosDisplayDrmInterface::getPanelResolution() {
+    std::lock_guard<std::recursive_mutex> lock(mDrmConnector->modesLock());
+
     for (auto it = mDrmConnector->modes().begin(); it != mDrmConnector->modes().end(); it++) {
         if (it->h_display() * it->v_display() > mPanelResolutionHsize * mPanelResolutionVsize) {
             mPanelResolutionHsize = it->h_display();
