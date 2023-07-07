@@ -2,6 +2,6 @@
     <hal format="aidl">
         <name>com.google.hardware.pixel.display</name>
         <version>8</version>
-        <fqname>IDisplay/default</fqname>
+        <fqname>IDisplay/secondary</fqname>
     </hal>
 </manifest>
