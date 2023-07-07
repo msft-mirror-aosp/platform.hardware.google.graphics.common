@@ -39,6 +39,7 @@ ExynosLayer::ExynosLayer(ExynosDisplay* display)
       : ExynosMPPSource(MPP_SOURCE_LAYER, this),
         mDisplay(display),
         mCompositionType(HWC2_COMPOSITION_INVALID),
+        mRequestedCompositionType(HWC2_COMPOSITION_INVALID),
         mExynosCompositionType(HWC2_COMPOSITION_INVALID),
         mValidateCompositionType(HWC2_COMPOSITION_INVALID),
         mValidateExynosCompositionType(HWC2_COMPOSITION_INVALID),
@@ -59,6 +60,7 @@ ExynosLayer::ExynosLayer(ExynosDisplay* display)
         mNextLastFpsTime(0),
         mLastLayerBuffer(NULL),
         mLayerBuffer(NULL),
+        mLastUpdateTime(0),
         mDamageNum(0),
         mBlending(HWC2_BLEND_MODE_NONE),
         mPlaneAlpha(1.0),
@@ -419,6 +421,11 @@ int32_t ExynosLayer::setLayerBuffer(buffer_handle_t buffer, int32_t acquireFence
         Mutex::Autolock lock(mDisplay->mDRMutex);
         mLayerBuffer = buffer;
         checkFps(mLastLayerBuffer != mLayerBuffer);
+        if (mLayerBuffer != mLastLayerBuffer) {
+            mLastUpdateTime = systemTime(CLOCK_MONOTONIC);
+            if (mRequestedCompositionType != HWC2_COMPOSITION_REFRESH_RATE_INDICATOR)
+                mDisplay->mBufferUpdates++;
+        }
     }
     mPrevAcquireFence =
             fence_close(mPrevAcquireFence, mDisplay, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_UNDEFINED);
@@ -506,11 +513,12 @@ int32_t ExynosLayer::setLayerCompositionType(int32_t /*hwc2_composition_t*/ type
             type = HWC2_COMPOSITION_DEVICE;
 #endif
 
-    if (type != mCompositionType) {
+    if (type != mCompositionType && type != mRequestedCompositionType) {
         setGeometryChanged(GEOMETRY_LAYER_TYPE_CHANGED);
     }
 
     mCompositionType = type;
+    mRequestedCompositionType = type;
 
     return HWC2_ERROR_NONE;
 }
@@ -713,7 +721,8 @@ int32_t ExynosLayer::setLayerPerFrameMetadataBlobs(uint32_t numElements, const i
                 mMetaParcel->eType =
                     static_cast<ExynosVideoInfoType>(mMetaParcel->eType | VIDEO_INFO_TYPE_HDR_DYNAMIC);
                 ExynosHdrDynamicInfo *info = &(mMetaParcel->sHdrDynamicInfo);
-                Exynos_parsing_user_data_registered_itu_t_t35(info, (void *)metadata_start);
+                Exynos_parsing_user_data_registered_itu_t_t35(info, (void*)metadata_start,
+                                                              sizes[i]);
             } else {
                 ALOGE("Layer has no metaParcel!");
                 return HWC2_ERROR_UNSUPPORTED;
@@ -968,13 +977,12 @@ bool ExynosLayer::checkBtsCap(const uint32_t bts_refresh_rate) {
     if (mOtfMPP == nullptr) return true;
 
     exynos_image src_img;
+    exynos_image dst_img;
     setSrcExynosImage(&src_img);
-    if (mOtfMPP->checkSpecificRestriction(bts_refresh_rate, src_img)) {
+    setDstExynosImage(&dst_img);
+    if (mOtfMPP->checkSpecificRestriction(bts_refresh_rate, src_img, dst_img)) {
         return false;
     }
-
-    exynos_image dst_img;
-    setDstExynosImage(&dst_img);
 
     const bool isPerpendicular = !!(src_img.transform & HAL_TRANSFORM_ROT_90);
     const uint32_t srcWidth = isPerpendicular ? src_img.h : src_img.w;
@@ -1158,8 +1166,10 @@ void ExynosLayer::printLayer()
 
 void ExynosLayer::setGeometryChanged(uint64_t changedBit)
 {
+    mLastUpdateTime = systemTime(CLOCK_MONOTONIC);
     mGeometryChanged |= changedBit;
-    mDisplay->setGeometryChanged(changedBit);
+    if (mRequestedCompositionType != HWC2_COMPOSITION_REFRESH_RATE_INDICATOR)
+        mDisplay->setGeometryChanged(changedBit);
 }
 
 int ExynosLayer::allocMetaParcel()

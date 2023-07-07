@@ -351,7 +351,7 @@ bool ExynosMPP::isDataspaceSupportedByMPP(struct exynos_image &src, struct exyno
     return checkCSCRestriction(src, dst);
 }
 
-bool ExynosMPP::isSupportedHDR10Plus(struct exynos_image &src, struct exynos_image &dst)
+bool ExynosMPP::isSupportedHDR(struct exynos_image &src, struct exynos_image &dst)
 {
 
     uint32_t srcStandard = (src.dataSpace & HAL_DATASPACE_STANDARD_MASK);
@@ -359,7 +359,7 @@ bool ExynosMPP::isSupportedHDR10Plus(struct exynos_image &src, struct exynos_ima
     uint32_t srcTransfer = (src.dataSpace & HAL_DATASPACE_TRANSFER_MASK);
     uint32_t dstTransfer = (dst.dataSpace & HAL_DATASPACE_TRANSFER_MASK);
 
-    if (hasHdr10Plus(src)) {
+    if (hasHdr10Plus(src) || hasHdrInfo(src) ) {
         if (mAttr & MPP_ATTR_HDR10PLUS)
             return true;
         else if ((srcStandard == dstStandard) && (srcTransfer == dstTransfer))
@@ -1001,9 +1001,10 @@ int32_t ExynosMPP::allocOutBuf(uint32_t w, uint32_t h, uint32_t format, uint64_t
     mDstImgs[index].format = format;
 
     MPP_LOGD(eDebugMPP|eDebugBuf, "free outbuf[%d] %p", index, freeDstBuf.bufferHandle);
-    if (freeDstBuf.bufferHandle != NULL)
+
+    if (freeDstBuf.bufferHandle != NULL) {
         freeOutBuf(freeDstBuf);
-    else {
+    } else {
         if (mAssignedDisplay != NULL) {
             freeDstBuf.acrylicAcquireFenceFd = fence_close(freeDstBuf.acrylicAcquireFenceFd,
                     mAssignedDisplay, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_G2D);
@@ -1399,9 +1400,10 @@ int32_t ExynosMPP::setupDst(exynos_mpp_img_info *dstImgInfo)
     if (dstImgInfo->bufferType == MPP_BUFFER_SECURE_DRM)
         attribute |= AcrylicCanvas::ATTR_PROTECTED;
 
-    if (mAssignedDisplay != NULL)
+    if (mAssignedDisplay != NULL) {
         mAcrylicHandle->setCanvasDimension(pixel_align(mAssignedDisplay->mXres, G2D_JUSTIFIED_DST_ALIGN),
                 pixel_align(mAssignedDisplay->mYres, G2D_JUSTIFIED_DST_ALIGN));
+    }
 
     /* setup dst */
     if (needCompressDstBuf()) {
@@ -1923,13 +1925,15 @@ int32_t ExynosMPP::requestHWStateChange(uint32_t state)
         return NO_ERROR;
     }
 
-    if (state == MPP_HW_STATE_RUNNING)
+    if (state == MPP_HW_STATE_RUNNING) {
         mHWState = MPP_HW_STATE_RUNNING;
-    else if (state == MPP_HW_STATE_IDLE) {
-        if (mLastStateFenceFd >= 0)
+    } else if (state == MPP_HW_STATE_IDLE) {
+        if (mLastStateFenceFd >= 0) {
             mResourceManageThread->addStateFence(mLastStateFenceFd);
-        else
+        } else {
             mHWState = MPP_HW_STATE_IDLE;
+        }
+
         mLastStateFenceFd = -1;
 
         if ((mPhysicalType == MPP_G2D) && (mHWBusyFlag == false)) {
@@ -2100,7 +2104,7 @@ int64_t ExynosMPP::isSupported(ExynosDisplay &display, struct exynos_image &src,
         return -eMPPUnsupportedFormat;
     else if (!isDataspaceSupportedByMPP(src, dst))
         return -eMPPUnsupportedCSC;
-    else if (!isSupportedHDR10Plus(src, dst))
+    else if (!isSupportedHDR(src, dst))
         return -eMPPUnsupportedDynamicMeta;
     else if (!isSupportedBlend(src))
         return -eMPPUnsupportedBlending;

@@ -597,7 +597,7 @@ public:
     virtual int64_t isSupported(ExynosDisplay &display, struct exynos_image &src, struct exynos_image &dst);
 
     bool isDataspaceSupportedByMPP(struct exynos_image &src, struct exynos_image &dst);
-    bool isSupportedHDR10Plus(struct exynos_image &src, struct exynos_image &dst);
+    bool isSupportedHDR(struct exynos_image &src, struct exynos_image &dst);
     bool isSupportedBlend(struct exynos_image &src);
     virtual bool isSupportedTransform(struct exynos_image &src);
     bool isSupportedCapability(ExynosDisplay &display, struct exynos_image &src);
@@ -605,7 +605,8 @@ public:
     virtual bool isSupportedHStrideCrop(struct exynos_image &src);
     bool checkDownscaleCap(const float resolution, const float displayRatio_V) const;
     virtual bool checkSpecificRestriction(const uint32_t __unused refreshRate,
-                                          const struct exynos_image __unused &src) {
+                                          const struct exynos_image __unused &src,
+                                          const struct exynos_image __unused &dst) {
         return false;
     }
     virtual uint32_t getDownscaleRestriction(const struct exynos_image &src,

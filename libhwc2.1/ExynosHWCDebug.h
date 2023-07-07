@@ -114,6 +114,13 @@ int32_t saveFenceTrace(ExynosDisplay *display);
         saveErrorLog(saveString, this); \
     }
 
+#define DISPLAY_DRM_LOGI(msg, ...) \
+    ALOGI("[%s] " msg, mExynosDisplay->mDisplayName.string(), ##__VA_ARGS__)
+#define DISPLAY_DRM_LOGW(msg, ...) \
+    ALOGW("[%s] " msg, mExynosDisplay->mDisplayName.string(), ##__VA_ARGS__)
+#define DISPLAY_DRM_LOGE(msg, ...) \
+    ALOGE("[%s] " msg, mExynosDisplay->mDisplayName.string(), ##__VA_ARGS__)
+
 #define MPP_LOGV(msg, ...) ALOGV("[%s][%d] " msg, mName.string(), mLogicalIndex, ##__VA_ARGS__)
 #define MPP_LOGI(msg, ...) ALOGI("[%s][%d] " msg, mName.string(), mLogicalIndex, ##__VA_ARGS__)
 #define MPP_LOGW(msg, ...) ALOGW("[%s][%d] " msg, mName.string(), mLogicalIndex, ##__VA_ARGS__)
@@ -157,6 +164,14 @@ public:
     if (CC_UNLIKELY(ATRACE_ENABLED())) {                                                      \
         ATRACE_INT64(String8::format("%s for %s", name, mDisplayTraceName.string()).string(), \
                      value);                                                                  \
+    }
+
+#define DISPLAY_LOGD_AND_ATRACE_NAME(debugFlag, fmt, ...)                    \
+    if (hwcCheckDebugMessages(debugFlag) || CC_UNLIKELY(ATRACE_ENABLED())) { \
+        String8 log;                                                         \
+        log.appendFormat((fmt), ##__VA_ARGS__);                              \
+        DISPLAY_LOGD(debugFlag, "%s", log.string());                         \
+        if (CC_UNLIKELY(ATRACE_ENABLED())) ATRACE_NAME(log.string());        \
     }
 
 #endif
