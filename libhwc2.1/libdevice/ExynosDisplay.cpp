@@ -1173,6 +1173,7 @@ int32_t ExynosDisplay::destroyLayer(hwc2_layer_t outLayer) {
     }
 
     mDisplayInterface->destroyLayer(layer);
+    layer->resetAssignedResource();
 
     delete layer;
 
@@ -1711,7 +1712,8 @@ int ExynosDisplay::skipStaticLayers(ExynosCompositionInfo& compositionInfo)
 bool ExynosDisplay::skipSignalIdle(void) {
     for (size_t i = 0; i < mLayers.size(); i++) {
         // Frame update for refresh rate overlay indicator layer can be ignored
-        if (mLayers[i]->mCompositionType == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR) continue;
+        if (mLayers[i]->mRequestedCompositionType == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR)
+            continue;
         // Frame update for video layer can be ignored
         if (mLayers[i]->isLayerFormatYuv()) continue;
         if (mLayers[i]->mLastLayerBuffer != mLayers[i]->mLayerBuffer) {
@@ -4077,12 +4079,12 @@ int32_t ExynosDisplay::setActiveConfigWithConstraints(hwc2_config_t config,
 {
     DISPLAY_ATRACE_CALL();
     Mutex::Autolock lock(mDisplayMutex);
+    const nsecs_t current = systemTime(SYSTEM_TIME_MONOTONIC);
+    const nsecs_t diffMs = ns2ms(vsyncPeriodChangeConstraints->desiredTimeNanos - current);
+    DISPLAY_LOGD(eDebugDisplayConfig, "config(%d->%d), seamless(%d), diff(%" PRId64 ")",
+                 mActiveConfig, config, vsyncPeriodChangeConstraints->seamlessRequired, diffMs);
 
-    DISPLAY_LOGD(eDebugDisplayConfig,
-                 "config(%d), seamless(%d), "
-                 "desiredTime(%" PRId64 ")",
-                 config, vsyncPeriodChangeConstraints->seamlessRequired,
-                 vsyncPeriodChangeConstraints->desiredTimeNanos);
+    if (CC_UNLIKELY(ATRACE_ENABLED())) ATRACE_NAME(("diff:" + std::to_string(diffMs)).c_str());
 
     if (isBadConfig(config)) return HWC2_ERROR_BAD_CONFIG;
 
@@ -4134,6 +4136,7 @@ int32_t ExynosDisplay::setActiveConfigWithConstraints(hwc2_config_t config,
     mConfigRequestState = hwc_request_state_t::SET_CONFIG_STATE_PENDING;
     mVsyncPeriodChangeConstraints = *vsyncPeriodChangeConstraints;
     mDesiredConfig = config;
+    DISPLAY_ATRACE_INT("Pending ActiveConfig", mDesiredConfig);
 
     calculateTimeline(config, vsyncPeriodChangeConstraints, outTimeline);
 
@@ -4346,6 +4349,7 @@ int32_t ExynosDisplay::doDisplayConfigInternal(hwc2_config_t config) {
 
 int32_t ExynosDisplay::doDisplayConfigPostProcess(ExynosDevice *dev)
 {
+    ATRACE_CALL();
     uint64_t current = systemTime(SYSTEM_TIME_MONOTONIC);
 
     int64_t actualChangeTime = 0;
@@ -4361,10 +4365,12 @@ int32_t ExynosDisplay::doDisplayConfigPostProcess(ExynosDevice *dev)
         DISPLAY_LOGD(eDebugDisplayConfig, "Request setActiveConfig");
         needSetActiveConfig = true;
         DISPLAY_ATRACE_INT("Pending ActiveConfig", 0);
+        DISPLAY_ATRACE_INT64("TimeToChangeConfig", 0);
     } else {
         DISPLAY_LOGD(eDebugDisplayConfig, "setActiveConfig still pending (mDesiredConfig %d)",
                      mDesiredConfig);
         DISPLAY_ATRACE_INT("Pending ActiveConfig", mDesiredConfig);
+        DISPLAY_ATRACE_INT64("TimeToChangeConfig", ns2ms(actualChangeTime - current));
     }
 
     if (needSetActiveConfig) {
@@ -4631,6 +4637,7 @@ int32_t ExynosDisplay::validateDisplay(
 
 int32_t ExynosDisplay::startPostProcessing()
 {
+    ATRACE_CALL();
     int ret = NO_ERROR;
     String8 errString;
 
@@ -6276,7 +6283,8 @@ nsecs_t ExynosDisplay::getLastLayerUpdateTime() {
     nsecs_t time = 0;
     for (size_t i = 0; i < mLayers.size(); ++i) {
         // The update from refresh rate indicator layer should be ignored
-        if (mLayers[i]->mCompositionType == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR) continue;
+        if (mLayers[i]->mRequestedCompositionType == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR)
+            continue;
         time = max(time, mLayers[i]->mLastUpdateTime);
     }
     return time;
