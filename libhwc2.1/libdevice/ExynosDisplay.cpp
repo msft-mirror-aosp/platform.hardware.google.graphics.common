@@ -4057,6 +4057,23 @@ int32_t ExynosDisplay::setBrightnessNits(const float nits)
     return HWC2_ERROR_UNSUPPORTED;
 }
 
+int32_t ExynosDisplay::setBrightnessDbv(const uint32_t dbv) {
+    if (mBrightnessController) {
+        int32_t ret = mBrightnessController->setBrightnessDbv(dbv, mVsyncPeriod);
+
+        if (ret == NO_ERROR) {
+            setMinIdleRefreshRate(0, RrThrottleRequester::BRIGHTNESS);
+            if (mOperationRateManager) {
+                mOperationRateManager->onBrightness(mBrightnessController->getBrightnessLevel());
+            }
+        }
+
+        return ret;
+    }
+
+    return HWC2_ERROR_UNSUPPORTED;
+}
+
 int32_t ExynosDisplay::getDisplayConnectionType(uint32_t* outType)
 {
     if (mType == HWC_DISPLAY_PRIMARY)
@@ -5090,6 +5107,10 @@ int32_t ExynosDisplay::removeClientCompositionLayer(uint32_t layerIndex)
             mClientCompositionInfo.mFirstIndex, mClientCompositionInfo.mLastIndex);
 
     return ret;
+}
+
+bool ExynosDisplay::hasClientComposition() {
+    return mClientCompositionInfo.mHasCompositionLayer;
 }
 
 int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float totalUsedCapa) {

@@ -603,6 +603,7 @@ class ExynosDisplay {
         int32_t initializeValidateInfos();
         int32_t addClientCompositionLayer(uint32_t layerIndex);
         int32_t removeClientCompositionLayer(uint32_t layerIndex);
+        bool hasClientComposition();
         int32_t addExynosCompositionLayer(uint32_t layerIndex, float totalUsedCapa);
 
         bool isPowerModeOff() const;
@@ -1304,6 +1305,9 @@ class ExynosDisplay {
 
         /* set brightness to specific nits value */
         virtual int32_t setBrightnessNits(const float nits);
+
+        /* set brightness by dbv value */
+        virtual int32_t setBrightnessDbv(const uint32_t dbv);
 
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
