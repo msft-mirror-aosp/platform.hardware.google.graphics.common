@@ -57,6 +57,7 @@ class ExynosLayer;
 class ExynosDevice;
 class ExynosMPP;
 class ExynosMPPSource;
+class HistogramController;
 
 namespace aidl {
 namespace google {
@@ -148,7 +149,7 @@ enum class hwc_request_state_t {
     SET_CONFIG_STATE_REQUESTED,
 };
 
-enum class VrrThrottleRequester : uint32_t {
+enum class RrThrottleRequester : uint32_t {
     PIXEL_DISP = 0,
     TEST,
     LHBM,
@@ -158,7 +159,7 @@ enum class VrrThrottleRequester : uint32_t {
 
 enum class DispIdleTimerRequester : uint32_t {
     SF = 0,
-    VRR_THROTTLE,
+    RR_THROTTLE,
     MAX,
 };
 
@@ -331,7 +332,7 @@ class ExynosCompositionInfo : public ExynosMPPSource {
         void setTargetBuffer(ExynosDisplay *display, buffer_handle_t handle,
                 int32_t acquireFence, android_dataspace dataspace);
         void setCompressionType(uint32_t compressionType);
-        void dump(String8& result);
+        void dump(String8& result) const;
         String8 getTypeStr();
 };
 
@@ -349,6 +350,27 @@ struct ResolutionInfo {
     int      nPanelType[3];
 };
 
+typedef struct VrrVsyncHz {
+    int nsHz;
+    int hsHz;
+} VrrVsyncHz_t;
+
+typedef struct FrameIntervalPowerHint {
+    int frameIntervalNs;
+    int averageRefreshPeriodNs;
+} FrameIntervalPowerHint_t;
+
+typedef struct NotifyExpectedPresentConfig {
+    int HeadsUpNs;
+    int TimeoutNs;
+} NotifyExpectedPresentConfig_t;
+
+typedef struct VrrConfig {
+    int minFrameIntervalNs;
+    std::vector<FrameIntervalPowerHint_t> frameIntervalPowerHint;
+    NotifyExpectedPresentConfig_t notifyExpectedPresentConfig;
+} VrrConfig_t;
+
 typedef struct displayConfigs {
     // HWC2_ATTRIBUTE_VSYNC_PERIOD
     VsyncPeriodNanos vsyncPeriod;
@@ -362,6 +384,8 @@ typedef struct displayConfigs {
     uint32_t Ydpi;
     // HWC2_ATTRIBUTE_CONFIG_GROUP
     uint32_t groupId;
+
+    std::optional<VrrConfig_t> vrrConfig;
 } displayConfigs_t;
 
 struct DisplayControl {
@@ -540,6 +564,9 @@ class ExynosDisplay {
 
         std::unique_ptr<BrightnessController> mBrightnessController;
 
+        /* For histogram */
+        std::unique_ptr<HistogramController> mHistogramController;
+
         /* For debugging */
         hwc_display_contents_1_t *mHWC1LayerList;
 
@@ -576,6 +603,7 @@ class ExynosDisplay {
         int32_t initializeValidateInfos();
         int32_t addClientCompositionLayer(uint32_t layerIndex);
         int32_t removeClientCompositionLayer(uint32_t layerIndex);
+        bool hasClientComposition();
         int32_t addExynosCompositionLayer(uint32_t layerIndex, float totalUsedCapa);
 
         bool isPowerModeOff() const;
@@ -1140,6 +1168,15 @@ class ExynosDisplay {
          */
         int32_t getMountOrientation(HwcMountOrientation *orientation);
 
+        /*
+         * HWC3
+         *
+         * Retrieve the vrrConfig for the corresponding display configuration.
+         * If the configuration doesn't exist, return a nullptr.
+         *
+         */
+        std::optional<VrrConfig_t> getVrrConfigs(hwc2_config_t config);
+
         /* setActiveConfig MISCs */
         bool isBadConfig(hwc2_config_t config);
         bool needNotChangeConfig(hwc2_config_t config);
@@ -1205,7 +1242,6 @@ class ExynosDisplay {
         void setHWCControl(uint32_t ctrl, int32_t val);
         void setGeometryChanged(uint64_t changedBit);
         void clearGeometryChanged();
-        bool isFrameUpdate();
 
         virtual void setDDIScalerEnable(int width, int height);
         virtual int getDDIScalerMode(int width, int height);
@@ -1270,6 +1306,9 @@ class ExynosDisplay {
         /* set brightness to specific nits value */
         virtual int32_t setBrightnessNits(const float nits);
 
+        /* set brightness by dbv value */
+        virtual int32_t setBrightnessDbv(const uint32_t dbv);
+
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig);
@@ -1288,11 +1327,11 @@ class ExynosDisplay {
         void requestLhbm(bool on);
 
         virtual int setMinIdleRefreshRate(const int __unused fps,
-                                          const VrrThrottleRequester __unused requester) {
+                                          const RrThrottleRequester __unused requester) {
             return NO_ERROR;
         }
         virtual int setRefreshRateThrottleNanos(const int64_t __unused delayNanos,
-                                                const VrrThrottleRequester __unused requester) {
+                                                const RrThrottleRequester __unused requester) {
             return NO_ERROR;
         }
 
@@ -1576,7 +1615,7 @@ class ExynosDisplay {
             bool chooseOpenedFile();
             void write(const String8& content) {
                 if (mFile) {
-                    fwrite(content.string(), 1, content.size(), mFile);
+                    fwrite(content.c_str(), 1, content.size(), mFile);
                 }
             }
             void flush() {
@@ -1643,6 +1682,7 @@ class ExynosDisplay {
             int mLastRefreshRate GUARDED_BY(mMutex);
             nsecs_t mLastCallbackTime GUARDED_BY(mMutex);
             std::atomic_bool mIgnoringLastUpdate = false;
+            bool mCanIgnoreIncreaseUpdate GUARDED_BY(mMutex) = false;
             UniqueFd mFd;
             std::mutex mMutex;
 
@@ -1654,6 +1694,7 @@ class ExynosDisplay {
         int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled);
         void updateRefreshRateIndicator();
         nsecs_t getLastLayerUpdateTime();
+        bool needUpdateRRIndicator();
         virtual void checkPreblendingRequirement(){};
 
         void resetColorMappingInfoForClientComp();

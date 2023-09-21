@@ -168,12 +168,12 @@ ExynosDevice::ExynosDevice()
     }
 
     for (auto it : mDisplays) {
-        std::string displayName = std::string(it->mDisplayName.string());
+        std::string displayName = std::string(it->mDisplayName.c_str());
         it->mErrLogFileWriter.setPrefixName(displayName + "_hwc_error_log");
         it->mDebugDumpFileWriter.setPrefixName(displayName + "_hwc_debug");
         it->mFenceFileWriter.setPrefixName(displayName + "_hwc_fence_state");
         String8 saveString;
-        saveString.appendFormat("ExynosDisplay %s is initialized", it->mDisplayName.string());
+        saveString.appendFormat("ExynosDisplay %s is initialized", it->mDisplayName.c_str());
         saveErrorLog(saveString, it);
     }
 
@@ -409,7 +409,7 @@ void ExynosDevice::dump(uint32_t *outSize, char *outBuffer) {
         size_t copySize = min(static_cast<size_t>(*outSize), result.size());
         ALOGI("HWC dump:: resultSize(%zu), outSize(%d), copySize(%zu)", result.size(), *outSize,
               copySize);
-        strlcpy(outBuffer, result.string(), copySize);
+        strlcpy(outBuffer, result.c_str(), copySize);
     }
 }
 
@@ -884,7 +884,8 @@ bool ExynosDevice::canSkipValidate()
          * All display's validateDisplay should be skipped or all display's validateDisplay
          * should not be skipped.
          */
-        if (mDisplays[i]->mPlugState) {
+        if (mDisplays[i]->mPlugState && mDisplays[i]->mPowerModeState.has_value() &&
+            mDisplays[i]->mPowerModeState.value() != HWC2_POWER_MODE_OFF) {
             /*
              * presentDisplay is called without validateDisplay.
              * Call functions that should be called in validateDiplay
@@ -893,9 +894,11 @@ bool ExynosDevice::canSkipValidate()
             mDisplays[i]->checkLayerFps();
 
             if ((ret = mDisplays[i]->canSkipValidate()) != NO_ERROR) {
-                HDEBUGLOGD(eDebugSkipValidate, "Display[%d] can't skip validate (%d), renderingState(%d), geometryChanged(0x%" PRIx64 ")",
-                        mDisplays[i]->mDisplayId, ret,
-                        mDisplays[i]->mRenderingState, mGeometryChanged);
+                ALOGD_AND_ATRACE_NAME(eDebugSkipValidate,
+                                      "Display[%d] can't skip validate (%d), renderingState(%d), "
+                                      "geometryChanged(0x%" PRIx64 ")",
+                                      mDisplays[i]->mDisplayId, ret, mDisplays[i]->mRenderingState,
+                                      mGeometryChanged);
                 return false;
             } else {
                 HDEBUGLOGD(eDebugSkipValidate, "Display[%d] can skip validate (%d), renderingState(%d), geometryChanged(0x%" PRIx64 ")",
@@ -908,27 +911,7 @@ bool ExynosDevice::canSkipValidate()
 }
 
 bool ExynosDevice::validateFences(ExynosDisplay *display) {
-    std::scoped_lock lock(display->mDevice->mFenceMutex);
-
-    if (!validateFencePerFrame(display)) {
-        ALOGE("You should doubt fence leak!");
-        saveFenceTrace(display);
-        return false;
-    }
-
-    if (fenceWarn(display, MAX_FENCE_THRESHOLD)) {
-        printLeakFds(display);
-        saveFenceTrace(display);
-        return false;
-    }
-
-    if (exynosHWCControl.doFenceFileDump) {
-        ALOGD("Fence file dump !");
-        saveFenceTrace(display);
-        exynosHWCControl.doFenceFileDump = false;
-    }
-
-    return true;
+    return mFenceTracker.validateFences(display);
 }
 
 void ExynosDevice::compareVsyncPeriod() {
@@ -1009,7 +992,7 @@ void  ExynosDevice::captureReadbackClass::saveToFile(const String8 &fileName)
     VendorGraphicBufferMeta gmeta(mBuffer);
 
     snprintf(filePath, MAX_DEV_NAME,
-            "%s/%s", WRITEBACK_CAPTURE_PATH, fileName.string());
+            "%s/%s", WRITEBACK_CAPTURE_PATH, fileName.c_str());
     FILE *fp = fopen(filePath, "w");
     if (fp) {
         uint32_t writeSize =

@@ -33,6 +33,7 @@
 #include "ExynosHWCDebug.h"
 #include "ExynosHWCHelper.h"
 #include "ExynosLayer.h"
+#include "HistogramController.h"
 
 extern struct exynos_hwc_control exynosHWCControl;
 
@@ -86,8 +87,8 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device,
       : ExynosDisplay(HWC_DISPLAY_PRIMARY, index, device, displayName),
         mUseBlockingZoneForMinIdleRefreshRate(false),
         mMinIdleRefreshRate(0),
-        mVrrThrottleFps{0},
-        mVrrThrottleNanos{0},
+        mRrThrottleFps{0},
+        mRrThrottleNanos{0},
         mRefreshRateDelayNanos(0),
         mLastRefreshRateAppliedNanos(0),
         mAppliedActiveConfig(0),
@@ -115,6 +116,9 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device,
               mDefaultMinIdleRefreshRate, mMinIdleRefreshRateForBlockingZone,
               mDbvThresholdForBlockingZone);
     }
+
+    mVrrVsync.hsHz = property_get_int32("ro.vendor.primarydisplay.vrr.hs.vsync_hz", 0);
+    mVrrVsync.nsHz = property_get_int32("ro.vendor.primarydisplay.vrr.ns.vsync_hz", 0);
 
     // Allow to enable dynamic recomposition after every power on
     // since it will always be disabled for every power off
@@ -155,6 +159,7 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device,
     mBrightnessController = std::make_unique<BrightnessController>(
             mIndex, [this]() { mDevice->onRefresh(mDisplayId); },
             [this]() { updatePresentColorConversionInfo(); });
+    mHistogramController = std::make_unique<HistogramController>(this);
 
     mDisplayControl.multiThreadedPresent = true;
 }
@@ -267,13 +272,13 @@ int32_t ExynosPrimaryDisplay::setBootDisplayConfig(int32_t config) {
 
     ALOGD("%s: mode=%s (%d) vsyncPeriod=%d", __func__, modeStr, config,
             mode.vsyncPeriod);
-    ret = property_set(getPropertyBootModeStr(mDisplayId).string(), modeStr);
+    ret = property_set(getPropertyBootModeStr(mDisplayId).c_str(), modeStr);
 
     return !ret ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
 }
 
 int32_t ExynosPrimaryDisplay::clearBootDisplayConfig() {
-    auto ret = property_set(getPropertyBootModeStr(mDisplayId).string(), nullptr);
+    auto ret = property_set(getPropertyBootModeStr(mDisplayId).c_str(), nullptr);
 
     ALOGD("%s: clearing boot mode", __func__);
     return !ret ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
@@ -281,7 +286,7 @@ int32_t ExynosPrimaryDisplay::clearBootDisplayConfig() {
 
 int32_t ExynosPrimaryDisplay::getPreferredDisplayConfigInternal(int32_t *outConfig) {
     char modeStr[PROPERTY_VALUE_MAX];
-    auto ret = property_get(getPropertyBootModeStr(mDisplayId).string(), modeStr, "");
+    auto ret = property_get(getPropertyBootModeStr(mDisplayId).c_str(), modeStr, "");
 
     if (ret <= 0) {
         return mDisplayInterface->getDefaultModeId(outConfig);
@@ -471,6 +476,8 @@ void ExynosPrimaryDisplay::initDisplayInterface(uint32_t interfaceType)
         LOG_ALWAYS_FATAL("%s::Unknown interface type(%d)",
                 __func__, interfaceType);
     mDisplayInterface->init(this);
+
+    mDisplayInterface->setVrrVsync(mVrrVsync);
 
     mDpuData.init(mMaxWindowNum, mDevice->getSpecialPlaneNum(mDisplayId));
     mLastDpuData.init(mMaxWindowNum, mDevice->getSpecialPlaneNum(mDisplayId));
@@ -805,7 +812,7 @@ void ExynosPrimaryDisplay::setLHBMRefreshRateThrottle(const uint32_t delayMs) {
     setRefreshRateThrottleNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                         std::chrono::milliseconds(delayMs))
                                         .count(),
-                                VrrThrottleRequester::LHBM);
+                                RrThrottleRequester::LHBM);
 }
 
 void ExynosPrimaryDisplay::setEarlyWakeupDisplay() {
@@ -989,23 +996,23 @@ void ExynosPrimaryDisplay::handleDisplayIdleEnter(const uint32_t idleTeRefreshRa
 }
 
 int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
-                                                const VrrThrottleRequester requester) {
+                                                const RrThrottleRequester requester) {
     int fps = (targetFps <= 0) ? mDefaultMinIdleRefreshRate : targetFps;
-    if (requester == VrrThrottleRequester::BRIGHTNESS && mUseBlockingZoneForMinIdleRefreshRate) {
+    if (requester == RrThrottleRequester::BRIGHTNESS && mUseBlockingZoneForMinIdleRefreshRate) {
         uint32_t level = mBrightnessController->getBrightnessLevel();
         fps = (level < mDbvThresholdForBlockingZone) ? mMinIdleRefreshRateForBlockingZone
                                                      : mDefaultMinIdleRefreshRate;
     }
 
     std::lock_guard<std::mutex> lock(mMinIdleRefreshRateMutex);
-    if (fps == mVrrThrottleFps[toUnderlying(requester)]) return NO_ERROR;
+    if (fps == mRrThrottleFps[toUnderlying(requester)]) return NO_ERROR;
 
     ALOGD("%s requester %u, fps %d", __func__, toUnderlying(requester), fps);
-    mVrrThrottleFps[toUnderlying(requester)] = fps;
+    mRrThrottleFps[toUnderlying(requester)] = fps;
     int maxMinIdleFps = 0;
-    for (uint32_t i = 0; i < toUnderlying(VrrThrottleRequester::MAX); i++) {
-        if (mVrrThrottleFps[i] > maxMinIdleFps) {
-            maxMinIdleFps = mVrrThrottleFps[i];
+    for (uint32_t i = 0; i < toUnderlying(RrThrottleRequester::MAX); i++) {
+        if (mRrThrottleFps[i] > maxMinIdleFps) {
+            maxMinIdleFps = mRrThrottleFps[i];
         }
     }
     if (maxMinIdleFps == mMinIdleRefreshRate) return NO_ERROR;
@@ -1026,7 +1033,7 @@ int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
 }
 
 int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos,
-                                                      const VrrThrottleRequester requester) {
+                                                      const RrThrottleRequester requester) {
     ATRACE_CALL();
     if (delayNanos < 0) {
         ALOGW("%s() set invalid delay(%" PRId64 ")", __func__, delayNanos);
@@ -1034,15 +1041,15 @@ int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos,
     }
 
     std::lock_guard<std::mutex> lock(mIdleRefreshRateThrottleMutex);
-    if (delayNanos == mVrrThrottleNanos[toUnderlying(requester)]) return NO_ERROR;
+    if (delayNanos == mRrThrottleNanos[toUnderlying(requester)]) return NO_ERROR;
 
     ALOGI("%s() requester(%u) set delay to %" PRId64 "ns", __func__, toUnderlying(requester),
           delayNanos);
-    mVrrThrottleNanos[toUnderlying(requester)] = delayNanos;
+    mRrThrottleNanos[toUnderlying(requester)] = delayNanos;
     int64_t maxDelayNanos = 0;
-    for (uint32_t i = 0; i < toUnderlying(VrrThrottleRequester::MAX); i++) {
-        if (mVrrThrottleNanos[i] > maxDelayNanos) {
-            maxDelayNanos = mVrrThrottleNanos[i];
+    for (uint32_t i = 0; i < toUnderlying(RrThrottleRequester::MAX); i++) {
+        if (mRrThrottleNanos[i] > maxDelayNanos) {
+            maxDelayNanos = mRrThrottleNanos[i];
         }
     }
 
@@ -1052,7 +1059,7 @@ int ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNanos,
     }
 
     mRefreshRateDelayNanos = maxDelayNanos;
-    return setDisplayIdleDelayNanos(mRefreshRateDelayNanos, DispIdleTimerRequester::VRR_THROTTLE);
+    return setDisplayIdleDelayNanos(mRefreshRateDelayNanos, DispIdleTimerRequester::RR_THROTTLE);
 }
 
 void ExynosPrimaryDisplay::dump(String8 &result) {
@@ -1072,13 +1079,13 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
         result.appendFormat("\n");
     }
 
-    for (uint32_t i = 0; i < toUnderlying(VrrThrottleRequester::MAX); i++) {
-        result.appendFormat("\t[%u] vote to %d hz\n", i, mVrrThrottleFps[i]);
+    for (uint32_t i = 0; i < toUnderlying(RrThrottleRequester::MAX); i++) {
+        result.appendFormat("\t[%u] vote to %d hz\n", i, mRrThrottleFps[i]);
     }
 
     result.appendFormat("Refresh rate delay: %" PRId64 " ns\n", mRefreshRateDelayNanos);
-    for (uint32_t i = 0; i < toUnderlying(VrrThrottleRequester::MAX); i++) {
-        result.appendFormat("\t[%u] vote to %" PRId64 " ns\n", i, mVrrThrottleNanos[i]);
+    for (uint32_t i = 0; i < toUnderlying(RrThrottleRequester::MAX); i++) {
+        result.appendFormat("\t[%u] vote to %" PRId64 " ns\n", i, mRrThrottleNanos[i]);
     }
     result.appendFormat("\n");
 }

@@ -17,17 +17,18 @@
 #define LOG_TAG "hwc-drm-connector"
 
 #include "drmconnector.h"
-#include "drmdevice.h"
 
+#include <cutils/properties.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <log/log.h>
 #include <stdint.h>
+#include <xf86drmMode.h>
 
 #include <array>
 #include <sstream>
 
-#include <log/log.h>
-#include <xf86drmMode.h>
+#include "drmdevice.h"
 
 #ifndef DRM_MODE_CONNECTOR_WRITEBACK
 #define DRM_MODE_CONNECTOR_WRITEBACK 18
@@ -155,9 +156,9 @@ int DrmConnector::Init() {
       ALOGE("Could not get panel_idle_support property\n");
   }
 
-  ret = drm_->GetConnectorProperty(*this, "vrr_switch_duration", &vrr_switch_duration_);
+  ret = drm_->GetConnectorProperty(*this, "rr_switch_duration", &rr_switch_duration_);
   if (ret) {
-    ALOGE("Could not get vrr_switch_duration property\n");
+      ALOGE("Could not get rr_switch_duration property\n");
   }
 
   ret = drm_->GetConnectorProperty(*this, "operation_rate", &operation_rate_);
@@ -191,7 +192,7 @@ int DrmConnector::Init() {
   properties_.push_back(&lhbm_on_);
   properties_.push_back(&mipi_sync_);
   properties_.push_back(&panel_idle_support_);
-  properties_.push_back(&vrr_switch_duration_);
+  properties_.push_back(&rr_switch_duration_);
   properties_.push_back(&operation_rate_);
   properties_.push_back(&refresh_on_lp_);
 
@@ -251,7 +252,7 @@ std::string DrmConnector::name() const {
   }
 }
 
-int DrmConnector::UpdateModes() {
+int DrmConnector::UpdateModes(bool is_vrr_mode) {
   std::lock_guard<std::recursive_mutex> lock(modes_lock_);
 
   int fd = drm_->fd();
@@ -288,6 +289,10 @@ int DrmConnector::UpdateModes() {
       }
     }
     if (!exists) {
+      // Remove modes that mismatch with the VRR setting..
+      if (is_vrr_mode != ((c->modes[i].type & DRM_MODE_TYPE_VRR) != 0)) {
+        continue;
+      }
       DrmMode m(&c->modes[i]);
       m.set_id(drm_->next_mode_id());
       new_modes.push_back(m);
@@ -435,8 +440,8 @@ const DrmProperty &DrmConnector::panel_idle_support() const {
     return panel_idle_support_;
 }
 
-const DrmProperty &DrmConnector::vrr_switch_duration() const {
-  return vrr_switch_duration_;
+const DrmProperty &DrmConnector::rr_switch_duration() const {
+    return rr_switch_duration_;
 }
 
 DrmEncoder *DrmConnector::encoder() const {

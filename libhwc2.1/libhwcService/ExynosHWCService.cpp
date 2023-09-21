@@ -431,6 +431,18 @@ int32_t ExynosHWCService::setDisplayBrightnessNits(const int32_t display_id, con
     return -EINVAL;
 }
 
+int32_t ExynosHWCService::setDisplayBrightnessDbv(int32_t display_id, uint32_t dbv) {
+    auto display = mHWCCtx->device->getDisplay(display_id);
+
+    if (display != nullptr) {
+        return display->setBrightnessDbv(dbv);
+    } else {
+        ALOGE("ExynosHWCService::%s() invalid display id: %d\n", __func__, display_id);
+    }
+
+    return -EINVAL;
+}
+
 int32_t ExynosHWCService::setDisplayLhbm(int32_t display_id, uint32_t on) {
     if (on > 1) return -EINVAL;
 
@@ -450,7 +462,7 @@ int32_t ExynosHWCService::setMinIdleRefreshRate(uint32_t display_id, int32_t fps
     auto display = mHWCCtx->device->getDisplay(display_id);
 
     if (display != nullptr) {
-        return display->setMinIdleRefreshRate(fps, VrrThrottleRequester::TEST);
+        return display->setMinIdleRefreshRate(fps, RrThrottleRequester::TEST);
     }
 
     return -EINVAL;
@@ -466,7 +478,7 @@ int32_t ExynosHWCService::setRefreshRateThrottle(uint32_t display_id, int32_t de
                 ->setRefreshRateThrottleNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                       std::chrono::milliseconds(delayMs))
                                                       .count(),
-                                              VrrThrottleRequester::TEST);
+                                              RrThrottleRequester::TEST);
     }
 
     return -EINVAL;

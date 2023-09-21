@@ -375,6 +375,9 @@ int32_t HalImpl::getDisplayConfigs(int64_t display, std::vector<int32_t>* config
 
 int32_t HalImpl::getDisplayConfigurations(int64_t display, int32_t,
                                           std::vector<DisplayConfiguration>* outConfigs) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
     std::vector<int32_t> configIds;
     RET_IF_ERR(getDisplayConfigs(display, &configIds));
 
@@ -396,6 +399,16 @@ int32_t HalImpl::getDisplayConfigurations(int64_t display, int32_t,
         // TODO(b/294120341): getDisplayAttribute for DPI should return dots per inch
         if (statusDpiX == HWC2_ERROR_NONE && statusDpiY == HWC2_ERROR_NONE) {
             config.dpi = {dpiX / 1000.0f, dpiY / 1000.0f};
+        }
+        // Determine whether there is a need to configure VRR.
+        hwc2_config_t hwcConfigId;
+        a2h::translate(configId, hwcConfigId);
+        std::optional<VrrConfig_t> vrrConfig = halDisplay->getVrrConfigs(hwcConfigId);
+        if (vrrConfig.has_value()) {
+            // TODO(b/290843234): complete the remaining values within vrrConfig.
+            VrrConfig hwc3VrrConfig;
+            hwc3VrrConfig.minFrameIntervalNs = vrrConfig->minFrameIntervalNs;
+            config.vrrConfig = std::make_optional(hwc3VrrConfig);
         }
         outConfigs->push_back(config);
     }
@@ -616,10 +629,10 @@ int32_t HalImpl::presentDisplay(int64_t display, ndk::ScopedFileDescriptor& fenc
 
    // TODO: not expect acceptDisplayChanges if there are no changes to accept
     if (halDisplay->mRenderingState == RENDERING_STATE_VALIDATED) {
-        LOG(INFO) << halDisplay->mDisplayName.string()
+        LOG(INFO) << halDisplay->mDisplayName.c_str()
                    << ": acceptDisplayChanges was not called";
         if (halDisplay->acceptDisplayChanges() != HWC2_ERROR_NONE) {
-            LOG(ERROR) << halDisplay->mDisplayName.string()
+            LOG(ERROR) << halDisplay->mDisplayName.c_str()
             << ": acceptDisplayChanges is failed";
         }
     }
@@ -723,6 +736,15 @@ int32_t HalImpl::setClientTarget(int64_t display, buffer_handle_t target,
     UNUSED(region);
 
     return halDisplay->setClientTarget(target, hwcFence, hwcDataspace);
+}
+
+int32_t HalImpl::getHasClientComposition(int64_t display, bool& outHasClientComp) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    outHasClientComp = halDisplay->hasClientComposition();
+
+    return HWC2_ERROR_NONE;
 }
 
 int32_t HalImpl::setColorMode(int64_t display, ColorMode mode, RenderIntent intent) {
@@ -1066,7 +1088,7 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
         h2a::translate(hwcProperty, *outClientTargetProperty);
     } // else ignore this error
 
-    return HWC2_ERROR_NONE;
+    return err;
 }
 
 int HalImpl::setExpectedPresentTime(
