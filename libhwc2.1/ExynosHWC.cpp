@@ -192,7 +192,7 @@ void exynos_getCapabilities(struct hwc2_device *dev, uint32_t *outCount, int32_t
     if (!exynosDevice)
         *outCapabilities = 0;
     else
-        return exynosDevice->getCapabilities(outCount, outCapabilities);
+        return exynosDevice->getCapabilitiesLegacy(outCount, outCapabilities);
 }
 
 void exynos_dump(hwc2_device_t *dev, uint32_t *outSize, char *outBuffer)
@@ -520,10 +520,10 @@ int32_t exynos_presentDisplay(hwc2_device_t *dev, hwc2_display_t display,
 
         if (exynosDisplay->mHWCRenderingState == RENDERING_STATE_VALIDATED) {
             ALOGI("%s:: acceptDisplayChanges was not called",
-                    exynosDisplay->mDisplayName.string());
+                    exynosDisplay->mDisplayName.c_str());
             if (exynosDisplay->acceptDisplayChanges() != HWC2_ERROR_NONE) {
                 ALOGE("%s:: acceptDisplayChanges is failed",
-                        exynosDisplay->mDisplayName.string());
+                        exynosDisplay->mDisplayName.c_str());
             }
         }
         int32_t ret = exynosDisplay->presentDisplay(outRetireFence);

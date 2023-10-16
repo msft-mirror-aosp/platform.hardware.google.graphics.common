@@ -36,6 +36,7 @@
 using vendor::graphics::BufferUsage;
 using vendor::graphics::VendorGraphicBufferUsage;
 using vendor::graphics::VendorGraphicBufferMeta;
+using namespace SOC_VERSION;
 
 #define AFBC_MAGIC  0xafbc
 
@@ -271,6 +272,30 @@ bool isFormatP010(int format)
     return false;
 }
 
+bool isFormat10Bit(int format) {
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++) {
+        if (exynos_format_desc[i].halFormat == format) {
+            if ((exynos_format_desc[i].type & BIT_MASK) == BIT10)
+                return true;
+            else
+                return false;
+        }
+    }
+    return false;
+}
+
+bool isFormat8Bit(int format) {
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++) {
+        if (exynos_format_desc[i].halFormat == format) {
+            if ((exynos_format_desc[i].type & BIT_MASK) == BIT8)
+                return true;
+            else
+                return false;
+        }
+    }
+    return false;
+}
+
 bool isFormatYCrCb(int format)
 {
     return format == HAL_PIXEL_FORMAT_EXYNOS_YV12_M;
@@ -464,7 +489,7 @@ void dumpExynosImage(uint32_t type, exynos_image &img)
     String8 result;
     dumpExynosImage(result, img);
 
-    ALOGD("%s", result.string());
+    ALOGD("%s", result.c_str());
 }
 
 void dumpExynosImage(String8& result, exynos_image &img)
@@ -472,7 +497,7 @@ void dumpExynosImage(String8& result, exynos_image &img)
     result.appendFormat("\tbufferHandle: %p, fullWidth: %d, fullHeight: %d, x: %d, y: %d, w: %d, "
                         "h: %d, format: %s\n",
                         img.bufferHandle, img.fullWidth, img.fullHeight, img.x, img.y, img.w, img.h,
-                        getFormatStr(img.format, img.compressed ? AFBC : 0).string());
+                        getFormatStr(img.format, img.compressed ? AFBC : 0).c_str());
     result.appendFormat("\tusageFlags: 0x%" PRIx64 ", layerFlags: 0x%8x, acquireFenceFd: %d, releaseFenceFd: %d\n",
             img.usageFlags, img.layerFlags, img.acquireFenceFd, img.releaseFenceFd);
     result.appendFormat("\tdataSpace(%d), blending(%d), transform(0x%2x), afbc(%d)\n",
@@ -647,11 +672,13 @@ uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
         HDEBUGLOGD(eDebugMPP, "size(Y) : %d", P010_Y_SIZE(width, height));
         return P010_Y_SIZE(width, height);
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN:
-        return YUV420N_Y_SIZE(width, height);
+        return NV12N_Y_SIZE(width, height);
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_P010_SPN:
+        return 2 * __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP_10B:
-        return 2 * __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
+        return 2 * __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP:
-        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L50:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L75:
@@ -672,6 +699,8 @@ uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
     case HAL_PIXEL_FORMAT_EXYNOS_YCrCb_420_SP_M_10B_SBWC:
         return SBWC_10B_Y_SIZE(width, height) +
             SBWC_10B_Y_HEADER_SIZE(width, height);
+    case MALI_GRALLOC_FORMAT_INTERNAL_NV21:
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 2);
     }
 
     return NV12M_Y_SIZE(width, height) + ((width % 128) == 0 ? 0 : 256);
@@ -696,10 +725,12 @@ uint32_t getExynosBufferCbCrLength(uint32_t width, uint32_t height, int format)
     case HAL_PIXEL_FORMAT_YCBCR_P010:
         HDEBUGLOGD(eDebugMPP, "size(CbCr) : %d", P010_CBCR_SIZE(width, height));
         return P010_CBCR_SIZE(width, height);
+    case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_P010_SPN:
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP_10B:
-        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8);
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16);
     case HAL_PIXEL_FORMAT_GOOGLE_NV12_SP:
-        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 8) / 2;
+        return __ALIGN_UP(width, 64) * __ALIGN_UP(height, 16) / 2;
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L50:
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SP_M_SBWC_L75:
@@ -891,7 +922,7 @@ void printLastFenceInfo(uint32_t fd, ExynosDisplay* display) {
 
     for (const auto& trace : info.traces) {
         FT_LOGD("> dir: %d, type: %d, ip: %d, time:%s", trace.direction, trace.type, trace.ip,
-                getLocalTimeStr(trace.time).string());
+                getLocalTimeStr(trace.time).c_str());
     }
 }
 
@@ -925,7 +956,7 @@ void printLeakFds(ExynosDisplay* display) {
             }
         }
 
-        FT_LOGW("%s", errString.string());
+        FT_LOGW("%s", errString.c_str());
     };
 
     reportLeakFds(+1);
@@ -993,10 +1024,10 @@ bool validateFencePerFrame(ExynosDisplay* display) {
 
 String8 getMPPStr(int typeId) {
     if (typeId < MPP_DPP_NUM){
-        int cnt = sizeof(AVAILABLE_OTF_MPP_UNITS)/sizeof(exynos_mpp_t);
+        int cnt = sizeof(available_otf_mpp_units)/sizeof(exynos_mpp_t);
         for (int i = 0; i < cnt; i++){
-            if (AVAILABLE_OTF_MPP_UNITS[i].physicalType == typeId)
-                return String8(AVAILABLE_OTF_MPP_UNITS[i].name);
+            if (available_otf_mpp_units[i].physicalType == typeId)
+                return String8(available_otf_mpp_units[i].name);
         }
     } else {
         int cnt = sizeof(AVAILABLE_M2M_MPP_UNITS)/sizeof(exynos_mpp_t);
