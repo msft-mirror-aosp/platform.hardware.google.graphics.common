@@ -19,7 +19,11 @@
 #include <map>
 
 #include "../libdevice/ExynosDisplay.h"
+#include "../libvrr/VariableRefreshRateController.h"
+#include "../libvrr/VariableRefreshRateInterface.h"
 
+using android::hardware::graphics::composer::PresentListener;
+using android::hardware::graphics::composer::VariableRefreshRateController;
 using namespace displaycolor;
 
 class ExynosPrimaryDisplay : public ExynosDisplay {
@@ -69,6 +73,12 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual bool isConfigSettingEnabled() override;
         virtual void enableConfigSetting(bool en) override;
 
+        virtual int32_t getDisplayConfigs(uint32_t* outNumConfigs,
+                                          hwc2_config_t* outConfigs) override;
+        virtual int32_t presentDisplay(int32_t* outRetireFence) override;
+
+        virtual std::string getPanelFileNodePath() const override;
+
     protected:
         /* setPowerMode(int32_t mode)
          * Descriptor: HWC2_FUNCTION_SET_POWER_MODE
@@ -82,7 +92,7 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual bool getHDRException(ExynosLayer* __unused layer);
         virtual int32_t setActiveConfigInternal(hwc2_config_t config, bool force) override;
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig) override;
-        DisplayType getDisplayTypeFromIndex(uint32_t index) {
+        DisplayType getDisplayTypeFromIndex(uint32_t index) const {
             return (index >= DisplayType::DISPLAY_MAX) ? DisplayType::DISPLAY_PRIMARY
                                                        : DisplayType(mIndex);
         };
@@ -90,7 +100,7 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
     public:
         // Prepare multi resolution
         ResolutionInfo mResolutionInfo;
-        std::string getPanelSysfsPath(const displaycolor::DisplayType& type);
+        std::string getPanelSysfsPath(const displaycolor::DisplayType& type) const;
 
         uint32_t mRcdId = -1;
 
@@ -172,8 +182,11 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         int64_t mDisplayIdleDelayNanos;
         bool mDisplayNeedHandleIdleExit;
 
-        // Vrr related settings.
+        // Function and variables related to Vrr.
+        PresentListener* getPresentListener();
+
         VrrSettings_t mVrrSettings;
+        std::shared_ptr<VariableRefreshRateController> mVariableRefreshRateController;
 };
 
 #endif
