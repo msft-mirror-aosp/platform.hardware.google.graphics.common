@@ -40,12 +40,13 @@ extern struct exynos_hwc_control exynosHWCControl;
 using namespace SOC_VERSION;
 
 namespace {
+
 constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
 
 inline constexpr int kDefaultNotifyExpectedPresentConfigHeadsUpNs =
-        std::chrono::nanoseconds(33ms).count();
+        std::chrono::nanoseconds(30ms).count();
 inline constexpr int kDefaultNotifyExpectedPresentConfigTimeoutNs =
-        std::chrono::nanoseconds(500ms).count();
+        std::chrono::nanoseconds(30ms).count();
 
 static constexpr int kMaximumPropertyIdentifierLength = 128;
 
@@ -54,6 +55,7 @@ static const std::map<const DisplayType, const std::string> panelSysfsPath =
 #ifdef USES_IDISPLAY_INTF_SEC
          {DisplayType::DISPLAY_SECONDARY, "/sys/devices/platform/exynos-drm/secondary-panel/"}
 #endif
+
 };
 } // namespace
 
@@ -523,13 +525,13 @@ void ExynosPrimaryDisplay::initDisplayInterface(uint32_t interfaceType)
           mDpuData.rcdConfigs.size());
 }
 
-std::string ExynosPrimaryDisplay::getPanelSysfsPath(const DisplayType &type) {
+std::string ExynosPrimaryDisplay::getPanelSysfsPath(const DisplayType& type) const {
     if ((type < DisplayType::DISPLAY_PRIMARY) || (type >= DisplayType::DISPLAY_MAX)) {
         ALOGE("Invalid display panel type %d", type);
         return {};
     }
 
-    auto iter = panelSysfsPath.find(type);
+    const auto& iter = panelSysfsPath.find(type);
     if (iter == panelSysfsPath.end()) {
         return {};
     }
@@ -629,6 +631,47 @@ void ExynosPrimaryDisplay::enableConfigSetting(bool en) {
     }
 
     mConfigSettingDisabled = false;
+}
+
+int32_t ExynosPrimaryDisplay::getDisplayConfigs(uint32_t* outNumConfigs,
+                                                hwc2_config_t* outConfigs) {
+    int32_t ret = ExynosDisplay::getDisplayConfigs(outNumConfigs, outConfigs);
+    if (ret == HWC2_ERROR_NONE) {
+        if (mVrrSettings.enabled && mDisplayConfigs.size()) {
+            if (!mVariableRefreshRateController) {
+                mVariableRefreshRateController =
+                        VariableRefreshRateController::CreateInstance(this);
+                std::unordered_map<hwc2_config_t, VrrConfig_t> vrrConfigs;
+                for (const auto& it : mDisplayConfigs) {
+                    if (!it.second.vrrConfig.has_value()) {
+                        return HWC2_ERROR_BAD_CONFIG;
+                    }
+                    vrrConfigs[it.first] = it.second.vrrConfig.value();
+                }
+                mVariableRefreshRateController->setVrrConfigurations(std::move(vrrConfigs));
+                hwc2_config_t activeConfig;
+                if (ExynosDisplay::getActiveConfig(&activeConfig) == HWC2_ERROR_NONE) {
+                    mVariableRefreshRateController->setActiveVrrConfiguration(activeConfig);
+                    mVariableRefreshRateController->setEnable(true);
+                }
+            }
+        }
+    }
+    return ret;
+}
+
+int32_t ExynosPrimaryDisplay::presentDisplay(int32_t* outRetireFence) {
+    auto res = ExynosDisplay::presentDisplay(outRetireFence);
+    // Forward presentDisplay if there is a listener.
+    const auto presentListener = getPresentListener();
+    if (res == HWC2_ERROR_NONE && presentListener) {
+        presentListener->onPresent();
+    }
+    return res;
+}
+
+std::string ExynosPrimaryDisplay::getPanelFileNodePath() const {
+    return getPanelSysfsPath(getDisplayTypeFromIndex(mIndex));
 }
 
 int32_t ExynosPrimaryDisplay::setLhbmDisplayConfigLocked(uint32_t peakRate) {
@@ -874,6 +917,11 @@ void ExynosPrimaryDisplay::setEarlyWakeupDisplay() {
 
 void ExynosPrimaryDisplay::setExpectedPresentTime(uint64_t timestamp, int frameIntervalNs) {
     mExpectedPresentTimeAndInterval.store(std::make_tuple(timestamp, frameIntervalNs));
+    // Forward presentDisplay if there is a listener.
+    const auto presentListener = getPresentListener();
+    if (presentListener) {
+        presentListener->setExpectedPresentTime(timestamp, frameIntervalNs);
+    }
 }
 
 uint64_t ExynosPrimaryDisplay::getPendingExpectedPresentTime() {
@@ -1216,6 +1264,11 @@ void ExynosPrimaryDisplay::updateAppliedActiveConfig(const hwc2_config_t newConf
     }
 
     mAppliedActiveConfig = newConfig;
+
+    // Forward applied active config if there is a vrr controller.
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->setActiveVrrConfiguration(mAppliedActiveConfig);
+    }
 }
 
 void ExynosPrimaryDisplay::checkBtsReassignResource(const int32_t vsyncPeriod,
@@ -1258,4 +1311,11 @@ bool ExynosPrimaryDisplay::isDbmSupported() {
 int32_t ExynosPrimaryDisplay::setDbmState(bool enabled) {
     mBrightnessController->processDimBrightness(enabled);
     return NO_ERROR;
+}
+
+PresentListener* ExynosPrimaryDisplay::getPresentListener() {
+    if (mVariableRefreshRateController) {
+        return mVariableRefreshRateController.get();
+    }
+    return nullptr;
 }
