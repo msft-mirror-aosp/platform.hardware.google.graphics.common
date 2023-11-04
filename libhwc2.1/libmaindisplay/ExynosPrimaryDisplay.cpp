@@ -665,13 +665,20 @@ int32_t ExynosPrimaryDisplay::presentDisplay(int32_t* outRetireFence) {
     // Forward presentDisplay if there is a listener.
     const auto presentListener = getPresentListener();
     if (res == HWC2_ERROR_NONE && presentListener) {
-        presentListener->onPresent();
+        presentListener->onPresent(*outRetireFence);
     }
     return res;
 }
 
 std::string ExynosPrimaryDisplay::getPanelFileNodePath() const {
     return getPanelSysfsPath(getDisplayTypeFromIndex(mIndex));
+}
+
+void ExynosPrimaryDisplay::onVsync(int64_t timestamp) {
+    const auto vsyncListener = getVsyncListener();
+    if (vsyncListener) {
+        vsyncListener->onVsync(timestamp, 0);
+    }
 }
 
 int32_t ExynosPrimaryDisplay::setLhbmDisplayConfigLocked(uint32_t peakRate) {
@@ -1314,6 +1321,13 @@ int32_t ExynosPrimaryDisplay::setDbmState(bool enabled) {
 }
 
 PresentListener* ExynosPrimaryDisplay::getPresentListener() {
+    if (mVariableRefreshRateController) {
+        return mVariableRefreshRateController.get();
+    }
+    return nullptr;
+}
+
+VsyncListener* ExynosPrimaryDisplay::getVsyncListener() {
     if (mVariableRefreshRateController) {
         return mVariableRefreshRateController.get();
     }
