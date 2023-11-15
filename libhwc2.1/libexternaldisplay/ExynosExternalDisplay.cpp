@@ -157,6 +157,7 @@ int ExynosExternalDisplay::getDisplayConfigs(uint32_t* outNumConfigs, hwc2_confi
         mXres = displayConfig.width;
         mYres = displayConfig.height;
         mVsyncPeriod = displayConfig.vsyncPeriod;
+        mRefreshRate = displayConfig.refreshRate;
 
         if (mDisplayInterface->mType == INTERFACE_TYPE_DRM) {
             ret = mDisplayInterface->setActiveConfig(mActiveConfig);
@@ -448,11 +449,16 @@ int ExynosExternalDisplay::disable()
 {
     ALOGI("[ExternalDisplay] %s +", __func__);
 
-    if (!mEnabled)
-        return HWC2_ERROR_NONE;
-
     if (mHpdStatus) {
-        clearDisplay(false);
+        /*
+         * DP cable is connected and link is up
+         *
+         * Currently, we don't power down here for two reasons:
+         * - power up would require DP link re-training (slow)
+         * - DP audio can continue playing while display is blank
+         */
+        if (mEnabled)
+            clearDisplay(false);
         return HWC2_ERROR_NONE;
     }
 
