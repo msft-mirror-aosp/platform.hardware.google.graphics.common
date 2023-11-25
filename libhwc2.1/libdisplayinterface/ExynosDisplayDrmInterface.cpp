@@ -1075,6 +1075,7 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
                 ALOGE("%s:: invalid vsync period", __func__);
                 return HWC2_ERROR_BAD_DISPLAY;
             }
+            configs.isOperationRateToBts = mode.is_operation_rate_to_bts();
             configs.width = mode.h_display();
             configs.height = mode.v_display();
             // Dots per 1000 inches
@@ -1326,7 +1327,8 @@ int32_t ExynosDisplayDrmInterface::setActiveConfigWithConstraints(
         }
     } else {
         if (!isResSwitch) {
-            ret = setDisplayMode(drmReq, modeBlob ? modeBlob : mDesiredModeState.blob_id);
+            ret = setDisplayMode(drmReq, modeBlob ? modeBlob : mDesiredModeState.blob_id,
+                                 modeBlob ? mode->id() : mDesiredModeState.mode.id());
             if (ret < 0) {
                 HWC_LOGE(mExynosDisplay, "%s: Fail to apply display mode", __func__);
                 return ret;
@@ -1372,7 +1374,7 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
         reconfig = true;
     }
 
-    if ((ret = setDisplayMode(drmReq, modeBlob)) != NO_ERROR) {
+    if ((ret = setDisplayMode(drmReq, modeBlob, mode.id())) != NO_ERROR) {
         drmReq.addOldBlob(modeBlob);
         HWC_LOGE(mExynosDisplay, "%s: Fail to apply display mode",
                 __func__);
@@ -1441,9 +1443,9 @@ int32_t ExynosDisplayDrmInterface::createModeBlob(const DrmMode &mode,
     return NO_ERROR;
 }
 
-int32_t ExynosDisplayDrmInterface::setDisplayMode(
-        DrmModeAtomicReq &drmReq, const uint32_t modeBlob)
-{
+int32_t ExynosDisplayDrmInterface::setDisplayMode(DrmModeAtomicReq& drmReq,
+                                                  const uint32_t& modeBlob,
+                                                  const uint32_t& modeId) {
     int ret = NO_ERROR;
 
     if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(),
@@ -1457,6 +1459,10 @@ int32_t ExynosDisplayDrmInterface::setDisplayMode(
     if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(),
             mDrmConnector->crtc_id_property(), mDrmCrtc->id())) < 0)
         return ret;
+
+    if (mConfigChangeCallback) {
+        drmReq.setAckCallback(std::bind(mConfigChangeCallback, modeId));
+    }
 
     return NO_ERROR;
 }
@@ -1907,7 +1913,8 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
                 1 << mMipiSyncEnums[toUnderlying(HalMipiSyncType::HAL_MIPI_CMD_SYNC_REFRESH_RATE)];
         }
 
-        if ((ret = setDisplayMode(drmReq, mDesiredModeState.blob_id)) < 0) {
+        if ((ret = setDisplayMode(drmReq, mDesiredModeState.blob_id, mDesiredModeState.mode.id())) <
+            0) {
             HWC_LOGE(mExynosDisplay, "%s: Fail to apply display mode",
                     __func__);
             return ret;
@@ -2195,6 +2202,7 @@ void ExynosDisplayDrmInterface::setVrrSettings(const VrrSettings_t& vrrSettings)
         mIsVrrModeSupported = true;
         mNotifyExpectedPresentHeadsUpNs = vrrSettings.notifyExpectedPresentConfig.HeadsUpNs;
         mNotifyExpectedPresentTimeoutNs = vrrSettings.notifyExpectedPresentConfig.TimeoutNs;
+        mConfigChangeCallback = vrrSettings.configChangeCallback;
     }
 }
 
@@ -2465,6 +2473,12 @@ int ExynosDisplayDrmInterface::DrmModeAtomicReq::commit(uint32_t flags, bool log
         }
         HWC_LOGE(mDrmDisplayInterface->mExynosDisplay, "commit error: %d", ret);
         setError(ret);
+    }
+
+    if (ret == 0 && mAckCallback) {
+        if (!(flags & DRM_MODE_ATOMIC_TEST_ONLY)) {
+            mAckCallback();
+        }
     }
 
     return ret;
