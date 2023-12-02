@@ -699,10 +699,6 @@ int32_t ExynosPrimaryDisplay::presentDisplay(int32_t* outRetireFence) {
     return res;
 }
 
-std::string ExynosPrimaryDisplay::getPanelFileNodePath() const {
-    return getPanelSysfsPath(getDisplayTypeFromIndex(mIndex));
-}
-
 void ExynosPrimaryDisplay::onVsync(int64_t timestamp) {
     const auto vsyncListener = getVsyncListener();
     if (vsyncListener) {
@@ -1013,7 +1009,7 @@ int32_t ExynosPrimaryDisplay::getDisplayIdleTimerEnabled(bool &enabled) {
         return HWC2_ERROR_UNSUPPORTED;
     }
 
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "panel_idle";
+    const std::string path = getPanelSysfsPath() + "panel_idle";
     std::ifstream ifs(path);
     if (!ifs.is_open()) {
         ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
@@ -1029,7 +1025,7 @@ int32_t ExynosPrimaryDisplay::getDisplayIdleTimerEnabled(bool &enabled) {
 }
 
 int32_t ExynosPrimaryDisplay::setDisplayIdleTimerEnabled(const bool enabled) {
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "panel_idle";
+    const std::string path = getPanelSysfsPath() + "panel_idle";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
         ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
@@ -1063,7 +1059,7 @@ int32_t ExynosPrimaryDisplay::setDisplayIdleDelayNanos(const int32_t delayNanos,
     const int32_t displayIdleDelayMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                                std::chrono::nanoseconds(mDisplayIdleDelayNanos))
                                                .count();
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "idle_delay_ms";
+    const std::string path = getPanelSysfsPath() + "idle_delay_ms";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
         ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
@@ -1082,8 +1078,7 @@ void ExynosPrimaryDisplay::initDisplayHandleIdleExit() {
         return;
     }
 
-    const std::string path =
-            getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "panel_need_handle_idle_exit";
+    const std::string path = getPanelSysfsPath() + "panel_need_handle_idle_exit";
     mDisplayNeedHandleIdleExitOfs.open(path, std::ofstream::out);
     if (!mDisplayNeedHandleIdleExitOfs.is_open()) {
         ALOGI("%s() '%s' doesn't exist(%s)", __func__, path.c_str(), strerror(errno));
@@ -1120,18 +1115,23 @@ void ExynosPrimaryDisplay::setDisplayNeedHandleIdleExit(const bool needed, const
 }
 
 void ExynosPrimaryDisplay::handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) {
-    Mutex::Autolock lock(mDisplayMutex);
-    uint32_t btsRefreshRate = getBtsRefreshRate();
-    if (idleTeRefreshRate <= btsRefreshRate) {
-        return;
+    {
+        Mutex::Autolock lock(mDisplayMutex);
+        uint32_t btsRefreshRate = getBtsRefreshRate();
+        if (idleTeRefreshRate <= btsRefreshRate) {
+            return;
+        }
     }
 
     bool needed = false;
-    for (size_t i = 0; i < mLayers.size(); i++) {
-        if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
-            !mLayers[i]->checkBtsCap(idleTeRefreshRate)) {
-            needed = true;
-            break;
+    {
+        Mutex::Autolock lock(mDRMutex);
+        for (size_t i = 0; i < mLayers.size(); i++) {
+            if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
+                !mLayers[i]->checkBtsCap(idleTeRefreshRate)) {
+                needed = true;
+                break;
+            }
         }
     }
 
@@ -1160,7 +1160,7 @@ int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
     }
     if (maxMinIdleFps == mMinIdleRefreshRate) return NO_ERROR;
 
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "min_vrefresh";
+    const std::string path = getPanelSysfsPath() + "min_vrefresh";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
         ALOGW("%s Unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
