@@ -77,6 +77,7 @@ public:
     int processOperationRate(int32_t hz);
     bool isDbmSupported() { return mDbmSupported; }
     int applyPendingChangeViaSysfs(const nsecs_t vsyncNs);
+    int applyAclViaSysfs();
     bool validateLayerBrightness(float brightness);
 
     /**
@@ -153,6 +154,11 @@ public:
     uint32_t getOperationRate() {
         std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
         return mOperationRate.get();
+    }
+
+    bool isOperationRatePending() {
+        std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
+        return mOperationRate.is_dirty();
     }
 
     bool isSupported() {

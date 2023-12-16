@@ -132,10 +132,12 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device,
               mDbvThresholdForBlockingZone);
     }
 
-    DisplayType displayType = getDisplayTypeFromIndex(mIndex);
+    DisplayType displayType = getDcDisplayType();
     std::string displayTypeIdentifier;
     if (displayType == DisplayType::DISPLAY_PRIMARY) {
         displayTypeIdentifier = "primarydisplay";
+    } else if (displayType == DisplayType::DISPLAY_EXTERNAL) {
+        displayTypeIdentifier = "externaldisplay";
     }
 #ifdef USES_IDISPLAY_INTF_SEC
     else if (displayType == DisplayType::DISPLAY_SECONDARY) {
@@ -155,6 +157,8 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device,
                     displayTypeIdentifier.c_str());
             mVrrSettings.notifyExpectedPresentConfig.TimeoutNs =
                     property_get_int32(pathBuffer, kDefaultNotifyExpectedPresentConfigTimeoutNs);
+            mVrrSettings.configChangeCallback =
+                    std::bind(&ExynosPrimaryDisplay::onConfigChange, this, std::placeholders::_1);
         }
     }
 
@@ -187,7 +191,7 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice *device,
 
     char value[PROPERTY_VALUE_MAX];
     const char *earlyWakeupNodeBase = early_wakeup_node_0_base;
-    if (getDisplayTypeFromIndex(mIndex) == DisplayType::DISPLAY_SECONDARY &&
+    if (getDcDisplayType() == DisplayType::DISPLAY_SECONDARY &&
         property_get("vendor.display.secondary_early_wakeup_node", value, "") > 0) {
         earlyWakeupNodeBase = value;
     }
@@ -274,10 +278,15 @@ int32_t ExynosPrimaryDisplay::setActiveConfigInternal(hwc2_config_t config, bool
     return ExynosDisplay::setActiveConfigInternal(config, force);
 }
 
+// If a display is Off, applyPendingConfig() calls to setActiveConfig() that also
+// power on the display by a blocking commit.
 int32_t ExynosPrimaryDisplay::applyPendingConfig() {
     if (!isConfigSettingEnabled()) {
         ALOGI("%s:: config setting is disabled", __func__);
-        return HWC2_ERROR_NONE;
+        if (mPowerModeState.has_value() && (*mPowerModeState == HWC2_POWER_MODE_ON)) {
+            ALOGI("%s:: skip apply pending config", __func__);
+            return HWC2_ERROR_NONE;
+        }
     }
 
     hwc2_config_t config;
@@ -305,15 +314,14 @@ int32_t ExynosPrimaryDisplay::setBootDisplayConfig(int32_t config) {
     if (mode.vsyncPeriod == 0)
         return HWC2_ERROR_BAD_CONFIG;
 
-    int refreshRate = round(nsecsPerSec / mode.vsyncPeriod * 0.1f) * 10;
+    int vsyncRate = round(static_cast<float>(nsecsPerSec) / mode.vsyncPeriod);
     char modeStr[PROPERTY_VALUE_MAX];
-    int ret = snprintf(modeStr, sizeof(modeStr), "%dx%d@%d",
-             mode.width, mode.height, refreshRate);
+    int ret = snprintf(modeStr, sizeof(modeStr), "%dx%d@%d:%d",
+             mode.width, mode.height, mode.refreshRate, vsyncRate);
     if (ret <= 0)
         return HWC2_ERROR_BAD_CONFIG;
 
-    ALOGD("%s: mode=%s (%d) vsyncPeriod=%d", __func__, modeStr, config,
-            mode.vsyncPeriod);
+    ALOGD("%s: mode=%s (%d)", __func__, modeStr, config);
     ret = property_set(getPropertyBootModeStr(mDisplayId).c_str(), modeStr);
 
     return !ret ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
@@ -335,15 +343,31 @@ int32_t ExynosPrimaryDisplay::getPreferredDisplayConfigInternal(int32_t *outConf
     }
 
     int width, height;
-    int fps = 0;
+    int fps = 0, vsyncRate = 0;
 
-    ret = sscanf(modeStr, "%dx%d@%d", &width, &height, &fps);
-    if ((ret < 3) || !fps) {
-        ALOGD("%s: unable to find boot config for mode: %s", __func__, modeStr);
+    ret = sscanf(modeStr, "%dx%d@%d:%d", &width, &height, &fps, &vsyncRate);
+    if (ret < 4) {
+        ret = sscanf(modeStr, "%dx%d@%d", &width, &height, &fps);
+        if ((ret < 3) || !fps) {
+            ALOGW("%s: unable to find boot config for mode: %s", __func__, modeStr);
+            return HWC2_ERROR_BAD_CONFIG;
+        }
+        if (lookupDisplayConfigs(width, height, fps, fps, outConfig) != HWC2_ERROR_NONE) {
+            ALOGE("%s: kernel doesn't support mode: %s", __func__, modeStr);
+            return HWC2_ERROR_BAD_CONFIG;
+        }
+        ret = setBootDisplayConfig(*outConfig);
+        if (ret == HWC2_ERROR_NONE)
+            ALOGI("%s: succeeded to replace %s with new format", __func__, modeStr);
+        else
+            ALOGE("%s: failed to replace %s with new format", __func__, modeStr);
+        return ret;
+    }
+    if (!fps || !vsyncRate || (fps > vsyncRate)) {
+        ALOGE("%s: bad boot config: %s", __func__, modeStr);
         return HWC2_ERROR_BAD_CONFIG;
     }
-
-    return lookupDisplayConfigs(width, height, fps, outConfig);
+    return lookupDisplayConfigs(width, height, fps, vsyncRate, outConfig);
 }
 
 int32_t ExynosPrimaryDisplay::setPowerOn() {
@@ -475,27 +499,35 @@ int32_t ExynosPrimaryDisplay::setPowerMode(int32_t mode) {
                 mOperationRateManager->getTargetOperationRate());
     }
 
+    int32_t res = HWC2_ERROR_BAD_PARAMETER;
     switch (mode) {
         case HWC2_POWER_MODE_DOZE:
-        case HWC2_POWER_MODE_DOZE_SUSPEND:
+        case HWC2_POWER_MODE_DOZE_SUSPEND: {
             if (mode == HWC2_POWER_MODE_DOZE && mDisplayInterface->needRefreshOnLP()) {
                 ALOGI("Refresh before setting power doze.");
                 mDevice->onRefresh(mDisplayId);
             }
-            return setPowerDoze(static_cast<hwc2_power_mode_t>(mode));
+            res = setPowerDoze(static_cast<hwc2_power_mode_t>(mode));
+            break;
+        }
         case HWC2_POWER_MODE_OFF:
-            setPowerOff();
+            res = setPowerOff();
             break;
         case HWC2_POWER_MODE_ON:
-            setPowerOn();
+            res = setPowerOn();
             break;
         default:
-            return HWC2_ERROR_BAD_PARAMETER;
+            return res;
+    }
+    if (res != HWC2_ERROR_NONE) {
+        return res;
     }
 
     ExynosDisplay::updateRefreshRateHint();
-
-    return HWC2_ERROR_NONE;
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->setPowerMode(mode);
+    }
+    return res;
 }
 
 void ExynosPrimaryDisplay::firstPowerOn() {
@@ -674,15 +706,18 @@ int32_t ExynosPrimaryDisplay::presentDisplay(int32_t* outRetireFence) {
     return res;
 }
 
-std::string ExynosPrimaryDisplay::getPanelFileNodePath() const {
-    return getPanelSysfsPath(getDisplayTypeFromIndex(mIndex));
-}
-
 void ExynosPrimaryDisplay::onVsync(int64_t timestamp) {
     const auto vsyncListener = getVsyncListener();
     if (vsyncListener) {
         vsyncListener->onVsync(timestamp, 0);
     }
+}
+
+int32_t ExynosPrimaryDisplay::notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) {
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->notifyExpectedPresent(timestamp, frameIntervalNs);
+    }
+    return NO_ERROR;
 }
 
 int32_t ExynosPrimaryDisplay::setLhbmDisplayConfigLocked(uint32_t peakRate) {
@@ -988,7 +1023,7 @@ int32_t ExynosPrimaryDisplay::getDisplayIdleTimerEnabled(bool &enabled) {
         return HWC2_ERROR_UNSUPPORTED;
     }
 
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "panel_idle";
+    const std::string path = getPanelSysfsPath() + "panel_idle";
     std::ifstream ifs(path);
     if (!ifs.is_open()) {
         ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
@@ -1004,7 +1039,7 @@ int32_t ExynosPrimaryDisplay::getDisplayIdleTimerEnabled(bool &enabled) {
 }
 
 int32_t ExynosPrimaryDisplay::setDisplayIdleTimerEnabled(const bool enabled) {
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "panel_idle";
+    const std::string path = getPanelSysfsPath() + "panel_idle";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
         ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
@@ -1038,7 +1073,7 @@ int32_t ExynosPrimaryDisplay::setDisplayIdleDelayNanos(const int32_t delayNanos,
     const int32_t displayIdleDelayMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                                std::chrono::nanoseconds(mDisplayIdleDelayNanos))
                                                .count();
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "idle_delay_ms";
+    const std::string path = getPanelSysfsPath() + "idle_delay_ms";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
         ALOGW("%s() unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
@@ -1057,8 +1092,7 @@ void ExynosPrimaryDisplay::initDisplayHandleIdleExit() {
         return;
     }
 
-    const std::string path =
-            getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "panel_need_handle_idle_exit";
+    const std::string path = getPanelSysfsPath() + "panel_need_handle_idle_exit";
     mDisplayNeedHandleIdleExitOfs.open(path, std::ofstream::out);
     if (!mDisplayNeedHandleIdleExitOfs.is_open()) {
         ALOGI("%s() '%s' doesn't exist(%s)", __func__, path.c_str(), strerror(errno));
@@ -1095,18 +1129,23 @@ void ExynosPrimaryDisplay::setDisplayNeedHandleIdleExit(const bool needed, const
 }
 
 void ExynosPrimaryDisplay::handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) {
-    Mutex::Autolock lock(mDisplayMutex);
-    uint32_t btsRefreshRate = getBtsRefreshRate();
-    if (idleTeRefreshRate <= btsRefreshRate) {
-        return;
+    {
+        Mutex::Autolock lock(mDisplayMutex);
+        uint32_t btsRefreshRate = getBtsRefreshRate();
+        if (idleTeRefreshRate <= btsRefreshRate) {
+            return;
+        }
     }
 
     bool needed = false;
-    for (size_t i = 0; i < mLayers.size(); i++) {
-        if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
-            !mLayers[i]->checkBtsCap(idleTeRefreshRate)) {
-            needed = true;
-            break;
+    {
+        Mutex::Autolock lock(mDRMutex);
+        for (size_t i = 0; i < mLayers.size(); i++) {
+            if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
+                !mLayers[i]->checkBtsCap(idleTeRefreshRate)) {
+                needed = true;
+                break;
+            }
         }
     }
 
@@ -1135,7 +1174,7 @@ int ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
     }
     if (maxMinIdleFps == mMinIdleRefreshRate) return NO_ERROR;
 
-    const std::string path = getPanelSysfsPath(getDisplayTypeFromIndex(mIndex)) + "min_vrefresh";
+    const std::string path = getPanelSysfsPath() + "min_vrefresh";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
         ALOGW("%s Unable to open node '%s', error = %s", __func__, path.c_str(), strerror(errno));
@@ -1275,11 +1314,6 @@ void ExynosPrimaryDisplay::updateAppliedActiveConfig(const hwc2_config_t newConf
     }
 
     mAppliedActiveConfig = newConfig;
-
-    // Forward applied active config if there is a vrr controller.
-    if (mVariableRefreshRateController) {
-        mVariableRefreshRateController->setActiveVrrConfiguration(mAppliedActiveConfig);
-    }
 }
 
 void ExynosPrimaryDisplay::checkBtsReassignResource(const int32_t vsyncPeriod,
@@ -1336,4 +1370,10 @@ VsyncListener* ExynosPrimaryDisplay::getVsyncListener() {
         return mVariableRefreshRateController.get();
     }
     return nullptr;
+}
+
+void ExynosPrimaryDisplay::onConfigChange(int configId) {
+    if (mVariableRefreshRateController) {
+        return mVariableRefreshRateController->setActiveVrrConfiguration(configId);
+    }
 }

@@ -992,6 +992,7 @@ ExynosDisplay::ExynosDisplay(uint32_t type, uint32_t index, ExynosDevice* device
         mYdpi(25400),
         mVsyncPeriod(kDefaultVsyncPeriodNanoSecond),
         mBtsFrameScanoutPeriod(kDefaultVsyncPeriodNanoSecond),
+        mBtsPendingOperationRatePeriod(0),
         mDevice(device),
         mDisplayName(displayName.c_str()),
         mDisplayTraceName(String8::format("%s(%d)", displayName.c_str(), mDisplayId)),
@@ -1403,15 +1404,21 @@ int ExynosDisplay::checkDynamicReCompMode() {
     }
 
     unsigned int incomingPixels = 0;
+    hwc_rect_t dispRect = {INT_MAX, INT_MAX, 0, 0};
     for (size_t i = 0; i < mLayers.size(); i++) {
-        auto w = WIDTH(mLayers[i]->mPreprocessedInfo.displayFrame);
-        auto h = HEIGHT(mLayers[i]->mPreprocessedInfo.displayFrame);
+        auto& r = mLayers[i]->mPreprocessedInfo.displayFrame;
+        if (r.top < dispRect.top) dispRect.top = r.top;
+        if (r.left < dispRect.left) dispRect.left = r.left;
+        if (r.bottom > dispRect.bottom) dispRect.bottom = r.bottom;
+        if (r.right > dispRect.right) dispRect.right = r.right;
+        auto w = WIDTH(r);
+        auto h = HEIGHT(r);
         incomingPixels += w * h;
     }
 
     /* Mode Switch is not required if total pixels are not more than the threshold */
-    unsigned int lcdSize = mXres * mYres;
-    if (incomingPixels <= lcdSize) {
+    unsigned int mergedDisplayFrameSize = WIDTH(dispRect) * HEIGHT(dispRect);
+    if (incomingPixels <= mergedDisplayFrameSize) {
         auto ret = switchDynamicReCompMode(CLIENT_2_DEVICE);
         if (ret) {
             mUpdateCallCnt = 0;
@@ -3497,6 +3504,8 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
         return ret;
     }
 
+    tryUpdateBtsFromOperationRate(true);
+
     if (mRenderingState != RENDERING_STATE_ACCEPTED_CHANGE) {
         /*
          * presentDisplay() can be called before validateDisplay()
@@ -3739,6 +3748,8 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
     }
 
     mPriorFrameMixedComposition = mixedComposition;
+
+    tryUpdateBtsFromOperationRate(false);
 
     return ret;
 err:
@@ -4321,10 +4332,70 @@ int32_t ExynosDisplay::updateInternalDisplayConfigVariables(
 }
 
 void ExynosDisplay::updateBtsFrameScanoutPeriod(int32_t frameScanoutPeriod, bool configApplied) {
+    if (mBtsFrameScanoutPeriod == frameScanoutPeriod) {
+        return;
+    }
+
     if (configApplied || frameScanoutPeriod < mBtsFrameScanoutPeriod) {
         checkBtsReassignResource(frameScanoutPeriod, mBtsFrameScanoutPeriod);
         mBtsFrameScanoutPeriod = frameScanoutPeriod;
+        ATRACE_INT("btsFrameScanoutPeriod", mBtsFrameScanoutPeriod);
     }
+}
+
+void ExynosDisplay::tryUpdateBtsFromOperationRate(bool beforeValidateDisplay) {
+    if (mOperationRateManager == nullptr || mBrightnessController == nullptr ||
+        mActiveConfig == UINT_MAX) {
+        return;
+    }
+
+    if (!mDisplayConfigs[mActiveConfig].isOperationRateToBts) {
+        return;
+    }
+
+    if (beforeValidateDisplay && mBrightnessController->isOperationRatePending()) {
+        uint32_t opRate = mBrightnessController->getOperationRate();
+        if (opRate) {
+            int32_t operationRatePeriod = nsecsPerSec / opRate;
+            if (operationRatePeriod < mBtsFrameScanoutPeriod) {
+                updateBtsFrameScanoutPeriod(opRate);
+                mBtsPendingOperationRatePeriod = 0;
+            } else if (operationRatePeriod != mBtsFrameScanoutPeriod) {
+                mBtsPendingOperationRatePeriod = operationRatePeriod;
+            }
+        }
+    }
+
+    if (!beforeValidateDisplay && mBtsPendingOperationRatePeriod &&
+        !mBrightnessController->isOperationRatePending()) {
+        /* Do not update during rr transition, it will be updated after setting config done */
+        if (mConfigRequestState != hwc_request_state_t::SET_CONFIG_STATE_REQUESTED) {
+            updateBtsFrameScanoutPeriod(mBtsPendingOperationRatePeriod, true);
+        }
+        mBtsPendingOperationRatePeriod = 0;
+    }
+}
+
+inline int32_t ExynosDisplay::getDisplayFrameScanoutPeriodFromConfig(hwc2_config_t config) {
+    int32_t frameScanoutPeriodNs;
+    std::optional<VrrConfig_t> vrrConfig = getVrrConfigs(config);
+    if (vrrConfig.has_value()) {
+        frameScanoutPeriodNs = vrrConfig->minFrameIntervalNs;
+    } else {
+        getDisplayAttribute(config, HWC2_ATTRIBUTE_VSYNC_PERIOD, &frameScanoutPeriodNs);
+        if (mOperationRateManager && mBrightnessController &&
+            mDisplayConfigs[config].isOperationRateToBts) {
+            uint32_t opRate = mBrightnessController->getOperationRate();
+            if (opRate) {
+                uint32_t opPeriodNs = nsecsPerSec / opRate;
+                frameScanoutPeriodNs =
+                        (frameScanoutPeriodNs <= opPeriodNs) ? frameScanoutPeriodNs : opPeriodNs;
+            }
+        }
+    }
+
+    assert(frameScanoutPeriodNs > 0);
+    return frameScanoutPeriodNs;
 }
 
 uint32_t ExynosDisplay::getBtsRefreshRate() const {
@@ -4613,15 +4684,14 @@ int32_t ExynosDisplay::validateDisplay(
 
     for (size_t i = 0; i < mLayers.size(); i++) mLayers[i]->setSrcAcquireFence();
 
+    tryUpdateBtsFromOperationRate(true);
     doPreProcessing();
     checkLayerFps();
-    if (exynosHWCControl.useDynamicRecomp == true && mDREnable)
+    if (exynosHWCControl.useDynamicRecomp == true && mDREnable) {
         checkDynamicReCompMode();
-
-    if (exynosHWCControl.useDynamicRecomp == true &&
-        mDevice->isDynamicRecompositionThreadAlive() == false &&
-        mDevice->mDRLoopStatus == false) {
-        mDevice->dynamicRecompositionThreadCreate();
+        if (mDevice->isDynamicRecompositionThreadAlive() == false &&
+            mDevice->mDRLoopStatus == false)
+            mDevice->dynamicRecompositionThreadCreate();
     }
 
     if ((ret = mResourceManager->assignResource(this)) != NO_ERROR) {
@@ -6195,21 +6265,22 @@ bool ExynosDisplay::isMixedComposition() {
 int ExynosDisplay::lookupDisplayConfigs(const int32_t &width,
                                         const int32_t &height,
                                         const int32_t &fps,
+                                        const int32_t &vsyncRate,
                                         int32_t *outConfig) {
-    if (!fps)
+    if (!fps || !vsyncRate)
         return HWC2_ERROR_BAD_CONFIG;
 
     constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
     constexpr auto nsecsPerMs = std::chrono::nanoseconds(1ms).count();
 
-    const auto vsyncPeriod = nsecsPerSec / fps;
+    const auto vsyncPeriod = nsecsPerSec / vsyncRate;
 
     for (auto const& [config, mode] : mDisplayConfigs) {
         long delta = abs(vsyncPeriod - mode.vsyncPeriod);
         if ((width == 0 || width == mode.width) && (height == 0 || height == mode.height) &&
-            (delta < nsecsPerMs)) {
-            ALOGD("%s: found display config for mode: %dx%d@%d=%d",
-                 __func__, width, height, fps, config);
+            (delta < nsecsPerMs) && (fps == mode.refreshRate)) {
+            ALOGD("%s: found display config for mode: %dx%d@%d:%d config=%d",
+                 __func__, width, height, fps, vsyncRate, config);
             *outConfig = config;
             return HWC2_ERROR_NONE;
         }
@@ -6323,16 +6394,16 @@ void ExynosDisplay::hotplug() {
           mHpdStatus ? "connection" : "disconnection", mDisplayId, hotplugErrorCode);
 }
 
+void ExynosDisplay::contentProtectionUpdated(HdcpLevels hdcpLevels) {
+    mDevice->onContentProtectionUpdated(mDisplayId, hdcpLevels);
+}
+
 ExynosDisplay::SysfsBasedRRIHandler::SysfsBasedRRIHandler(ExynosDisplay* display)
       : mDisplay(display),
         mLastRefreshRate(0),
         mLastCallbackTime(0),
         mIgnoringLastUpdate(false),
         mCanIgnoreIncreaseUpdate(false) {}
-
-ExynosDisplay::SysfsBasedRRIHandler::~SysfsBasedRRIHandler() {
-    mDisplay->mDevice->mDeviceInterface->unregisterSysfsEventHandler(getFd());
-}
 
 int32_t ExynosDisplay::SysfsBasedRRIHandler::init() {
     auto path = String8::format(kRefreshRateStatePathFormat, mDisplay->mIndex);
@@ -6350,6 +6421,10 @@ int32_t ExynosDisplay::SysfsBasedRRIHandler::init() {
     // Call the callback immediately
     handleSysfsEvent();
     return NO_ERROR;
+}
+
+int32_t ExynosDisplay::SysfsBasedRRIHandler::disable() {
+    return mDisplay->mDevice->mDeviceInterface->unregisterSysfsEventHandler(getFd());
 }
 
 void ExynosDisplay::SysfsBasedRRIHandler::updateRefreshRateLocked(int refreshRate) {
@@ -6427,6 +6502,7 @@ int32_t ExynosDisplay::setRefreshRateChangedCallbackDebugEnabled(bool enabled) {
             return ret;
         }
     } else {
+        ret = mRefreshRateIndicatorHandler->disable();
         mRefreshRateIndicatorHandler.reset();
     }
     return ret;
@@ -6480,21 +6556,20 @@ bool ExynosDisplay::needUpdateRRIndicator() {
 }
 
 uint32_t ExynosDisplay::getPeakRefreshRate() {
-    float opRate = mBrightnessController->getOperationRate();
-    return static_cast<uint32_t>(std::round(opRate ?: mPeakRefreshRate));
+    uint32_t opRate = mBrightnessController->getOperationRate();
+    return opRate ?: mPeakRefreshRate;
 }
 
 VsyncPeriodNanos ExynosDisplay::getVsyncPeriod(const int32_t config) {
-    const auto &it = mDisplayConfigs.find(config);
+    const auto& it = mDisplayConfigs.find(config);
     if (it == mDisplayConfigs.end()) return 0;
-    return mDisplayConfigs[config].vsyncPeriod;
+    return it->second.vsyncPeriod;
 }
 
 uint32_t ExynosDisplay::getRefreshRate(const int32_t config) {
-    VsyncPeriodNanos period = getVsyncPeriod(config);
-    if (!period) return 0;
-    constexpr float nsecsPerSec = std::chrono::nanoseconds(1s).count();
-    return round(nsecsPerSec / period * 0.1f) * 10;
+    const auto& it = mDisplayConfigs.find(config);
+    if (it == mDisplayConfigs.end()) return 0;
+    return it->second.refreshRate;
 }
 
 uint32_t ExynosDisplay::getConfigId(const int32_t refreshRate, const int32_t width,
@@ -6544,4 +6619,19 @@ void ExynosDisplay::storePrevValidateCompositionType() {
         layer->mPrevValidateCompositionType = layer->mValidateCompositionType;
     }
     mClientCompositionInfo.mPrevHasCompositionLayer = mClientCompositionInfo.mHasCompositionLayer;
+}
+
+displaycolor::DisplayType ExynosDisplay::getDcDisplayType() const {
+    switch (mType) {
+        case HWC_DISPLAY_PRIMARY:
+            return mIndex == 0 ? displaycolor::DisplayType::DISPLAY_PRIMARY
+                               : displaycolor::DisplayType::DISPLAY_SECONDARY;
+        case HWC_DISPLAY_EXTERNAL:
+            return displaycolor::DisplayType::DISPLAY_EXTERNAL;
+        case HWC_DISPLAY_VIRTUAL:
+        default:
+            DISPLAY_LOGE("%s: Unsupported display type(%d)", __func__, mType);
+            assert(false);
+            return displaycolor::DisplayType::DISPLAY_PRIMARY;
+    }
 }

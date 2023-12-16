@@ -36,6 +36,7 @@ LOCAL_SHARED_LIBRARIES := android.hardware.graphics.composer3-V3-ndk \
 	android.hardware.graphics.composer@2.1-resources \
         android.hardware.graphics.composer@2.2-resources \
 	android.hardware.graphics.composer@2.4 \
+	android.hardware.drm-V1-ndk \
 	com.google.hardware.pixel.display-V10-ndk \
 	libbase \
 	libbinder \
@@ -90,7 +91,7 @@ ifeq ($(CLANG_COVERAGE),true)
 # enable code coverage (these flags are copied from build/soong/cc/coverage.go)
 LOCAL_CFLAGS += -fprofile-instr-generate -fcoverage-mapping
 LOCAL_CFLAGS += -Wno-frame-larger-than=
-LOCAL_STATIC_LIBRARIES += libprofile-clang-extras_ndk
+LOCAL_WHOLE_STATIC_LIBRARIES += libprofile-clang-extras_ndk
 LOCAL_LDFLAGS += -fprofile-instr-generate
 LOCAL_LDFLAGS += -Wl,--wrap,open
 

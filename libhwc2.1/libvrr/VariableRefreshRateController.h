@@ -34,7 +34,7 @@ constexpr uint64_t kMillisecondToNanoSecond = 1000000;
 
 class VariableRefreshRateController : public VsyncListener, public PresentListener {
 public:
-    ~VariableRefreshRateController() { stopThread(); };
+    ~VariableRefreshRateController();
 
     auto static CreateInstance(ExynosDisplay* display)
             -> std::shared_ptr<VariableRefreshRateController>;
@@ -50,14 +50,21 @@ public:
 
     void setEnable(bool isEnabled);
 
+    void setPowerMode(int32_t mode);
+
     void setVrrConfigurations(std::unordered_map<hwc2_config_t, VrrConfig_t> configs);
 
 private:
     static constexpr int kDefaultRingBufferCapacity = 128;
     static constexpr int64_t kDefaultWakeUpTimeInPowerSaving =
-            100 * (std::nano::den / std::milli::den); // 10 Hz = 100 ms
+            500 * (std::nano::den / std::milli::den); // 500 ms
     static constexpr int64_t SIGNAL_TIME_PENDING = INT64_MAX;
     static constexpr int64_t SIGNAL_TIME_INVALID = -1;
+
+    static const std::string kFrameInsertionNodeName;
+    static constexpr int kDefaultNumFramesToInsert = 2;
+    static constexpr int64_t kDefaultFrameInsertionTimer =
+            33 * (std::nano::den / std::milli::den); // 33 ms
 
     enum class VrrControllerState {
         kDisable = 0,
@@ -77,7 +84,6 @@ private:
             kReleaseFence,
         };
         Type mType;
-        hwc2_config_t mConfig;
         int64_t mTime;
     } VsyncEvent;
 
@@ -93,7 +99,7 @@ private:
 
         std::optional<PresentEvent> mNextExpectedPresentTime = std::nullopt;
         std::optional<PresentEvent> mPendingCurrentPresentTime = std::nullopt;
-        ;
+
         typedef RingBuffer<PresentEvent, kDefaultRingBufferCapacity> PresentTimeRecord;
         typedef RingBuffer<VsyncEvent, kDefaultRingBufferCapacity> VsyncRecord;
         PresentTimeRecord mPresentHistory;
@@ -146,6 +152,8 @@ private:
     // Implement interface VsyncListener.
     virtual void onVsync(int64_t timestamp, int32_t vsyncPeriodNanos) override;
 
+    void cancelFrameInsertionLocked();
+
     int doFrameInsertionLocked();
     int doFrameInsertionLocked(int frames);
 
@@ -168,10 +176,12 @@ private:
 
     void postEvent(VrrControllerEventType type, int64_t when);
 
-    void stopThread();
+    void stopThread(bool exit);
 
     // The core function of the VRR controller thread.
     void threadBody();
+
+    void updateVsyncHistory();
 
     ExynosDisplay* mDisplay;
 
@@ -179,11 +189,11 @@ private:
     int mPendingFramesToInsert = 0;
     std::priority_queue<VrrControllerEvent> mEventQueue;
     VrrRecord mRecord;
+    int32_t mPowerMode = -1;
     VrrControllerState mState;
     hwc2_config_t mVrrActiveConfig;
     std::unordered_map<hwc2_config_t, VrrConfig_t> mVrrConfigs;
-
-    int mLastFence = -1;
+    std::optional<int> mLastPresentFence;
 
     std::unique_ptr<FileNodeWriter> mFileNodeWritter;
 

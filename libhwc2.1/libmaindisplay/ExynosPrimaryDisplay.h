@@ -78,9 +78,9 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
                                           hwc2_config_t* outConfigs) override;
         virtual int32_t presentDisplay(int32_t* outRetireFence) override;
 
-        virtual std::string getPanelFileNodePath() const override;
-
         virtual void onVsync(int64_t timestamp) override;
+
+        int32_t notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) override;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -95,14 +95,13 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual bool getHDRException(ExynosLayer* __unused layer);
         virtual int32_t setActiveConfigInternal(hwc2_config_t config, bool force) override;
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig) override;
-        DisplayType getDisplayTypeFromIndex(uint32_t index) const {
-            return (index >= DisplayType::DISPLAY_MAX) ? DisplayType::DISPLAY_PRIMARY
-                                                       : DisplayType(mIndex);
-        };
 
     public:
         // Prepare multi resolution
         ResolutionInfo mResolutionInfo;
+        std::string getPanelSysfsPath() const override {
+            return getPanelSysfsPath(getDcDisplayType());
+        }
         std::string getPanelSysfsPath(const displaycolor::DisplayType& type) const;
 
         uint32_t mRcdId = -1;
@@ -133,6 +132,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         void initDisplayHandleIdleExit();
         int32_t setLhbmDisplayConfigLocked(uint32_t peakRate);
         void restoreLhbmDisplayConfigLocked();
+
+        void onConfigChange(int configId);
 
         // LHBM
         FILE* mLhbmFd;

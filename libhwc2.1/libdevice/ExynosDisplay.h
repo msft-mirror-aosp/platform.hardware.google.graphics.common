@@ -17,6 +17,7 @@
 #ifndef _EXYNOSDISPLAY_H
 #define _EXYNOSDISPLAY_H
 
+#include <aidl/android/hardware/drm/HdcpLevels.h>
 #include <android/hardware/graphics/composer/2.4/types.h>
 #include <hardware/hwcomposer2.h>
 #include <system/graphics.h>
@@ -43,6 +44,7 @@
 
 #define LOW_FPS_THRESHOLD     5
 
+using ::aidl::android::hardware::drm::HdcpLevels;
 using ::android::hardware::graphics::composer::V2_4::VsyncPeriodNanos;
 using namespace std::chrono_literals;
 
@@ -369,6 +371,7 @@ typedef struct VrrConfig {
 typedef struct VrrSettings {
     bool enabled;
     NotifyExpectedPresentConfig_t notifyExpectedPresentConfig;
+    std::function<void(int)> configChangeCallback;
 } VrrSettings_t;
 
 typedef struct displayConfigs {
@@ -388,6 +391,7 @@ typedef struct displayConfigs {
     std::optional<VrrConfig_t> vrrConfig;
 
     /* internal use */
+    bool isOperationRateToBts;
     int32_t refreshRate;
 } displayConfigs_t;
 
@@ -431,6 +435,7 @@ class ExynosDisplay {
         uint32_t mVsyncPeriod;
         int32_t mRefreshRate;
         int32_t mBtsFrameScanoutPeriod;
+        int32_t mBtsPendingOperationRatePeriod;
 
         /* Constructor */
         ExynosDisplay(uint32_t type, uint32_t index, ExynosDevice* device,
@@ -1194,6 +1199,7 @@ class ExynosDisplay {
                 const uint64_t actualChangeTime,
                 int64_t &appliedTime, int64_t &refreshTime);
         void updateBtsFrameScanoutPeriod(int32_t frameScanoutPeriod, bool configApplied = false);
+        void tryUpdateBtsFromOperationRate(bool beforeValidateDisplay);
         uint32_t getBtsRefreshRate() const;
         virtual void checkBtsReassignResource(const int32_t __unused vsyncPeriod,
                                               const int32_t __unused btsVsyncPeriod) {}
@@ -1312,9 +1318,16 @@ class ExynosDisplay {
         /* set brightness by dbv value */
         virtual int32_t setBrightnessDbv(const uint32_t dbv);
 
-        virtual std::string getPanelFileNodePath() const { return std::string(); }
+        virtual std::string getPanelSysfsPath() const { return std::string(); }
 
         virtual void onVsync(int64_t __unused timestamp) { return; };
+
+        displaycolor::DisplayType getDcDisplayType() const;
+
+        virtual int32_t notifyExpectedPresent(int64_t __unused timestamp,
+                                              int32_t __unused frameIntervalNs) {
+            return HWC2_ERROR_UNSUPPORTED;
+        };
 
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
@@ -1363,6 +1376,7 @@ class ExynosDisplay {
         int lookupDisplayConfigs(const int32_t& width,
                                  const int32_t& height,
                                  const int32_t& fps,
+                                 const int32_t& vsyncRate,
                                  int32_t* outConfig);
 
     private:
@@ -1587,19 +1601,7 @@ class ExynosDisplay {
             assert(vsync_period > 0);
             return static_cast<uint32_t>(vsync_period);
         }
-        inline int32_t getDisplayFrameScanoutPeriodFromConfig(hwc2_config_t config) {
-            int32_t frameScanoutPeriodNs;
-            std::optional<VrrConfig_t> vrrConfig = getVrrConfigs(config);
-            if (vrrConfig.has_value()) {
-                frameScanoutPeriodNs = vrrConfig->minFrameIntervalNs;
-            } else {
-                getDisplayAttribute(config, HWC2_ATTRIBUTE_VSYNC_PERIOD, &frameScanoutPeriodNs);
-            }
-
-            assert(frameScanoutPeriodNs > 0);
-            return frameScanoutPeriodNs;
-        }
-
+        inline int32_t getDisplayFrameScanoutPeriodFromConfig(hwc2_config_t config);
         virtual void calculateTimeline(
                 hwc2_config_t config,
                 hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
@@ -1655,7 +1657,7 @@ class ExynosDisplay {
             int32_t mLastFileIndex;
             FILE* mFile;
         };
-        RotatingLogFileWriter mErrLogFileWriter;
+        mutable RotatingLogFileWriter mErrLogFileWriter;
         RotatingLogFileWriter mDebugDumpFileWriter;
         RotatingLogFileWriter mFenceFileWriter;
 
@@ -1670,7 +1672,7 @@ class ExynosDisplay {
             virtual int32_t onConfig(hwc2_config_t __unused cfg) { return 0; }
             virtual int32_t onBrightness(uint32_t __unused dbv) { return 0; }
             virtual int32_t onPowerMode(int32_t __unused mode) { return 0; }
-            virtual int32_t getTargetOperationRate() { return 0; }
+            virtual int32_t getTargetOperationRate() const { return 0; }
         };
 
     public:
@@ -1685,10 +1687,13 @@ class ExynosDisplay {
         virtual void handleHotplugEvent(bool hpdStatus);
         virtual void hotplug();
 
+        void contentProtectionUpdated(HdcpLevels hdcpLevels);
+
         class RefreshRateIndicator {
         public:
             virtual ~RefreshRateIndicator() = default;
             virtual int32_t init() { return NO_ERROR; }
+            virtual int32_t disable() { return NO_ERROR; }
             virtual void updateRefreshRate(int __unused refreshRate) {}
             virtual void checkOnPresentDisplay() {}
             virtual void checkOnSetActiveConfig(int __unused refreshRate) {}
@@ -1699,9 +1704,10 @@ class ExynosDisplay {
                                      public std::enable_shared_from_this<SysfsBasedRRIHandler> {
         public:
             SysfsBasedRRIHandler(ExynosDisplay* display);
-            virtual ~SysfsBasedRRIHandler();
+            virtual ~SysfsBasedRRIHandler() = default;
 
             int32_t init() override;
+            int32_t disable() override;
             void updateRefreshRate(int refreshRate) override;
             void checkOnPresentDisplay() override;
 

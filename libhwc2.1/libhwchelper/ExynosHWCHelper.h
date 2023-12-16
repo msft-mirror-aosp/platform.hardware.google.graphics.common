@@ -163,7 +163,7 @@ const format_description_t exynos_format_desc[] = {
         1, 1, 32, RGB | BIT10 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("RGBA_1010102"), 0},
     {HAL_PIXEL_FORMAT_EXYNOS_ARGB_8888, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ARGB8888,
         1, 1, 32, RGB | BIT8 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("EXYNOS_ARGB_8888"), 0},
-    {HAL_PIXEL_FORMAT_RGBA_FP16, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ARGB16161616F,
+    {HAL_PIXEL_FORMAT_RGBA_FP16, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ABGR16161616F,
         1, 1, 64, RGB | BIT16 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("RGBA_FP16"), 0},
 
     /* YUV 420 */
@@ -692,7 +692,8 @@ public:
             std::string cmdString = std::to_string(cmd);
             int ret = write(fd, cmdString.c_str(), std::strlen(cmdString.c_str()));
             if (ret < 0) {
-                ALOGE("Write to file node %s failed: %d", mNodePath.c_str(), ret);
+                ALOGE("Write to file node %s failed, ret = %d errno = %d", mNodePath.c_str(), ret,
+                      errno);
                 return false;
             }
         } else {
