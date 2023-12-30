@@ -314,10 +314,9 @@ int32_t ExynosPrimaryDisplay::setBootDisplayConfig(int32_t config) {
     if (mode.vsyncPeriod == 0)
         return HWC2_ERROR_BAD_CONFIG;
 
-    int vsyncRate = round(static_cast<float>(nsecsPerSec) / mode.vsyncPeriod);
     char modeStr[PROPERTY_VALUE_MAX];
-    int ret = snprintf(modeStr, sizeof(modeStr), "%dx%d@%d:%d",
-             mode.width, mode.height, mode.refreshRate, vsyncRate);
+    int ret = snprintf(modeStr, sizeof(modeStr), "%dx%d@%d:%d", mode.width, mode.height,
+                       mode.refreshRate, nanoSec2Hz(mode.vsyncPeriod));
     if (ret <= 0)
         return HWC2_ERROR_BAD_CONFIG;
 
@@ -1131,17 +1130,14 @@ void ExynosPrimaryDisplay::setDisplayNeedHandleIdleExit(const bool needed, const
 }
 
 void ExynosPrimaryDisplay::handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) {
+    bool needed = false;
     {
-        Mutex::Autolock lock(mDisplayMutex);
+        Mutex::Autolock lock1(mDisplayMutex);
         uint32_t btsRefreshRate = getBtsRefreshRate();
         if (idleTeRefreshRate <= btsRefreshRate) {
             return;
         }
-    }
-
-    bool needed = false;
-    {
-        Mutex::Autolock lock(mDRMutex);
+        Mutex::Autolock lock2(mDRMutex);
         for (size_t i = 0; i < mLayers.size(); i++) {
             if (mLayers[i]->mOtfMPP && mLayers[i]->mM2mMPP == nullptr &&
                 !mLayers[i]->checkBtsCap(idleTeRefreshRate)) {
