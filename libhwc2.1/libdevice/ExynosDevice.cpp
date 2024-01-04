@@ -176,15 +176,15 @@ ExynosDevice::ExynosDevice(bool vrrApiSupported)
         saveErrorLog(saveString, it);
     }
 
+    if (mInterfaceType == INTERFACE_TYPE_DRM) {
+        setVBlankOffDelay(1);
+    }
+
     initDeviceInterface(mInterfaceType);
 
     // registerRestrictions();
     mResourceManager->updateRestrictions();
     mResourceManager->initDisplays(mDisplays, mDisplayMap);
-
-    if (mInterfaceType == INTERFACE_TYPE_DRM) {
-        setVBlankOffDelay(1);
-    }
 
     char value[PROPERTY_VALUE_MAX];
     property_get("vendor.display.lbe.supported", value, "0");
@@ -1179,7 +1179,7 @@ void ExynosDevice::getLayerGenericMetadataKey(uint32_t __unused keyIndex,
     return;
 }
 
-void ExynosDevice::setVBlankOffDelay(int vblankOffDelay) {
+void ExynosDevice::setVBlankOffDelay(const int vblankOffDelay) {
     static constexpr const char *kVblankOffDelayPath = "/sys/module/drm/parameters/vblankoffdelay";
 
     writeIntToFile(kVblankOffDelayPath, vblankOffDelay);
@@ -1260,7 +1260,8 @@ void ExynosDevice::handleHotplug() {
     }
 }
 
-void ExynosDevice::onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t vsyncPeriod) {
+void ExynosDevice::onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t vsyncPeriod,
+                                             uint32_t refreshPeriod) {
     Mutex::Autolock lock(mDeviceCallbackMutex);
     const auto &refreshRateCallback =
             mHwc3CallbackInfos.find(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug);
@@ -1272,6 +1273,6 @@ void ExynosDevice::onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t 
 
     auto callbackFunc =
             reinterpret_cast<void (*)(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
-                                      hwc2_vsync_period_t)>(callbackInfo.funcPointer);
-    callbackFunc(callbackInfo.callbackData, displayId, vsyncPeriod);
+                                      hwc2_vsync_period_t, int32_t)>(callbackInfo.funcPointer);
+    callbackFunc(callbackInfo.callbackData, displayId, vsyncPeriod, refreshPeriod ?: vsyncPeriod);
 }
