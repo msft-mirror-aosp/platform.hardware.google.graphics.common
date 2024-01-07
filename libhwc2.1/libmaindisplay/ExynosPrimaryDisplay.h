@@ -20,7 +20,7 @@
 
 #include "../libdevice/ExynosDisplay.h"
 #include "../libvrr/VariableRefreshRateController.h"
-#include "../libvrr/VariableRefreshRateInterface.h"
+#include "../libvrr/interface/VariableRefreshRateInterface.h"
 
 using android::hardware::graphics::composer::PresentListener;
 using android::hardware::graphics::composer::VariableRefreshRateController;
@@ -79,6 +79,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual int32_t presentDisplay(int32_t* outRetireFence) override;
 
         virtual void onVsync(int64_t timestamp) override;
+
+        const std::string& getPanelName() final;
 
         int32_t notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) override;
 
