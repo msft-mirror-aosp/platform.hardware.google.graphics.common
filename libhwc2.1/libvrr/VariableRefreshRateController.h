@@ -72,6 +72,43 @@ public:
         return &mDisplayContextProviderInterface;
     }
 
+    void setPresentTimeoutParameters(int numOfWorks, int timeoutNs, int intervalNs) {
+        const std::lock_guard<std::mutex> lock(mMutex);
+
+        if (!mPresentTimeoutEventHandler) {
+            return;
+        }
+        if (numOfWorks >= 0) {
+            auto functor = mPresentTimeoutEventHandler->getHandleFunction();
+            mVendorPresentTimeoutOverride =
+                    std::make_optional<PresentTimeoutSettings>({.mNumOfWorks = numOfWorks,
+                                                                .mTimeoutNs = timeoutNs,
+                                                                .mIntervalNs = intervalNs,
+                                                                .mFunctor = std::move(functor)});
+        } else {
+            mVendorPresentTimeoutOverride = std::nullopt;
+        }
+    }
+
+    void setPresentTimeoutController(uint32_t controllerType) {
+        const std::lock_guard<std::mutex> lock(mMutex);
+
+        PresentTimeoutControllerType newControllerType =
+                static_cast<PresentTimeoutControllerType>(controllerType);
+        if (newControllerType != mPresentTimeoutController) {
+            if (mPresentTimeoutController == PresentTimeoutControllerType::kSoftware) {
+                dropEventLocked(VrrControllerEventType::kVendorRenderingTimeout);
+            }
+            if (mPresentTimeoutEventHandler) {
+                // When |controllerType| is kNone, we select software to control present timeout,
+                // but without handling.
+                mPresentTimeoutEventHandler->setPanelFrameInsertionMode(
+                        newControllerType == PresentTimeoutControllerType::kHardware);
+            }
+        }
+        mPresentTimeoutController = newControllerType;
+    }
+
 private:
     static constexpr int kDefaultRingBufferCapacity = 128;
     static constexpr int64_t kDefaultWakeUpTimeInPowerSaving =
@@ -95,6 +132,21 @@ private:
         int64_t mTime;
         int mDuration;
     } PresentEvent;
+
+    // The |PresentTimeoutSettings| will override the settings of the present timeout handler. Once
+    // it is set, the present timeout will be directly set by these parameters.
+    typedef struct PresentTimeoutSettings {
+        int mNumOfWorks;
+        int mTimeoutNs;
+        int mIntervalNs;
+        std::function<int()> mFunctor;
+    } PresentTimeoutSettings;
+
+    enum class PresentTimeoutControllerType {
+        kNone = 0,
+        kHardware,
+        kSoftware,
+    };
 
     typedef struct VsyncEvent {
         enum class Type {
@@ -184,6 +236,8 @@ private:
     void postEvent(VrrControllerEventType type, TimedEvent& timedEvent);
     void postEvent(VrrControllerEventType type, int64_t when);
 
+    bool shouldHandleVendorRenderingTimeout() const;
+
     void stopThread(bool exit);
 
     // The core function of the VRR controller thread.
@@ -207,6 +261,9 @@ private:
     DisplayContextProviderInterface mDisplayContextProviderInterface;
     std::unique_ptr<ExternalEventHandlerLoader> mPresentTimeoutEventHandlerLoader;
     ExternalEventHandler* mPresentTimeoutEventHandler = nullptr;
+    std::optional<PresentTimeoutSettings> mVendorPresentTimeoutOverride;
+    PresentTimeoutControllerType mPresentTimeoutController =
+            PresentTimeoutControllerType::kSoftware;
 
     std::string mPanelName;
 

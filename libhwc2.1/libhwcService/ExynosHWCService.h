@@ -88,6 +88,11 @@ public:
                                                       uint32_t refreshRate) override;
     virtual int32_t dumpBuffers(uint32_t displayId, int32_t count) override;
 
+    int32_t setPresentTimeoutParameters(uint32_t displayId, int numOfWorks, int timeoutNs,
+                                        int intervalNs) override;
+
+    int32_t setPresentTimeoutController(uint32_t displayId, uint32_t controllerType) override;
+
 private:
     friend class Singleton<ExynosHWCService>;
     ExynosHWCService();

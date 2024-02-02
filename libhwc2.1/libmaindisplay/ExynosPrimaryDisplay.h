@@ -84,6 +84,10 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
 
         int32_t notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) override;
 
+        int32_t setPresentTimeoutParameters(int numOfWorks, int timeoutNs, int intervalNs) override;
+
+        int32_t setPresentTimeoutController(uint32_t controllerType) override;
+
     protected:
         /* setPowerMode(int32_t mode)
          * Descriptor: HWC2_FUNCTION_SET_POWER_MODE

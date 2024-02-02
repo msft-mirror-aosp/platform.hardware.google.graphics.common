@@ -70,6 +70,8 @@ enum {
     SET_DISPLAY_BRIGHTNESS_NITS = 1013,
     SET_DISPLAY_BRIGHTNESS_DBV = 1014,
     DUMP_BUFFERS = 1015,
+    SET_PRESENT_TIMEOUT_PARAMETERS = 1016,
+    SET_PRESENT_TIMEOUT_CONTROLLER = 1017,
 };
 
 class BpExynosHWCService : public BpInterface<IExynosHWCService> {
@@ -532,6 +534,29 @@ public:
         ALOGE_IF(result != NO_ERROR, "DUMP_BUFFERS transact error(%d)", result);
         return result;
     }
+
+    int32_t setPresentTimeoutParameters(uint32_t displayId, int numOfWorks, int timeoutNs,
+                                        int intervalNs) override {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeInt32(displayId);
+        data.writeInt32(numOfWorks);
+        data.writeInt32(timeoutNs);
+        data.writeInt32(intervalNs);
+        int result = remote()->transact(SET_PRESENT_TIMEOUT_PARAMETERS, data, &reply);
+        ALOGE_IF(result != NO_ERROR, "SET_PRESENT_TIMEOUT_PARAMETERS transact error(%d)", result);
+        return result;
+    }
+
+    int32_t setPresentTimeoutController(uint32_t displayId, uint32_t controllerType) override {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeInt32(displayId);
+        data.writeUint32(controllerType);
+        int result = remote()->transact(SET_PRESENT_TIMEOUT_CONTROLLER, data, &reply);
+        ALOGE_IF(result != NO_ERROR, "SET_PRESENT_TIMEOUT_CONTROLLER transact error(%d)", result);
+        return result;
+    }
 };
 
 IMPLEMENT_META_INTERFACE(ExynosHWCService, "android.hal.ExynosHWCService");
@@ -834,6 +859,27 @@ status_t BnExynosHWCService::onTransact(
             uint32_t displayId = data.readUint32();
             int32_t count = data.readInt32();
             return dumpBuffers(displayId, count);
+        } break;
+
+        case SET_PRESENT_TIMEOUT_PARAMETERS: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            int32_t displayId = data.readInt32();
+            int32_t numOfWorks = data.readInt32();
+            int32_t timeoutNs = data.readInt32();
+            int32_t intervalNs = data.readInt32();
+            int32_t error =
+                    setPresentTimeoutParameters(displayId, numOfWorks, timeoutNs, intervalNs);
+            reply->writeInt32(error);
+            return NO_ERROR;
+        } break;
+
+        case SET_PRESENT_TIMEOUT_CONTROLLER: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            int32_t displayId = data.readInt32();
+            uint32_t controllerType = data.readUint32();
+            int32_t error = setPresentTimeoutController(displayId, controllerType);
+            reply->writeInt32(error);
+            return NO_ERROR;
         } break;
 
         default:
