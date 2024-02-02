@@ -562,4 +562,23 @@ int32_t ExynosHWCService::dumpBuffers(uint32_t displayId, int32_t count) {
     return NO_ERROR;
 }
 
+int32_t ExynosHWCService::setPresentTimeoutParameters(uint32_t displayId, int numOfWorks,
+                                                      int timeoutNs, int intervalNs) {
+    auto display = mHWCCtx->device->getDisplay(displayId);
+
+    if (display == nullptr) return -EINVAL;
+    display->setPresentTimeoutParameters(numOfWorks, timeoutNs, intervalNs);
+
+    return NO_ERROR;
+}
+
+int32_t ExynosHWCService::setPresentTimeoutController(uint32_t displayId, uint32_t controllerType) {
+    auto display = mHWCCtx->device->getDisplay(displayId);
+
+    if (display == nullptr) return -EINVAL;
+    display->setPresentTimeoutController(controllerType);
+
+    return NO_ERROR;
+}
+
 } //namespace android
