@@ -230,6 +230,10 @@ void ExynosDevice::initDeviceInterface(uint32_t interfaceType)
         }
     }
 
+    // Call handleHotplug() to capture the initial coldplug state of each display.
+    // This is necessary because the hotplug uevent handler created in postInit()
+    // below does not get always triggered when HWC is restarting.
+    handleHotplug();
     mDeviceInterface->postInit();
 }
 
@@ -1281,6 +1285,12 @@ void ExynosDevice::handleHotplug() {
         if (mDisplays[i] == nullptr) {
             continue;
         }
+
+        // Lock mDisplayMutex during hotplug processing.
+        // Must-have for unplug handling so that in-flight calls to
+        // validateDisplay() and presentDisplay() don't race with
+        // the display being removed.
+        Mutex::Autolock lock(mDisplays[i]->mDisplayMutex);
 
         if (mDisplays[i]->checkHotplugEventUpdated(hpdStatus)) {
             mDisplays[i]->handleHotplugEvent(hpdStatus);
