@@ -26,6 +26,9 @@
 
 namespace android {
 
+constexpr uint32_t kDefaultVsyncPeriodNanoSecond = 16666666;
+constexpr int32_t kDefaultRefreshRateFrequency = 60;
+
 class DrmDevice;
 
 class DrmEventHandler {
@@ -44,6 +47,14 @@ public:
     virtual ~DrmHistogramEventHandler() {}
 
     virtual void handleHistogramEvent(uint32_t crtc_id, void *) = 0;
+};
+
+class DrmHistogramChannelEventHandler {
+   public:
+    DrmHistogramChannelEventHandler() {}
+    virtual ~DrmHistogramChannelEventHandler() {}
+
+    virtual void handleHistogramChannelEvent(void *) = 0;
 };
 
 class DrmTUIEventHandler {
@@ -73,6 +84,14 @@ class DrmSysfsEventHandler {
   virtual int getFd() = 0;
 };
 
+class DrmPropertyUpdateHandler {
+ public:
+  DrmPropertyUpdateHandler() {}
+  virtual ~DrmPropertyUpdateHandler() {}
+
+  virtual void handleDrmPropertyUpdate(unsigned connector_id, unsigned prop_id) = 0;
+};
+
 class DrmEventListener : public Worker {
   static constexpr const char kTUIStatusPath[] = "/sys/devices/platform/exynos-drm/tui_status";
   static const uint32_t maxFds = 4;
@@ -87,12 +106,16 @@ class DrmEventListener : public Worker {
   void UnRegisterHotplugHandler(DrmEventHandler *handler);
   void RegisterHistogramHandler(DrmHistogramEventHandler *handler);
   void UnRegisterHistogramHandler(DrmHistogramEventHandler *handler);
+  void RegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler);
+  void UnRegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler);
   void RegisterTUIHandler(DrmTUIEventHandler *handler);
   void UnRegisterTUIHandler(DrmTUIEventHandler *handler);
   void RegisterPanelIdleHandler(DrmPanelIdleEventHandler *handler);
   void UnRegisterPanelIdleHandler(DrmPanelIdleEventHandler *handler);
   int RegisterSysfsHandler(std::shared_ptr<DrmSysfsEventHandler> handler);
   int UnRegisterSysfsHandler(int sysfs_fd);
+  void RegisterPropertyUpdateHandler(DrmPropertyUpdateHandler *handler);
+  void UnRegisterPropertyUpdateHandler(DrmPropertyUpdateHandler *handler);
 
   bool IsDrmInTUI();
 
@@ -115,8 +138,10 @@ class DrmEventListener : public Worker {
   DrmDevice *drm_;
   std::unique_ptr<DrmEventHandler> hotplug_handler_;
   std::unique_ptr<DrmHistogramEventHandler> histogram_handler_;
+  std::unique_ptr<DrmHistogramChannelEventHandler> histogram_channel_handler_;
   std::unique_ptr<DrmTUIEventHandler> tui_handler_;
   std::unique_ptr<DrmPanelIdleEventHandler> panel_idle_handler_;
+  std::unique_ptr<DrmPropertyUpdateHandler> drm_prop_update_handler_;
   std::mutex mutex_;
   std::map<int, std::shared_ptr<DrmSysfsEventHandler>> sysfs_handlers_;
 };

@@ -49,6 +49,16 @@ int ExynosMPP::mainDisplayWidth = 0;
 int ExynosMPP::mainDisplayHeight = 0;
 extern struct exynos_hwc_control exynosHWCControl;
 
+std::unordered_map<tdm_attr_t, TDMInfo_t> HWAttrs = {
+    {TDM_ATTR_SRAM_AMOUNT, {String8("SRAM"),  LS_DPUF}},
+    {TDM_ATTR_AFBC,        {String8("AFBC"),  LS_DPUF}},
+    {TDM_ATTR_SBWC,        {String8("SBWC"),  LS_DPUF}},
+    {TDM_ATTR_ITP,         {String8("CSC"),   LS_DPUF}},
+    {TDM_ATTR_ROT_90,      {String8("ROT"),   LS_DPUF}},
+    {TDM_ATTR_SCALE,       {String8("SCALE"), LS_DPUF}},
+    {TDM_ATTR_WCG,         {String8("WCG"),   LS_DPUF_AXI}},
+};
+
 void dumpExynosMPPImgInfo(uint32_t type, exynos_mpp_img_info &imgInfo)
 {
     HDEBUGLOGD(type, "\tbuffer: %p, bufferType: %d",
@@ -84,11 +94,7 @@ void dump(const restriction_size_t &restrictionSize, String8 &result) {
 }
 
 ExynosMPPSource::ExynosMPPSource()
-    : mSourceType(MPP_SOURCE_MAX),
-    mSource(NULL),
-    mOtfMPP(NULL),
-    mM2mMPP(NULL)
-{
+      : mSourceType(MPP_SOURCE_MAX), mSource(NULL), mOtfMPP(NULL), mM2mMPP(NULL) {
     memset(&mSrcImg, 0, sizeof(mSrcImg));
     mSrcImg.acquireFenceFd = -1;
     mSrcImg.releaseFenceFd = -1;
@@ -119,49 +125,13 @@ ExynosMPPSource::ExynosMPPSource(uint32_t sourceType, void *source)
     mMidImg.releaseFenceFd = -1;
 }
 
-void ExynosMPPSource::setExynosImage(exynos_image src_img, exynos_image dst_img)
-{
+void ExynosMPPSource::setExynosImage(const exynos_image& src_img, const exynos_image& dst_img) {
     mSrcImg = src_img;
     mDstImg = dst_img;
 }
 
-void ExynosMPPSource::setExynosMidImage(exynos_image mid_img)
-{
+void ExynosMPPSource::setExynosMidImage(const exynos_image& mid_img) {
     mMidImg = mid_img;
-}
-
-uint32_t ExynosMPPSource::needHWResource(tdm_attr_t attr) {
-    uint32_t ret = 0;
-
-    switch (attr) {
-        case TDM_ATTR_SBWC:
-            ret = (isFormatSBWC(mSrcImg.format)) ? 1 : 0;
-            break;
-        case TDM_ATTR_AFBC:
-            ret = (mSrcImg.compressed == 1) ? 1 : 0;
-            break;
-        case TDM_ATTR_ITP: // CSC
-            ret = (isFormatYUV(mSrcImg.format)) ? 1 : 0;
-            break;
-        case TDM_ATTR_ROT_90:
-            ret = ((mSrcImg.transform & HAL_TRANSFORM_ROT_90) == 0) ? 0 : 1;
-            break;
-        case TDM_ATTR_SCALE:
-            {
-                bool isPerpendicular = !!(mSrcImg.transform & HAL_TRANSFORM_ROT_90);
-                if (isPerpendicular) {
-                    ret = ((mSrcImg.w != mDstImg.h) || (mSrcImg.h != mDstImg.w)) ? 1 : 0;
-                } else {
-                    ret = ((mSrcImg.w != mDstImg.w) || (mSrcImg.h != mDstImg.h)) ? 1 : 0;
-                }
-            }
-            break;
-        default:
-            ret = 0;
-            break;
-    }
-
-    return ret;
 }
 
 ExynosMPP::ExynosMPP(ExynosResourceManager* resourceManager,
@@ -291,7 +261,7 @@ ExynosMPP::ExynosMPP(ExynosResourceManager* resourceManager,
 
     for (uint32_t i = 0; i < DISPLAY_MODE_NUM; i++)
     {
-        mPreAssignDisplayList[i] = (preAssignInfo >> (DISPLAY_MODE_MASK_LEN * i)) & DISPLAY_MODE_MASK_BIT;
+        mPreAssignDisplayList[i] = 0;
     }
 }
 
@@ -404,8 +374,7 @@ bool ExynosMPP::checkRotationCondition(struct exynos_image &src)
     /* Other DPPs */
     if ((src.transform & HAL_TRANSFORM_ROT_90) == 0)
     {
-        if ((src.compressed == 1) && (src.transform != 0))
-            return false;
+        if ((src.compressionInfo.type == COMP_TYPE_AFBC) && (src.transform != 0)) return false;
         return true;
     } else {
         return false;
@@ -436,14 +405,14 @@ bool ExynosMPP::isSupportedTransform(struct exynos_image &src)
 
 bool ExynosMPP::isSupportedCompression(struct exynos_image &src)
 {
-    if (src.compressed) {
+    if (src.compressionInfo.type == COMP_TYPE_AFBC) {
         if (mAttr & MPP_ATTR_AFBC)
             return true;
         else
             return false;
-    } else {
-        return true;
     }
+
+    return true;
 }
 
 bool ExynosMPP::isSupportedCapability(ExynosDisplay &display, struct exynos_image &src)
@@ -844,7 +813,7 @@ bool ExynosMPP::ResourceManageThread::threadLoop()
     if (mExynosMPP == NULL)
         return false;
 
-    ALOGI("%s threadLoop is started", mExynosMPP->mName.string());
+    ALOGI("%s threadLoop is started", mExynosMPP->mName.c_str());
     while(mRunning) {
         Mutex::Autolock lock(mMutex);
         while((mFreedBuffers.size() == 0) &&
@@ -861,7 +830,7 @@ bool ExynosMPP::ResourceManageThread::threadLoop()
             if ((mStateFences.size() != 0) &&
                     (mExynosMPP->mHWState != MPP_HW_STATE_RUNNING)) {
                 ALOGW("%s, mHWState(%d) but mStateFences size(%zu)",
-                        mExynosMPP->mName.string(), mExynosMPP->mHWState,
+                        mExynosMPP->mName.c_str(), mExynosMPP->mHWState,
                         mStateFences.size());
                 checkStateFences();
             }
@@ -889,14 +858,14 @@ void ExynosMPP::ResourceManageThread::freeBuffers()
         dumpExynosMPPImgInfo(eDebugMPP|eDebugFence|eDebugBuf, freeBuffer);
         if (fence_valid(freeBuffer.acrylicAcquireFenceFd)) {
             if (sync_wait(freeBuffer.acrylicAcquireFenceFd, 1000) < 0)
-                HWC_LOGE(NULL, "%s:: acquire fence sync_wait error", mExynosMPP->mName.string());
+                HWC_LOGE(NULL, "%s:: acquire fence sync_wait error", mExynosMPP->mName.c_str());
             freeBuffer.acrylicAcquireFenceFd =
                 fence_close(freeBuffer.acrylicAcquireFenceFd, mExynosMPP->mAssignedDisplay,
                         FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_ALL);
         }
         if (fence_valid(freeBuffer.acrylicReleaseFenceFd)) {
             if (sync_wait(freeBuffer.acrylicReleaseFenceFd, 1000) < 0)
-                HWC_LOGE(NULL, "%s:: release fence sync_wait error", mExynosMPP->mName.string());
+                HWC_LOGE(NULL, "%s:: release fence sync_wait error", mExynosMPP->mName.c_str());
             freeBuffer.acrylicReleaseFenceFd =
                 fence_close(freeBuffer.acrylicReleaseFenceFd, mExynosMPP->mAssignedDisplay,
                         FENCE_TYPE_SRC_RELEASE, FENCE_IP_ALL);
@@ -922,7 +891,7 @@ bool ExynosMPP::ResourceManageThread::checkStateFences()
         if (fence_valid(fence)) {
             if (sync_wait(fence, 5000) < 0) {
                 HWC_LOGE(NULL, "%s::[%s][%d] sync_wait(%d) error(%s)", __func__,
-                        mExynosMPP->mName.string(), mExynosMPP->mLogicalIndex, fence, strerror(errno));
+                        mExynosMPP->mName.c_str(), mExynosMPP->mLogicalIndex, fence, strerror(errno));
                 ret = false;
             }
             fence = fence_close(fence, mExynosMPP->mAssignedDisplay,
@@ -1128,10 +1097,10 @@ bool ExynosMPP::needDstBufRealloc(struct exynos_image &dst, uint32_t index)
     MPP_LOGD(eDebugMPP | eDebugBuf,
              "\tAssignedDisplay[%d, %d] format[0x%8x, 0x%8x], bufferType[%d, %d], bufferNum[%d, "
              "%d] "
-             "usageFlags: 0x%" PRIx64 ", need afbc %u sbwc %u lossy %u",
+             "usageFlags: 0x%" PRIx64 ", need comp_type 0x%x lossy %u",
              mPrevAssignedDisplayType, assignedDisplay, gmeta.format, dst.format,
              mDstImgs[index].bufferType, getBufferType(dst.usageFlags), prevAssignedBufferNum,
-             assignedBufferNum, dst.usageFlags, dst.compressed, isFormatSBWC(dst.format),
+             assignedBufferNum, dst.usageFlags, dst.compressionInfo.type,
              isFormatLossy(dst.format));
 
     bool realloc = (mPrevAssignedDisplayType != assignedDisplay) ||
@@ -1139,7 +1108,7 @@ bool ExynosMPP::needDstBufRealloc(struct exynos_image &dst, uint32_t index)
             (formatToBpp(gmeta.format) < formatToBpp(dst.format)) ||
             ((gmeta.stride * gmeta.vstride) < (int)(dst.fullWidth * dst.fullHeight)) ||
             (mDstImgs[index].bufferType != getBufferType(dst.usageFlags)) ||
-            (isAFBCCompressed(dst_handle) != dst.compressed) ||
+            (isAFBCCompressed(dst_handle) != (dst.compressionInfo.type == COMP_TYPE_AFBC)) ||
             (isFormatSBWC(gmeta.format) != isFormatSBWC(dst.format)) ||
             (isFormatLossy(gmeta.format) != isFormatLossy(dst.format));
 
@@ -1162,17 +1131,18 @@ bool ExynosMPP::canUsePrevFrame()
 
     for (uint32_t i = 0; i < mPrevFrameInfo.srcNum; i++) {
         if ((mPrevFrameInfo.srcInfo[i].bufferHandle != mAssignedSources[i]->mSrcImg.bufferHandle) ||
-            (mPrevFrameInfo.srcInfo[i].x !=  mAssignedSources[i]->mSrcImg.x) ||
-            (mPrevFrameInfo.srcInfo[i].y !=  mAssignedSources[i]->mSrcImg.y) ||
-            (mPrevFrameInfo.srcInfo[i].w !=  mAssignedSources[i]->mSrcImg.w) ||
-            (mPrevFrameInfo.srcInfo[i].h !=  mAssignedSources[i]->mSrcImg.h) ||
-            (mPrevFrameInfo.srcInfo[i].format !=  mAssignedSources[i]->mSrcImg.format) ||
-            (mPrevFrameInfo.srcInfo[i].usageFlags !=  mAssignedSources[i]->mSrcImg.usageFlags) ||
-            (mPrevFrameInfo.srcInfo[i].dataSpace !=  mAssignedSources[i]->mSrcImg.dataSpace) ||
-            (mPrevFrameInfo.srcInfo[i].blending !=  mAssignedSources[i]->mSrcImg.blending) ||
-            (mPrevFrameInfo.srcInfo[i].transform !=  mAssignedSources[i]->mSrcImg.transform) ||
-            (mPrevFrameInfo.srcInfo[i].compressed !=  mAssignedSources[i]->mSrcImg.compressed) ||
-            (mPrevFrameInfo.srcInfo[i].planeAlpha !=  mAssignedSources[i]->mSrcImg.planeAlpha) ||
+            (mPrevFrameInfo.srcInfo[i].x != mAssignedSources[i]->mSrcImg.x) ||
+            (mPrevFrameInfo.srcInfo[i].y != mAssignedSources[i]->mSrcImg.y) ||
+            (mPrevFrameInfo.srcInfo[i].w != mAssignedSources[i]->mSrcImg.w) ||
+            (mPrevFrameInfo.srcInfo[i].h != mAssignedSources[i]->mSrcImg.h) ||
+            (mPrevFrameInfo.srcInfo[i].format != mAssignedSources[i]->mSrcImg.format) ||
+            (mPrevFrameInfo.srcInfo[i].usageFlags != mAssignedSources[i]->mSrcImg.usageFlags) ||
+            (mPrevFrameInfo.srcInfo[i].dataSpace != mAssignedSources[i]->mSrcImg.dataSpace) ||
+            (mPrevFrameInfo.srcInfo[i].blending != mAssignedSources[i]->mSrcImg.blending) ||
+            (mPrevFrameInfo.srcInfo[i].transform != mAssignedSources[i]->mSrcImg.transform) ||
+            (mPrevFrameInfo.srcInfo[i].compressionInfo.type !=
+             mAssignedSources[i]->mSrcImg.compressionInfo.type) ||
+            (mPrevFrameInfo.srcInfo[i].planeAlpha != mAssignedSources[i]->mSrcImg.planeAlpha) ||
             (mPrevFrameInfo.dstInfo[i].x != mAssignedSources[i]->mMidImg.x) ||
             (mPrevFrameInfo.dstInfo[i].y != mAssignedSources[i]->mMidImg.y) ||
             (mPrevFrameInfo.dstInfo[i].w != mAssignedSources[i]->mMidImg.w) ||
@@ -1246,7 +1216,10 @@ int32_t ExynosMPP::setupLayer(exynos_mpp_img_info *srcImgInfo, struct exynos_ima
         srcImgInfo->mppLayer->setMasterDisplayLuminance(min,max);
         MPP_LOGD(eDebugMPP, "HWC2: G2D luminance min %d, max %d", min, max);
         MPP_LOGD(eDebugMPP|eDebugFence, "G2D getting HDR source!");
-    }
+
+        srcImgInfo->mppLayer->setLayerHDR(true);
+    } else
+        srcImgInfo->mppLayer->setLayerHDR(false);
 
     /* Transfer MetaData */
     if (src.hasMetaParcel) {
@@ -1256,8 +1229,15 @@ int32_t ExynosMPP::setupLayer(exynos_mpp_img_info *srcImgInfo, struct exynos_ima
     srcImgInfo->bufferType = getBufferType(srcHandle);
     if (srcImgInfo->bufferType == MPP_BUFFER_SECURE_DRM)
         attribute |= AcrylicCanvas::ATTR_PROTECTED;
-    if (src.compressed)
-        attribute |= AcrylicCanvas::ATTR_COMPRESSED;
+    /*Change AFBC attribute on the basis of the modifier*/
+    if (src.compressionInfo.type == COMP_TYPE_AFBC) {
+        if ((src.compressionInfo.modifier & AFBC_FORMAT_MOD_BLOCK_SIZE_MASK) ==
+            AFBC_FORMAT_MOD_BLOCK_SIZE_32x8) {
+            attribute |= AcrylicCanvas::ATTR_COMPRESSED_WIDEBLK;
+        } else {
+            attribute |= AcrylicCanvas::ATTR_COMPRESSED;
+        }
+    }
 
     srcImgInfo->bufferHandle = srcHandle;
     srcImgInfo->acrylicAcquireFenceFd =
@@ -1689,12 +1669,10 @@ bool ExynosMPP::canSkipProcessing()
 }
 
 /**
- * @param src
  * @param dst
- * @return int32_t releaseFenceFd of src buffer
+ * @return int32_t 0 on success, or a negative error code on failure.
  */
-int32_t ExynosMPP::doPostProcessing(struct exynos_image &src, struct exynos_image &dst)
-{
+int32_t ExynosMPP::doPostProcessing(struct exynos_image& dst) {
     ATRACE_CALL();
     MPP_LOGD(eDebugMPP, "total assigned sources (%zu)++++++++", mAssignedSources.size());
 
@@ -1809,7 +1787,10 @@ int32_t ExynosMPP::getDstImageInfo(exynos_image *img)
     img->acquireFenceFd = -1;
     img->releaseFenceFd = -1;
 
-    img->compressed = needCompressDstBuf();
+    if (needCompressDstBuf()) {
+        img->compressionInfo.type = COMP_TYPE_AFBC;
+        img->compressionInfo.modifier = AFBC_FORMAT_MOD_BLOCK_SIZE_16x16;
+    }
 
     if (mDstImgs[mCurrentDstBuf].bufferHandle == NULL) {
         img->acquireFenceFd = -1;
@@ -1817,6 +1798,7 @@ int32_t ExynosMPP::getDstImageInfo(exynos_image *img)
         return -EFAULT;
     } else {
         img->bufferHandle = mDstImgs[mCurrentDstBuf].bufferHandle;
+        img->compressionInfo = getCompressionInfo(img->bufferHandle);
         VendorGraphicBufferMeta gmeta(img->bufferHandle);
         img->fullWidth = gmeta.stride;
         img->fullHeight = gmeta.vstride;
@@ -2424,7 +2406,7 @@ void ExynosMPP::getPPCIndex(const struct exynos_image &src,
     /* Compare SBWC, AFBC and 10bitYUV420 first! because can be overlapped with other format */
     if (isFormatSBWC(criteria.format) && hasPPC(mPhysicalType, PPC_FORMAT_SBWC, PPC_ROT_NO))
         formatIndex = PPC_FORMAT_SBWC;
-    else if (src.compressed == 1) {
+    else if (src.compressionInfo.type == COMP_TYPE_AFBC) {
         if ((isFormatRgb(criteria.format)) && hasPPC(mPhysicalType, PPC_FORMAT_AFBC_RGB, PPC_ROT_NO))
             formatIndex = PPC_FORMAT_AFBC_RGB;
         else if ((isFormatYUV(criteria.format)) && hasPPC(mPhysicalType, PPC_FORMAT_AFBC_YUV, PPC_ROT_NO))
@@ -2912,7 +2894,7 @@ void ExynosMPP::dump(String8& result)
         assignedDisplayType = mAssignedDisplay->mType;
 
     result.appendFormat("%s: types mppType(%d), (p:%d, l:0x%2x), indexs(p:%d, l:%d), preAssignDisplay(0x%2x)\n",
-            mName.string(), mMPPType, mPhysicalType, mLogicalType, mPhysicalIndex, mLogicalIndex, mPreAssignDisplayInfo);
+            mName.c_str(), mMPPType, mPhysicalType, mLogicalType, mPhysicalIndex, mLogicalIndex, mPreAssignDisplayInfo);
     result.appendFormat("\tEnable: %d, HWState: %d, AssignedState: %d, assignedDisplay(%d)\n",
             mEnable, mHWState, mAssignedState, assignedDisplayType);
     result.appendFormat("\tPrevAssignedState: %d, PrevAssignedDisplayType: %d, ReservedDisplay: %d\n",
@@ -2956,3 +2938,17 @@ void ExynosMPP::updateAttr()
     }
 }
 
+void ExynosMPP::updatePreassignedDisplay(uint32_t fromDisplayBit, uint32_t toDisplayBit)
+{
+    /*
+     * If the pre-assigned resources are required to changed,
+     * this function will modify PreAssign table.
+     */
+    for (uint32_t i = 0; i < DISPLAY_MODE_NUM; i++) {
+        if (mPreAssignDisplayList[i] == fromDisplayBit)
+            mPreAssignDisplayList[i] = toDisplayBit;
+    }
+
+    if (mPreAssignDisplayInfo == fromDisplayBit)
+        mPreAssignDisplayInfo = toDisplayBit;
+}

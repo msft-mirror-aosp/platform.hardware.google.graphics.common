@@ -100,7 +100,7 @@ int DrmEventListener::Init() {
     return -errno;
   }
 
-  return InitWorker();
+  return 0;
 }
 
 void DrmEventListener::RegisterHotplugHandler(DrmEventHandler *handler) {
@@ -120,6 +120,25 @@ void DrmEventListener::RegisterHistogramHandler(DrmHistogramEventHandler *handle
 
 void DrmEventListener::UnRegisterHistogramHandler(DrmHistogramEventHandler *handler) {
     if (handler == histogram_handler_.get()) histogram_handler_ = NULL;
+}
+
+void DrmEventListener::RegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler) {
+    assert(!histogram_channel_handler_);
+
+    if (handler) {
+        histogram_channel_handler_.reset(handler);
+    } else {
+        ALOGE("%s: failed to register, handler is nullptr", __func__);
+    }
+}
+
+void DrmEventListener::UnRegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler) {
+    if (handler == histogram_channel_handler_.get()) {
+        histogram_channel_handler_ = NULL;
+    } else {
+        ALOGE("%s: failed to unregister, handler(%p), histogram_channel_handler(%p)", __func__,
+              handler, histogram_channel_handler_.get());
+    }
 }
 
 void DrmEventListener::RegisterTUIHandler(DrmTUIEventHandler *handler) {
@@ -182,6 +201,16 @@ int DrmEventListener::UnRegisterSysfsHandler(int sysfs_fd) {
   return 0;
 }
 
+void DrmEventListener::RegisterPropertyUpdateHandler(DrmPropertyUpdateHandler *handler) {
+  assert(!drm_prop_update_handler_);
+  drm_prop_update_handler_.reset(handler);
+}
+
+void DrmEventListener::UnRegisterPropertyUpdateHandler(DrmPropertyUpdateHandler *handler) {
+  if (handler == drm_prop_update_handler_.get())
+    drm_prop_update_handler_ = NULL;
+}
+
 bool DrmEventListener::IsDrmInTUI() {
   char buffer[1024];
   int ret;
@@ -233,6 +262,9 @@ void DrmEventListener::UEventHandler() {
   }
 
   bool drm_event = false, hotplug_event = false;
+  bool have_connector_id = false, have_property_id = false;
+  unsigned connector_id = 0;
+  unsigned updated_property_id = 0;
   for (int i = 0; i < ret;) {
     char *event = buffer + i;
 
@@ -242,9 +274,21 @@ void DrmEventListener::UEventHandler() {
       panel_idle_handler_->handleIdleEnterEvent(event);
     } else if (!strcmp(event, "HOTPLUG=1")) {
       hotplug_event = true;
+    } else if (sscanf(event, "CONNECTOR=%u", &connector_id) == 1) {
+      have_connector_id = true;
+    } else if (sscanf(event, "PROPERTY=%u", &updated_property_id) == 1) {
+      have_property_id = true;
     }
 
     i += strlen(event) + 1;
+  }
+
+  // Property updates also have HOTPLUG=1 string, so must be handled
+  // first. Actual hotplug events don't have property id.
+  if (have_connector_id && have_property_id) {
+    if (drm_prop_update_handler_)
+      drm_prop_update_handler_->handleDrmPropertyUpdate(connector_id, updated_property_id);
+    return;
   }
 
   if (drm_event && hotplug_event) {
@@ -278,6 +322,15 @@ void DrmEventListener::DRMEventHandler() {
                                                              (void *)&(histo->bins));
                 }
                 break;
+#if defined(EXYNOS_DRM_HISTOGRAM_CHANNEL_EVENT)
+            case EXYNOS_DRM_HISTOGRAM_CHANNEL_EVENT:
+                if (histogram_channel_handler_) {
+                    histogram_channel_handler_->handleHistogramChannelEvent((void *)e);
+                } else {
+                    ALOGE("%s: no valid histogram channel event handler", __func__);
+                }
+                break;
+#endif
             case DRM_EVENT_FLIP_COMPLETE:
                 vblank = (struct drm_event_vblank *)e;
                 user_data = (void *)(unsigned long)(vblank->user_data);

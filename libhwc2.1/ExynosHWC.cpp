@@ -520,10 +520,10 @@ int32_t exynos_presentDisplay(hwc2_device_t *dev, hwc2_display_t display,
 
         if (exynosDisplay->mHWCRenderingState == RENDERING_STATE_VALIDATED) {
             ALOGI("%s:: acceptDisplayChanges was not called",
-                    exynosDisplay->mDisplayName.string());
+                    exynosDisplay->mDisplayName.c_str());
             if (exynosDisplay->acceptDisplayChanges() != HWC2_ERROR_NONE) {
                 ALOGE("%s:: acceptDisplayChanges is failed",
-                        exynosDisplay->mDisplayName.string());
+                        exynosDisplay->mDisplayName.c_str());
             }
         }
         int32_t ret = exynosDisplay->presentDisplay(outRetireFence);
@@ -1294,8 +1294,11 @@ void exynos_boot_finished(ExynosHWCCtx *dev)
         if (read(sw_fd, &val, 1) == 1 && val == '1') {
             ALOGI("%s : try to reconnect displayport", __func__);
             ExynosExternalDisplayModule *display = (ExynosExternalDisplayModule*)dev->device->getDisplay(getDisplayId(HWC_DISPLAY_EXTERNAL, 0));
-            if (display != nullptr)
-                display->handleHotplugEvent();
+            if (display != nullptr) {
+                bool hpdStatus = false;
+                display->checkHotplugEventUpdated(hpdStatus);
+                display->handleHotplugEvent(hpdStatus);
+            }
         }
         hwcFdClose(sw_fd);
     }
@@ -1337,7 +1340,8 @@ int exynos_open(const struct hw_module_t *module, const char *name,
     dev = (struct exynos_hwc2_device_t *)malloc(sizeof(*dev));
     memset(dev, 0, sizeof(*dev));
 
-    dev->device = new ExynosDeviceModule;
+    // The legacy HIDL does not provide compatibility for the Vrr API as defined by AIDL.
+    dev->device = new ExynosDeviceModule(false);
     g_exynosDevice = dev->device;
 
     dev->base.common.tag = HARDWARE_DEVICE_TAG;

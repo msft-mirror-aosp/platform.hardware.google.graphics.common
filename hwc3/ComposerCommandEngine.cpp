@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
+#include "ComposerCommandEngine.h"
+
+#include <hardware/hwcomposer2.h>
+
 #include <set>
 
-#include "ComposerCommandEngine.h"
 #include "Util.h"
 
 namespace aidl::android::hardware::graphics::composer3::impl {
@@ -48,11 +51,11 @@ namespace aidl::android::hardware::graphics::composer3::impl {
         }                                                                    \
     } while (0)
 
-#define DISPATCH_DISPLAY_BOOL_COMMAND_AND_DATA(displayCmd, field, data, funcName) \
-    do {                                                                          \
-        if (displayCmd.field) {                                                   \
-            execute##funcName(displayCmd.display, displayCmd.data);               \
-        }                                                                         \
+#define DISPATCH_DISPLAY_COMMAND_AND_TWO_DATA(displayCmd, field, data_1, data_2, funcName) \
+    do {                                                                                   \
+        if (displayCmd.field) {                                                            \
+            execute##funcName(displayCmd.display, displayCmd.data_1, displayCmd.data_2);   \
+        }                                                                                  \
     } while (0)
 
 int32_t ComposerCommandEngine::init() {
@@ -101,12 +104,12 @@ void ComposerCommandEngine::dispatchDisplayCommand(const DisplayCommand& command
     DISPATCH_DISPLAY_COMMAND(command, colorTransformMatrix, SetColorTransform);
     DISPATCH_DISPLAY_COMMAND(command, clientTarget, SetClientTarget);
     DISPATCH_DISPLAY_COMMAND(command, virtualDisplayOutputBuffer, SetOutputBuffer);
-    DISPATCH_DISPLAY_BOOL_COMMAND_AND_DATA(command, validateDisplay, expectedPresentTime,
-                                           ValidateDisplay);
+    DISPATCH_DISPLAY_COMMAND_AND_TWO_DATA(command, validateDisplay, expectedPresentTime,
+                                          frameIntervalNs, ValidateDisplay);
     DISPATCH_DISPLAY_BOOL_COMMAND(command, acceptDisplayChanges, AcceptDisplayChanges);
     DISPATCH_DISPLAY_BOOL_COMMAND(command, presentDisplay, PresentDisplay);
-    DISPATCH_DISPLAY_BOOL_COMMAND_AND_DATA(command, presentOrValidateDisplay, expectedPresentTime,
-                                           PresentOrValidateDisplay);
+    DISPATCH_DISPLAY_COMMAND_AND_TWO_DATA(command, presentOrValidateDisplay, expectedPresentTime,
+                                          frameIntervalNs, PresentOrValidateDisplay);
 }
 
 void ComposerCommandEngine::dispatchLayerCommand(int64_t display, const LayerCommand& command) {
@@ -145,7 +148,7 @@ int32_t ComposerCommandEngine::executeValidateDisplayInternal(int64_t display) {
                                   &requestedLayers, &requestMasks, &clientTargetProperty,
                                   &dimmingStage);
     mResources->setDisplayMustValidateState(display, false);
-    if (!err) {
+    if (err == HWC2_ERROR_NONE || err == HWC2_ERROR_HAS_CHANGES) {
         mWriter->setChangedCompositionTypes(display, changedLayers, compositionTypes);
         mWriter->setDisplayRequests(display, displayRequestMask, requestedLayers, requestMasks);
         static constexpr float kBrightness = 1.f;
@@ -210,13 +213,15 @@ void ComposerCommandEngine::executeSetOutputBuffer(uint64_t display, const Buffe
 }
 
 void ComposerCommandEngine::executeSetExpectedPresentTimeInternal(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
-    mHal->setExpectedPresentTime(display, expectedPresentTime);
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
+    mHal->setExpectedPresentTime(display, expectedPresentTime, frameIntervalNs);
 }
 
 void ComposerCommandEngine::executeValidateDisplay(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
-    executeSetExpectedPresentTimeInternal(display, expectedPresentTime);
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
+    executeSetExpectedPresentTimeInternal(display, expectedPresentTime, frameIntervalNs);
     executeValidateDisplayInternal(display);
 }
 
@@ -230,20 +235,35 @@ void ComposerCommandEngine::executeSetDisplayBrightness(uint64_t display,
 }
 
 void ComposerCommandEngine::executePresentOrValidateDisplay(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
-    executeSetExpectedPresentTimeInternal(display, expectedPresentTime);
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
+    executeSetExpectedPresentTimeInternal(display, expectedPresentTime, frameIntervalNs);
     // First try to Present as is.
-    auto err = mResources->mustValidateDisplay(display) ? IComposerClient::EX_NOT_VALIDATED
-                                                        : executePresentDisplay(display);
-    if (!err) {
+    auto presentErr = mResources->mustValidateDisplay(display) ? IComposerClient::EX_NOT_VALIDATED
+                                                               : executePresentDisplay(display);
+    if (!presentErr) {
         mWriter->setPresentOrValidateResult(display, PresentOrValidate::Result::Presented);
         return;
     }
 
     // Fallback to validate
-    err = executeValidateDisplayInternal(display);
-    if (!err) {
+    auto validateErr = executeValidateDisplayInternal(display);
+    if (validateErr != HWC2_ERROR_NONE && validateErr != HWC2_ERROR_HAS_CHANGES) return;
+
+    bool hasClientComp = false;
+    bool cannotPresentDirectly = (validateErr == HWC2_ERROR_HAS_CHANGES) ||
+            (mHal->getHasClientComposition(display, hasClientComp) == HWC2_ERROR_NONE &&
+             hasClientComp);
+    if (cannotPresentDirectly) {
         mWriter->setPresentOrValidateResult(display, PresentOrValidate::Result::Validated);
+        return;
+    }
+
+    // Try to call present again
+    executeAcceptDisplayChanges(display);
+    presentErr = executePresentDisplay(display);
+    if (!presentErr) {
+        mWriter->setPresentOrValidateResult(display, PresentOrValidate::Result::Presented);
     }
 }
 

@@ -408,6 +408,41 @@ int32_t ExynosHWCService::setDisplayBrightness(int32_t display_id, float brightn
     return -EINVAL;
 }
 
+int32_t ExynosHWCService::ignoreDisplayBrightnessUpdateRequests(int32_t displayId, bool ignore) {
+    ALOGD("ExynosHWCService::%s() displayId(%u) ignore(%u)", __func__, displayId, ignore);
+
+    auto display = mHWCCtx->device->getDisplay(displayId);
+
+    if (display != nullptr)
+        return display->ignoreBrightnessUpdateRequests(ignore);
+
+    return -EINVAL;
+}
+
+int32_t ExynosHWCService::setDisplayBrightnessNits(const int32_t display_id, const float nits) {
+    if (nits < 0)
+        return -EINVAL;
+
+    auto display = mHWCCtx->device->getDisplay(display_id);
+
+    if (display != nullptr)
+        return display->setBrightnessNits(nits);
+
+    return -EINVAL;
+}
+
+int32_t ExynosHWCService::setDisplayBrightnessDbv(int32_t display_id, uint32_t dbv) {
+    auto display = mHWCCtx->device->getDisplay(display_id);
+
+    if (display != nullptr) {
+        return display->setBrightnessDbv(dbv);
+    } else {
+        ALOGE("ExynosHWCService::%s() invalid display id: %d\n", __func__, display_id);
+    }
+
+    return -EINVAL;
+}
+
 int32_t ExynosHWCService::setDisplayLhbm(int32_t display_id, uint32_t on) {
     if (on > 1) return -EINVAL;
 
@@ -427,7 +462,7 @@ int32_t ExynosHWCService::setMinIdleRefreshRate(uint32_t display_id, int32_t fps
     auto display = mHWCCtx->device->getDisplay(display_id);
 
     if (display != nullptr) {
-        return display->setMinIdleRefreshRate(fps);
+        return display->setMinIdleRefreshRate(fps, RrThrottleRequester::TEST);
     }
 
     return -EINVAL;
@@ -443,7 +478,7 @@ int32_t ExynosHWCService::setRefreshRateThrottle(uint32_t display_id, int32_t de
                 ->setRefreshRateThrottleNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                       std::chrono::milliseconds(delayMs))
                                                       .count(),
-                                              VrrThrottleRequester::TEST);
+                                              RrThrottleRequester::TEST);
     }
 
     return -EINVAL;
@@ -513,6 +548,37 @@ int32_t ExynosHWCService::triggerRefreshRateIndicatorUpdate(uint32_t displayId,
     if (display->mRefreshRateIndicatorHandler) {
         display->mRefreshRateIndicatorHandler->updateRefreshRate(refreshRate);
     }
+    return NO_ERROR;
+}
+
+int32_t ExynosHWCService::dumpBuffers(uint32_t displayId, int32_t count) {
+    auto display = mHWCCtx->device->getDisplay(displayId);
+
+    if (display == nullptr) return -EINVAL;
+
+    ALOGD("ExynosHWCService::%s() displayID(%u) count(%u)", __func__, displayId, count);
+    display->mBufferDumpCount = count;
+    display->mBufferDumpNum = 0;
+    return NO_ERROR;
+}
+
+int32_t ExynosHWCService::setPresentTimeoutController(uint32_t displayId, uint32_t controllerType) {
+    auto display = mHWCCtx->device->getDisplay(displayId);
+
+    if (display == nullptr) return -EINVAL;
+    display->setPresentTimeoutController(controllerType);
+
+    return NO_ERROR;
+}
+
+int32_t ExynosHWCService::setPresentTimeoutParameters(
+        uint32_t displayId, int __unused timeoutNs,
+        const std::vector<std::pair<uint32_t, uint32_t>>& settings) {
+    auto display = mHWCCtx->device->getDisplay(displayId);
+
+    if (display == nullptr) return -EINVAL;
+    display->setPresentTimeoutParameters(timeoutNs, settings);
+
     return NO_ERROR;
 }
 

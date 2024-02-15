@@ -451,8 +451,8 @@ class ExynosMPPSource {
         ExynosMPPSource();
         ExynosMPPSource(uint32_t sourceType, void *source);
         ~ExynosMPPSource(){};
-        void setExynosImage(exynos_image src_img, exynos_image dst_img);
-        void setExynosMidImage(exynos_image mid_img);
+        void setExynosImage(const exynos_image& src_img, const exynos_image& dst_img);
+        void setExynosMidImage(const exynos_image& mid_img);
 
         uint32_t mSourceType;
         void *mSource;
@@ -474,8 +474,7 @@ class ExynosMPPSource {
             return 0;
         }
 
-        /* return 1 if it's needed */
-        uint32_t needHWResource(tdm_attr_t attr);
+        bool mNeedPreblending = false;
 };
 
 bool exynosMPPSourceComp(const ExynosMPPSource* l, const ExynosMPPSource* r);
@@ -584,8 +583,7 @@ public:
     int32_t allocOutBuf(uint32_t w, uint32_t h, uint32_t format, uint64_t usage, uint32_t index);
     int32_t setOutBuf(buffer_handle_t outbuf, int32_t fence);
     int32_t freeOutBuf(exynos_mpp_img_info dst);
-    int32_t doPostProcessing(struct exynos_image &src, struct exynos_image &dst);
-    int32_t doPostProcessing(uint32_t totalImags, uint32_t imageIndex, struct exynos_image &src, struct exynos_image &dst);
+    int32_t doPostProcessing(struct exynos_image& dst);
     int32_t setupRestriction();
     int32_t getSrcReleaseFence(uint32_t srcIndex);
     int32_t resetSrcReleaseFence();
@@ -693,6 +691,7 @@ public:
 
     virtual bool checkRotationCondition(struct exynos_image &src);
     void updateAttr();
+    void updatePreassignedDisplay(uint32_t fromDisplayBit, uint32_t toDisplayBit);
     dstMetaInfo getDstMetaInfo(android_dataspace_t dstDataspace);
     float getAssignedCapacity();
 

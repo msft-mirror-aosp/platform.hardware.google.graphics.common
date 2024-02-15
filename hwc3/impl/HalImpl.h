@@ -60,6 +60,11 @@ class HalImpl : public IComposerHal {
     int32_t getDisplayBrightnessSupport(int64_t display, bool& outSupport) override;
     int32_t getDisplayCapabilities(int64_t display, std::vector<DisplayCapability>* caps) override;
     int32_t getDisplayConfigs(int64_t display, std::vector<int32_t>* configs) override;
+    int32_t getDisplayConfigurations(int64_t display, int32_t maxFrameIntervalNs,
+                                     std::vector<DisplayConfiguration>* outConfigs) override;
+    int32_t notifyExpectedPresent(int64_t display,
+                                  const ClockMonotonicTimestamp& expectedPresentTime,
+                                  int32_t frameIntervalNs) override;
     int32_t getDisplayConnectionType(int64_t display, DisplayConnectionType* outType) override;
     int32_t getDisplayIdentificationData(int64_t display, DisplayIdentification* id) override;
     int32_t getDisplayName(int64_t display, std::string* outName) override;
@@ -99,6 +104,7 @@ class HalImpl : public IComposerHal {
     int32_t setClientTarget(int64_t display, buffer_handle_t target,
                             const ndk::ScopedFileDescriptor& fence, common::Dataspace dataspace,
                             const std::vector<common::Rect>& damage) override;
+    int32_t getHasClientComposition(int64_t display, bool& outHasClientComp) override;
     int32_t setColorMode(int64_t display, ColorMode mode, RenderIntent intent) override;
     int32_t setColorTransform(int64_t display, const std::vector<float>& matrix) override;
     int32_t setContentType(int64_t display, ContentType contentType) override;
@@ -153,9 +159,9 @@ class HalImpl : public IComposerHal {
                             std::vector<int32_t>* outRequestMasks,
                             ClientTargetProperty* outClientTargetProperty,
                             DimmingStage* outDimmingStage) override;
-    int32_t setExpectedPresentTime(
-            int64_t display,
-            const std::optional<ClockMonotonicTimestamp> expectedPresentTime) override;
+    int32_t setExpectedPresentTime(int64_t display,
+                                   const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+                                   int frameIntervalNs) override;
 
     EventCallback* getEventCallback() { return mEventCallback; }
     int32_t setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool enabled) override;

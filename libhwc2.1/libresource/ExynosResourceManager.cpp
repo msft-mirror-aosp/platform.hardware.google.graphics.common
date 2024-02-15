@@ -144,14 +144,14 @@ ExynosResourceManager::ExynosResourceManager(ExynosDevice *device)
             HDEBUGLOGD(eDebugResourceManager, "otfMPP[%d]", i);
             String8 dumpMPP;
             mOtfMPPs[i]->dump(dumpMPP);
-            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.c_str());
         }
         for (uint32_t i = 0; i < mM2mMPPs.size(); i++)
         {
             HDEBUGLOGD(eDebugResourceManager, "m2mMPP[%d]", i);
             String8 dumpMPP;
             mM2mMPPs[i]->dump(dumpMPP);
-            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.c_str());
         }
     }
 
@@ -161,6 +161,7 @@ ExynosResourceManager::ExynosResourceManager(ExynosDevice *device)
     char value[PROPERTY_VALUE_MAX];
     mMinimumSdrDimRatio = property_get("debug.hwc.min_sdr_dimming", value, nullptr) > 0
                           ? std::atof(value) : 0.0f;
+    updateSupportWCG();
 }
 
 ExynosResourceManager::~ExynosResourceManager()
@@ -395,6 +396,12 @@ int32_t ExynosResourceManager::assignResource(ExynosDisplay *display)
         return ret;
     }
 
+    if ((ret = display->updateColorConversionInfo()) != NO_ERROR) {
+        HWC_LOGE(display, "%s:: updateColorConversionInfo() fail, ret(%d)", __func__, ret);
+        return ret;
+    }
+    display->checkPreblendingRequirement();
+
     HDEBUGLOGD(eDebugTDM, "%s layer's calculation start", __func__);
     for (uint32_t i = 0; i < display->mLayers.size(); i++) {
         calculateHWResourceAmount(display, display->mLayers[i]);
@@ -436,15 +443,15 @@ int32_t ExynosResourceManager::assignResource(ExynosDisplay *display)
         HDEBUGLOGD(eDebugResourceManager, "AssignResource result");
         String8 result;
         display->mClientCompositionInfo.dump(result);
-        HDEBUGLOGD(eDebugResourceManager, "%s", result.string());
+        HDEBUGLOGD(eDebugResourceManager, "%s", result.c_str());
         result.clear();
         display->mExynosCompositionInfo.dump(result);
-        HDEBUGLOGD(eDebugResourceManager, "%s", result.string());
+        HDEBUGLOGD(eDebugResourceManager, "%s", result.c_str());
         for (uint32_t i = 0; i < display->mLayers.size(); i++) {
             result.clear();
             HDEBUGLOGD(eDebugResourceManager, "%d layer(%p) dump", i, display->mLayers[i]);
             display->mLayers[i]->printLayer();
-            HDEBUGLOGD(eDebugResourceManager, "%s", result.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s", result.c_str());
         }
     }
 
@@ -461,7 +468,7 @@ int32_t ExynosResourceManager::assignResource(ExynosDisplay *display)
             if ((ret = display->mExynosCompositionInfo.mM2mMPP->assignMPP(display, &display->mClientCompositionInfo)) != NO_ERROR)
             {
                 ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                        __func__, display->mExynosCompositionInfo.mM2mMPP->mName.string(), ret);
+                        __func__, display->mExynosCompositionInfo.mM2mMPP->mName.c_str(), ret);
                 return ret;
             }
             int prevHasCompositionLayer = display->mExynosCompositionInfo.mHasCompositionLayer;
@@ -496,7 +503,7 @@ int32_t ExynosResourceManager::setResourcePriority(ExynosDisplay *display)
                 layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
                 ret = EXYNOS_ERROR_CHANGED;
                 HDEBUGLOGD(eDebugResourceManager, "\t%s is reserved without display because of panding work",
-                        m2mMPP->mName.string());
+                        m2mMPP->mName.c_str());
                 m2mMPP->reserveMPP();
                 layer->mCheckMPPFlag[m2mMPP->mLogicalType] = eMPPHWBusy;
             }
@@ -511,7 +518,7 @@ int32_t ExynosResourceManager::setResourcePriority(ExynosDisplay *display)
             HWC_LOGE(display, "There is exynos composition layers but resource is null (%p)",
                     m2mMPP);
         } else if ((check_ret = m2mMPP->prioritize(2)) != NO_ERROR) {
-            HDEBUGLOGD(eDebugResourceManager, "%s setting priority error(%d)", m2mMPP->mName.string(), check_ret);
+            HDEBUGLOGD(eDebugResourceManager, "%s setting priority error(%d)", m2mMPP->mName.c_str(), check_ret);
             if (check_ret < 0) {
                 HWC_LOGE(display, "Fail to set exynoscomposition priority(%d)", ret);
             } else {
@@ -530,11 +537,11 @@ int32_t ExynosResourceManager::setResourcePriority(ExynosDisplay *display)
                 ret = EXYNOS_ERROR_CHANGED;
                 m2mMPP->resetUsedCapacity();
                 HDEBUGLOGD(eDebugResourceManager, "\t%s is reserved without display because of pending work",
-                        m2mMPP->mName.string());
+                        m2mMPP->mName.c_str());
                 m2mMPP->reserveMPP();
             }
         } else {
-            HDEBUGLOGD(eDebugResourceManager, "%s setting priority is ok", m2mMPP->mName.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s setting priority is ok", m2mMPP->mName.c_str());
         }
     }
 
@@ -655,7 +662,7 @@ int32_t ExynosResourceManager::assignResourceInternal(ExynosDisplay *display)
             {
                 String8 dumpMPP;
                 mM2mMPPs[i]->dump(dumpMPP);
-                HDEBUGLOGD(eDebugCapacity, "%s", dumpMPP.string());
+                HDEBUGLOGD(eDebugCapacity, "%s", dumpMPP.c_str());
             }
         }
     }
@@ -708,7 +715,7 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                         if ((ret = m2mMPP->assignMPP(display, layer)) != NO_ERROR)
                         {
                             ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                                    __func__, m2mMPP->mName.string(), ret);
+                                    __func__, m2mMPP->mName.c_str(), ret);
                             return ret;
                         }
                         layer->setExynosMidImage(dst_img);
@@ -748,7 +755,7 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                         if ((ret = m2mMPP->assignMPP(display, layer)) != NO_ERROR)
                         {
                             ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                                    __func__, m2mMPP->mName.string(), ret);
+                                    __func__, m2mMPP->mName.c_str(), ret);
                             return ret;
                         }
                         layer->setExynosMidImage(dst_img);
@@ -787,13 +794,13 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                 if ((ret = otfMPP->resetAssignedState()) != NO_ERROR)
                 {
                     ALOGE("%s:: %s MPP resetAssignedState() error (%d)",
-                            __func__, otfMPP->mName.string(), ret);
+                            __func__, otfMPP->mName.c_str(), ret);
                 }
                 // assign otfMPP again
                 if ((ret = otfMPP->assignMPP(display, layer)) != NO_ERROR)
                 {
                     ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                            __func__, otfMPP->mName.string(), ret);
+                            __func__, otfMPP->mName.c_str(), ret);
                 }
             }
         }
@@ -801,9 +808,11 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
     return ret;
 }
 
-int32_t ExynosResourceManager::changeLayerFromClientToDevice(ExynosDisplay *display, ExynosLayer *layer,
-        uint32_t layer_index, exynos_image m2m_out_img, ExynosMPP *m2mMPP, ExynosMPP *otfMPP)
-{
+int32_t ExynosResourceManager::changeLayerFromClientToDevice(ExynosDisplay* display,
+                                                             ExynosLayer* layer,
+                                                             uint32_t layer_index,
+                                                             const exynos_image& m2m_out_img,
+                                                             ExynosMPP* m2mMPP, ExynosMPP* otfMPP) {
     int ret = NO_ERROR;
     if ((ret = display->removeClientCompositionLayer(layer_index)) != NO_ERROR) {
         ALOGD("removeClientCompositionLayer return error(%d)", ret);
@@ -813,22 +822,22 @@ int32_t ExynosResourceManager::changeLayerFromClientToDevice(ExynosDisplay *disp
         if ((ret = otfMPP->assignMPP(display, layer)) != NO_ERROR)
         {
             ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                    __func__, otfMPP->mName.string(), ret);
+                    __func__, otfMPP->mName.c_str(), ret);
             return ret;
         }
         HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", layer_index,
-                   otfMPP->mName.string());
+                   otfMPP->mName.c_str());
     }
     if (m2mMPP != NULL) {
         if ((ret = m2mMPP->assignMPP(display, layer)) != NO_ERROR)
         {
             ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                    __func__, m2mMPP->mName.string(), ret);
+                    __func__, m2mMPP->mName.c_str(), ret);
             return ret;
         }
         layer->setExynosMidImage(m2m_out_img);
         HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", layer_index,
-                   m2mMPP->mName.string());
+                   m2mMPP->mName.c_str());
     }
     layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
     display->mWindowNumUsed++;
@@ -1022,18 +1031,18 @@ int32_t ExynosResourceManager::assignCompositionTarget(ExynosDisplay * display, 
 
         HDEBUGLOGD(eDebugResourceAssigning,
                    "\t\t check %s: supportedBit(0x%" PRIx64 "), isAssignable(%d)",
-                   mOtfMPPs[i]->mName.string(), -isSupported, isAssignableState);
+                   mOtfMPPs[i]->mName.c_str(), -isSupported, isAssignableState);
         if ((isSupported == NO_ERROR) && (isAssignableState)) {
             if ((ret = mOtfMPPs[i]->assignMPP(display, compositionInfo)) != NO_ERROR)
             {
                 HWC_LOGE(display, "%s:: %s MPP assignMPP() error (%d)",
-                        __func__, mOtfMPPs[i]->mName.string(), ret);
+                        __func__, mOtfMPPs[i]->mName.c_str(), ret);
                 return ret;
             }
             compositionInfo->mOtfMPP = mOtfMPPs[i];
             display->mWindowNumUsed++;
 
-            HDEBUGLOGD(eDebugResourceManager, "%s:: %s is assigned", __func__, mOtfMPPs[i]->mName.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s:: %s is assigned", __func__, mOtfMPPs[i]->mName.c_str());
             return NO_ERROR;
         }
     }
@@ -1197,40 +1206,33 @@ void ExynosResourceManager::getCandidateScalingM2mMPPOutImages(
     uint32_t otfMppRatio = 1;
     uint32_t m2mMppRatio = 1;
     if (scaleUp) {
-        std::find_if(mOtfMPPs.begin(), mOtfMPPs.end(),
-                     [&dst_scale_img, &dst_img, &otfMpp, &otfMppRatio](auto m) {
-                         auto ratio = m->getMaxUpscale(dst_scale_img, dst_img);
-                         if (ratio > 1) {
-                             otfMpp = m;
-                             otfMppRatio = ratio;
-                             return true;
-                         }
-                         return false;
-                     });
+        for (ExynosMPP *m : mOtfMPPs) {
+            auto ratio = m->getMaxUpscale(dst_scale_img, dst_img);
+            if (ratio > 1) {
+                otfMpp = m;
+                otfMppRatio = ratio;
+                break;
+            }
+        }
         const auto reqRatio = max(float(dst_img.w) / float(srcWidth * otfMppRatio),
                                   float(dst_img.h) / float(srcHeight * otfMppRatio));
-        std::find_if(mM2mMPPs.begin(), mM2mMPPs.end(),
-                     [&src_img, &dst_scale_img, reqRatio, &m2mMpp, &m2mMppRatio](auto m) {
-                         float ratio = float(m->getMaxUpscale(src_img, dst_scale_img));
-                         if (ratio > reqRatio) {
-                             m2mMpp = m;
-                             m2mMppRatio = ratio;
-                             return true;
-                         }
-                         return false;
-                     });
+        for (ExynosMPP *m : mM2mMPPs) {
+            float ratio = float(m->getMaxUpscale(src_img, dst_scale_img));
+            if (ratio > reqRatio) {
+                m2mMpp = m;
+                m2mMppRatio = ratio;
+                break;
+            }
+        }
     } else {
-        std::find_if(mM2mMPPs.begin(), mM2mMPPs.end(),
-                     [&src_img, &dst_scale_img, display, &m2mMpp, &m2mMppRatio](auto m) {
-                         auto ratio = m->getMaxDownscale(*display, src_img, dst_scale_img);
-                         if (ratio > 1) {
-                             m2mMpp = m;
-                             m2mMppRatio = ratio;
-                             return true;
-                         }
-                         return false;
-                     });
-
+        for (ExynosMPP *m : mM2mMPPs) {
+            auto ratio = m->getMaxDownscale(*display, src_img, dst_scale_img);
+            if (ratio > 1) {
+                m2mMpp = m;
+                m2mMppRatio = ratio;
+                break;
+            }
+        }
         const float otfSrcWidth = float(srcWidth / m2mMppRatio);
         const float scaleRatio_H = otfSrcWidth / float(dst_img.w);
         const float otfSrcHeight = float(srcHeight / m2mMppRatio);
@@ -1238,19 +1240,16 @@ void ExynosResourceManager::getCandidateScalingM2mMPPOutImages(
         const float displayRatio_V = float(dst_img.h) / float(display->mYres);
         const float resolution = otfSrcWidth * otfSrcHeight * display->getBtsRefreshRate() / 1000;
 
-        std::find_if(mOtfMPPs.begin(), mOtfMPPs.end(),
-                     [&dst_scale_img, &dst_img, resolution, scaleRatio_H, scaleRatio_V,
-                      displayRatio_V, &otfMpp, &otfMppRatio](auto m) {
-                         auto ratio = m->getDownscaleRestriction(dst_scale_img, dst_img);
+        for (ExynosMPP *m : mOtfMPPs) {
+            auto ratio = m->getDownscaleRestriction(dst_scale_img, dst_img);
 
-                         if (ratio >= scaleRatio_H && ratio >= scaleRatio_V &&
-                             m->checkDownscaleCap(resolution, displayRatio_V)) {
-                             otfMpp = m;
-                             otfMppRatio = ratio;
-                             return true;
-                         }
-                         return false;
-                     });
+            if (ratio >= scaleRatio_H && ratio >= scaleRatio_V &&
+                m->checkDownscaleCap(resolution, displayRatio_V)) {
+                otfMpp = m;
+                otfMppRatio = ratio;
+                break;
+            }
+        }
     }
 
     if (!otfMpp && !m2mMpp) {
@@ -1483,7 +1482,7 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
 
                 HDEBUGLOGD(eDebugResourceAssigning,
                            "\t\t check %s: flag (%d) supportedBit(%d), isAssignable(%d)",
-                           mOtfMPPs[j]->mName.string(), layer->mSupportedMPPFlag,
+                           mOtfMPPs[j]->mName.c_str(), layer->mSupportedMPPFlag,
                            (layer->mSupportedMPPFlag & mOtfMPPs[j]->mLogicalType),
                            isAssignableFlag);
 
@@ -1523,7 +1522,7 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
 
             HDEBUGLOGD(eDebugResourceAssigning,
                        "\t\t check %s: supportedBit(%d), isAssignableState(%d)",
-                       mM2mMPPs[j]->mName.string(),
+                       mM2mMPPs[j]->mName.c_str(),
                        (layer->mSupportedMPPFlag & mM2mMPPs[j]->mLogicalType), isAssignableState);
 
             float totalUsedCapa = ExynosResourceManager::getResourceUsedCapa(*mM2mMPPs[j]);
@@ -1569,7 +1568,7 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
                             HDEBUGLOGD(eDebugResourceAssigning,
                                        "\t\t\t check %s: supportedBit(0x%" PRIx64
                                        "), hasEnoughCapa(%d)",
-                                       mM2mMPPs[j]->mName.string(), -isSupported, isAssignableFlag);
+                                       mM2mMPPs[j]->mName.c_str(), -isSupported, isAssignableFlag);
                             continue;
                         }
 
@@ -1596,7 +1595,7 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
                             HDEBUGLOGD(eDebugResourceAssigning,
                                        "\t\t\t check %s: supportedBit(0x%" PRIx64
                                        "), isAssignable(%d)",
-                                       mOtfMPPs[k]->mName.string(), -isSupported, isAssignableFlag);
+                                       mOtfMPPs[k]->mName.c_str(), -isSupported, isAssignableFlag);
                             if ((isSupported == NO_ERROR) && isAssignableFlag) {
                                 *m2mMPP = mM2mMPPs[j];
                                 *otfMPP = mOtfMPPs[k];
@@ -1615,7 +1614,7 @@ int32_t ExynosResourceManager::assignLayer(ExynosDisplay *display, ExynosLayer *
                         HDEBUGLOGD(eDebugResourceManager,
                                    "\t\t\t check %s: layer's mSupportedMPPFlag(0x%8x), "
                                    "hasEnoughCapa(%d)",
-                                   mM2mMPPs[j]->mName.string(), layer->mSupportedMPPFlag,
+                                   mM2mMPPs[j]->mName.c_str(), layer->mSupportedMPPFlag,
                                    isAssignableFlag);
                     }
                 }
@@ -1671,22 +1670,22 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
                 if ((ret = otfMPP->assignMPP(display, layer)) != NO_ERROR)
                 {
                     ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                            __func__, otfMPP->mName.string(), ret);
+                            __func__, otfMPP->mName.c_str(), ret);
                     return ret;
                 }
                 HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", i,
-                           otfMPP->mName.string());
+                           otfMPP->mName.c_str());
             }
             if (m2mMPP != NULL) {
                 if ((ret = m2mMPP->assignMPP(display, layer)) != NO_ERROR)
                 {
                     ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                            __func__, m2mMPP->mName.string(), ret);
+                            __func__, m2mMPP->mName.c_str(), ret);
                     return ret;
                 }
                 layer->setExynosMidImage(m2m_out_img);
                 HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", i,
-                           m2mMPP->mName.string());
+                           m2mMPP->mName.c_str());
             }
             layer->mValidateCompositionType = compositionType;
             display->mWindowNumUsed++;
@@ -1698,12 +1697,12 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
                 if ((ret = m2mMPP->assignMPP(display, layer)) != NO_ERROR)
                 {
                     ALOGE("%s:: %s MPP assignMPP() error (%d)",
-                            __func__, m2mMPP->mName.string(), ret);
+                            __func__, m2mMPP->mName.c_str(), ret);
                     return ret;
                 }
                 totalUsedCapacity = getResourceUsedCapa(*m2mMPP);
                 HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", i,
-                           m2mMPP->mName.string());
+                           m2mMPP->mName.c_str());
             }
             layer->mValidateCompositionType = compositionType;
 
@@ -1801,7 +1800,7 @@ int32_t ExynosResourceManager::assignWindow(ExynosDisplay *display)
                 (compositionInfo->mLastIndex < 0)) {
                 HWC_LOGE(display, "%s:: Invalid %s CompositionInfo mHasCompositionLayer(%d), "
                         "mFirstIndex(%d), mLastIndex(%d) ",
-                        __func__, compositionInfo->getTypeStr().string(),
+                        __func__, compositionInfo->getTypeStr().c_str(),
                         compositionInfo->mHasCompositionLayer,
                         compositionInfo->mFirstIndex,
                         compositionInfo->mLastIndex);
@@ -1811,7 +1810,7 @@ int32_t ExynosResourceManager::assignWindow(ExynosDisplay *display)
                 continue;
             compositionInfo->mWindowIndex = windowIndex;
             HDEBUGLOGD(eDebugResourceManager, "\t\t[%d] %s Composition windowIndex: %d",
-                    i, compositionInfo->getTypeStr().string(), windowIndex);
+                    i, compositionInfo->getTypeStr().c_str(), windowIndex);
         } else if (layer->mValidateCompositionType == HWC2_COMPOSITION_DISPLAY_DECORATION) {
             layer->mWindowIndex = -1;
             continue;
@@ -1862,18 +1861,18 @@ int32_t ExynosResourceManager::updateSupportedMPPFlag(ExynosDisplay * display)
         for (uint32_t j = 0; j < mOtfMPPs.size(); j++) {
             if ((ret = mOtfMPPs[j]->isSupported(*display, src_img, dst_img)) == NO_ERROR) {
                 layer->mSupportedMPPFlag |= mOtfMPPs[j]->mLogicalType;
-                HDEBUGLOGD(eDebugResourceAssigning, "\t%s: supported", mOtfMPPs[j]->mName.string());
+                HDEBUGLOGD(eDebugResourceAssigning, "\t%s: supported", mOtfMPPs[j]->mName.c_str());
             } else {
                 if (((-ret) == eMPPUnsupportedFormat) &&
                     ((ret = mOtfMPPs[j]->isSupported(*display, src_img, dst_img_yuv)) == NO_ERROR)) {
                     layer->mSupportedMPPFlag |= mOtfMPPs[j]->mLogicalType;
                     HDEBUGLOGD(eDebugResourceAssigning, "\t%s: supported with yuv dst",
-                               mOtfMPPs[j]->mName.string());
+                               mOtfMPPs[j]->mName.c_str());
                 }
             }
             if (ret < 0) {
                 HDEBUGLOGD(eDebugResourceAssigning, "\t%s: unsupported flag(0x%" PRIx64 ")",
-                           mOtfMPPs[j]->mName.string(), -ret);
+                           mOtfMPPs[j]->mName.c_str(), -ret);
                 uint64_t checkFlag = 0x0;
                 if (layer->mCheckMPPFlag.find(mOtfMPPs[j]->mLogicalType) !=
                         layer->mCheckMPPFlag.end()) {
@@ -1888,18 +1887,18 @@ int32_t ExynosResourceManager::updateSupportedMPPFlag(ExynosDisplay * display)
         for (uint32_t j = 0; j < mM2mMPPs.size(); j++) {
             if ((ret = mM2mMPPs[j]->isSupported(*display, src_img, dst_img)) == NO_ERROR) {
                 layer->mSupportedMPPFlag |= mM2mMPPs[j]->mLogicalType;
-                HDEBUGLOGD(eDebugResourceAssigning, "\t%s: supported", mM2mMPPs[j]->mName.string());
+                HDEBUGLOGD(eDebugResourceAssigning, "\t%s: supported", mM2mMPPs[j]->mName.c_str());
             } else {
                 if (((-ret) == eMPPUnsupportedFormat) &&
                     ((ret = mM2mMPPs[j]->isSupported(*display, src_img, dst_img_yuv)) == NO_ERROR)) {
                     layer->mSupportedMPPFlag |= mM2mMPPs[j]->mLogicalType;
                     HDEBUGLOGD(eDebugResourceAssigning, "\t%s: supported with yuv dst",
-                               mM2mMPPs[j]->mName.string());
+                               mM2mMPPs[j]->mName.c_str());
                 }
             }
             if (ret < 0) {
                 HDEBUGLOGD(eDebugResourceAssigning, "\t%s: unsupported flag(0x%" PRIx64 ")",
-                           mM2mMPPs[j]->mName.string(), -ret);
+                           mM2mMPPs[j]->mName.c_str(), -ret);
                 uint64_t checkFlag = 0x0;
                 if (layer->mCheckMPPFlag.find(mM2mMPPs[j]->mLogicalType) !=
                         layer->mCheckMPPFlag.end()) {
@@ -1926,7 +1925,7 @@ int32_t ExynosResourceManager::resetResources()
         if (hwcCheckDebugMessages(eDebugResourceManager)) {
             String8 dumpMPP;
             mOtfMPPs[i]->dump(dumpMPP);
-            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.c_str());
         }
     }
     for (uint32_t i = 0; i < mM2mMPPs.size(); i++) {
@@ -1934,12 +1933,76 @@ int32_t ExynosResourceManager::resetResources()
         if (hwcCheckDebugMessages(eDebugResourceManager)) {
             String8 dumpMPP;
             mM2mMPPs[i]->dump(dumpMPP);
-            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.c_str());
         }
     }
 
     HDEBUGLOGD(eDebugResourceManager, "%s-----------",  __func__);
     return NO_ERROR;
+}
+
+std::pair<ExynosDisplay*, ExynosDisplay*> ExynosResourceManager::decideMainAndMinorDisplay(
+        const int32_t willOnDispId) const {
+    ExynosDisplay *mainDisp = nullptr, *minorDisp = nullptr;
+
+    auto rule = [](const ExynosDisplay* left, const ExynosDisplay* right) {
+        if (left->mType == right->mType) return left->mIndex < right->mIndex;
+        return left->mType > right->mType;
+    };
+
+    std::set<ExynosDisplay*, decltype(rule)> availableDisps(rule);
+    for (auto& [disp_id, disp] : mDisplayMap) {
+        if (disp == nullptr || !disp->mPlugState || !disp->mPowerModeState.has_value() ||
+            (disp->mDisplayId != willOnDispId &&
+             disp->mPowerModeState.value() == (hwc2_power_mode_t)HWC_POWER_MODE_OFF))
+            continue;
+        availableDisps.insert(disp);
+        HDEBUGLOGD(eDebugResourceManager, "%s: available display id: %d ", __func__,
+                   disp->mDisplayId);
+    }
+    if (availableDisps.size() == 1) {
+        mainDisp = *availableDisps.begin();
+        HDEBUGLOGD(eDebugResourceManager, "%s: main display:%d ", __func__, mainDisp->mDisplayId);
+    } else if (availableDisps.size() == 2) {
+        mainDisp = *availableDisps.begin();
+        minorDisp = *availableDisps.rbegin();
+        HDEBUGLOGD(eDebugResourceManager, "%s: main display:%d minor display:%d ", __func__,
+                   mainDisp->mDisplayId, minorDisp->mDisplayId);
+    } else {
+        ALOGE("%s(): wrong available display size:%zu", __func__, availableDisps.size());
+    }
+
+    return {mainDisp, minorDisp};
+}
+
+void ExynosResourceManager::updatePreAssignDisplayList(const ExynosDisplay* mainDisp,
+                                                       const ExynosDisplay* minorDisp) {
+    auto updatePreAssignDisplay = [=](ExynosMPP* mpp, const ExynosDisplay* mainDisp,
+                                      const ExynosDisplay* minorDisp) {
+        if (mpp->mPreAssignDisplayInfo == HWC_RESERVE_DISPLAY_MAIN_BIT) {
+            if (mainDisp != NULL)
+                mpp->mPreAssignDisplayList[DISPLAY_MODE_PRIMARY_MAIN] =
+                        mainDisp->getDisplayPreAssignBit();
+            else
+                ALOGE("Main display does not exist!");
+        } else if (mpp->mPreAssignDisplayInfo == HWC_RESERVE_DISPLAY_MINOR_BIT) {
+            if (minorDisp != NULL)
+                mpp->mPreAssignDisplayList[DISPLAY_MODE_PRIMARY_MAIN] =
+                        minorDisp->getDisplayPreAssignBit();
+            else if (mainDisp != NULL)
+                mpp->mPreAssignDisplayList[DISPLAY_MODE_PRIMARY_MAIN] =
+                        mainDisp->getDisplayPreAssignBit();
+            else
+                ALOGE("Main & minor display don't exist!");
+        }
+    };
+
+    for (auto& mpp : mOtfMPPs) {
+        updatePreAssignDisplay(mpp, mainDisp, minorDisp);
+    }
+    for (auto& mpp : mM2mMPPs) {
+        updatePreAssignDisplay(mpp, mainDisp, minorDisp);
+    }
 }
 
 int32_t ExynosResourceManager::preAssignResources()
@@ -1955,7 +2018,7 @@ int32_t ExynosResourceManager::preAssignResources()
 
         if (mOtfMPPs[i]->mPreAssignDisplayList[displayMode] != 0) {
             HDEBUGLOGD(eDebugResourceAssigning, "\t%s check, dispMode(%d), 0x%8x",
-                       mOtfMPPs[i]->mName.string(), displayMode,
+                       mOtfMPPs[i]->mName.c_str(), displayMode,
                        mOtfMPPs[i]->mPreAssignDisplayList[displayMode]);
 
             ExynosDisplay *display = NULL;
@@ -1996,7 +2059,7 @@ int32_t ExynosResourceManager::preAssignResources()
             mM2mMPPs[i]->reserveMPP();
             continue;
         }
-        HDEBUGLOGD(eDebugResourceAssigning, "\t%s check, 0x%8x", mM2mMPPs[i]->mName.string(),
+        HDEBUGLOGD(eDebugResourceAssigning, "\t%s check, 0x%8x", mM2mMPPs[i]->mName.c_str(),
                    mM2mMPPs[i]->mPreAssignDisplayList[displayMode]);
         if (mM2mMPPs[i]->mPreAssignDisplayList[displayMode] != 0) {
             ExynosDisplay *display = NULL;
@@ -2026,14 +2089,14 @@ int32_t ExynosResourceManager::preAssignResources()
         if (hwcCheckDebugMessages(eDebugResourceManager)) {
             String8 dumpMPP;
             mOtfMPPs[i]->dump(dumpMPP);
-            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.c_str());
         }
     }
     for (uint32_t i = 0; i < mM2mMPPs.size(); i++) {
         if (hwcCheckDebugMessages(eDebugResourceManager)) {
             String8 dumpMPP;
             mM2mMPPs[i]->dump(dumpMPP);
-            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.string());
+            HDEBUGLOGD(eDebugResourceManager, "%s", dumpMPP.c_str());
         }
     }
     HDEBUGLOGD(eDebugResourceManager, "%s-----------",  __func__);
@@ -2051,14 +2114,6 @@ void ExynosResourceManager::preAssignWindows(ExynosDisplay *display) {
     }
 
     primaryDisplay->usePreDefinedWindow(false);
-
-    for (size_t i = 1; i < mDevice->mDisplays.size(); i++) {
-        ExynosDisplay *disp = mDevice->mDisplays[i];
-        if ((disp == NULL) || (display->mType != HWC_DISPLAY_EXTERNAL)) continue;
-        if (disp->mPlugState == true) {
-            primaryDisplay->usePreDefinedWindow(true);
-        }
-    }
 }
 
 int32_t ExynosResourceManager::preProcessLayer(ExynosDisplay * display)
@@ -2152,7 +2207,7 @@ void ExynosResourceManager::setFrameRateForPerformance(ExynosMPP &mpp,
 {
     int fps = ceil(msecsPerSec / mpp.mCapacity);
     HDEBUGLOGD(eDebugResourceAssigning, "%s setFrameRate %d",
-            mpp.mName.string(), fps);
+            mpp.mName.c_str(), fps);
     frame->setFrameRate(fps);
 }
 
@@ -2226,7 +2281,7 @@ int32_t ExynosResourceManager::deliverPerformanceInfo()
                             mppSource->mSrcImg.w, mppSource->mSrcImg.h,
                             mppSource->mSrcImg.format);
 
-                    if (mppSource->mSrcImg.compressed == 1)
+                    if (mppSource->mSrcImg.compressionInfo.type == COMP_TYPE_AFBC)
                         frame->setAttribute(j, AcrylicCanvas::ATTR_COMPRESSED);
 
                     hwc_rect_t src_area;
@@ -2274,7 +2329,7 @@ float ExynosResourceManager::getResourceUsedCapa(ExynosMPP &mpp)
     if (mpp.mCapacity < 0)
         return usedCapa;
 
-    HDEBUGLOGD(eDebugResourceAssigning, "%s:: [%s][%d] mpp[%d, %d]", __func__, mpp.mName.string(),
+    HDEBUGLOGD(eDebugResourceAssigning, "%s:: [%s][%d] mpp[%d, %d]", __func__, mpp.mName.c_str(),
                mpp.mLogicalIndex, mpp.mPhysicalType, mpp.mPhysicalIndex);
 
     if (mpp.mMPPType == MPP_TYPE_OTF) {
@@ -2293,7 +2348,7 @@ float ExynosResourceManager::getResourceUsedCapa(ExynosMPP &mpp)
         }
     }
 
-    HDEBUGLOGD(eDebugResourceAssigning, "\t[%s][%d] mpp usedCapa: %f", mpp.mName.string(),
+    HDEBUGLOGD(eDebugResourceAssigning, "\t[%s][%d] mpp usedCapa: %f", mpp.mName.c_str(),
                mpp.mLogicalIndex, usedCapa);
     return usedCapa;
 }
@@ -2350,8 +2405,7 @@ void ExynosResourceManager::setScaleDownRatio(uint32_t physicalType,
     }
 }
 
-int32_t ExynosResourceManager::prepareResources()
-{
+int32_t ExynosResourceManager::prepareResources(const int32_t willOnDispId) {
     int ret = NO_ERROR;
     HDEBUGLOGD(eDebugResourceManager, "This is first validate");
     if ((ret = resetResources()) != NO_ERROR) {
@@ -2359,13 +2413,21 @@ int32_t ExynosResourceManager::prepareResources()
                 __func__, ret);
         return ret;
     }
+    auto [mainDisp, minorDisp] = decideMainAndMinorDisplay(willOnDispId);
+
+    if ((mDevice->mGeometryChanged & GEOMETRY_DISPLAY_POWER_ON) ||
+        (mDevice->mGeometryChanged & GEOMETRY_DISPLAY_POWER_OFF) ||
+        (mDevice->mGeometryChanged & GEOMETRY_DEVICE_DISPLAY_ADDED) ||
+        (mDevice->mGeometryChanged & GEOMETRY_DEVICE_DISPLAY_REMOVED) || willOnDispId != -1)
+        updatePreAssignDisplayList(mainDisp, minorDisp);
+
     if ((ret = preAssignResources()) != NO_ERROR) {
         HWC_LOGE(NULL,"%s:: preAssignResources() error (%d)",
                 __func__, ret);
         return ret;
     }
 
-    setDisplaysTDMInfo();
+    setDisplaysTDMInfo(mainDisp, minorDisp);
 
     return ret;
 }
@@ -2419,7 +2481,7 @@ void ExynosResourceManager::makeSizeRestrictions(uint32_t mppId, const restricti
     mSizeRestrictions[format][mSizeRestrictionCnt[format]++].sizeRestriction = size;
 
     HDEBUGLOGD(eDebugDefault, "MPP : %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d",
-            getMPPStr(mppId).string(),
+            getMPPStr(mppId).c_str(),
             size.maxDownScale,
             size.maxUpScale,
             size.maxFullWidth,
@@ -2443,9 +2505,10 @@ void ExynosResourceManager::makeFormatRestrictions(restriction_key_t table) {
     mFormatRestrictions[mFormatRestrictionCnt] = table;
 
     HDEBUGLOGD(eDebugDefault, "MPP : %s, %d, %s, %d",
-               getMPPStr(mFormatRestrictions[mFormatRestrictionCnt].hwType).string(),
+               getMPPStr(mFormatRestrictions[mFormatRestrictionCnt].hwType).c_str(),
                mFormatRestrictions[mFormatRestrictionCnt].nodeType,
-               getFormatStr(mFormatRestrictions[mFormatRestrictionCnt].format, COMP_ANY).string(),
+               getFormatStr(mFormatRestrictions[mFormatRestrictionCnt].format, COMP_TYPE_MASK)
+                       .c_str(),
                mFormatRestrictions[mFormatRestrictionCnt].reserved);
     mFormatRestrictionCnt++;
 }
@@ -2642,6 +2705,14 @@ void ExynosResourceManager::dump(String8 &result) const {
 
     result.appendFormat("[YUV Restrictions]\n");
     dump(RESTRICTION_YUV, result);
+
+    result.appendFormat("[MPP Dump]\n");
+    for (auto mpp : mOtfMPPs) {
+        mpp->dump(result);
+    }
+    for (auto mpp : mM2mMPPs) {
+        mpp->dump(result);
+    }
 }
 
 void ExynosResourceManager::dump(const restriction_classification_t classification,
@@ -2719,17 +2790,16 @@ uint32_t ExynosResourceManager::needHWResource(ExynosDisplay *display, exynos_im
 
     switch (attr) {
         case TDM_ATTR_SBWC:
-            ret = (isFormatSBWC(srcImg.format)) ? 1 : 0;
+            ret = (srcImg.compressionInfo.type == COMP_TYPE_SBWC) ? 1 : 0;
             break;
         case TDM_ATTR_AFBC:
-            ret = (srcImg.compressed) ? 1 : 0;
+            ret = (srcImg.compressionInfo.type == COMP_TYPE_AFBC) ? 1 : 0;
             break;
         case TDM_ATTR_ITP:
             ret = (isFormatYUV(srcImg.format)) ? 1 : 0;
             break;
         case TDM_ATTR_WCG:
-            ret = (needHdrProcessing(display, srcImg, dstImg)) ? 1 : 0;
-            HDEBUGLOGD(eDebugTDM, "needHdrProcessing : %d", ret);
+            ret = (srcImg.needPreblending) ? 1 : 0;
             break;
         case TDM_ATTR_ROT_90:
             ret = ((srcImg.transform & HAL_TRANSFORM_ROT_90) == 0) ? 0 : 1;

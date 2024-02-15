@@ -17,17 +17,18 @@
 #define LOG_TAG "hwc-drm-connector"
 
 #include "drmconnector.h"
-#include "drmdevice.h"
 
+#include <cutils/properties.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <log/log.h>
 #include <stdint.h>
+#include <xf86drmMode.h>
 
 #include <array>
 #include <sstream>
 
-#include <log/log.h>
-#include <xf86drmMode.h>
+#include "drmdevice.h"
 
 #ifndef DRM_MODE_CONNECTOR_WRITEBACK
 #define DRM_MODE_CONNECTOR_WRITEBACK 18
@@ -155,9 +156,24 @@ int DrmConnector::Init() {
       ALOGE("Could not get panel_idle_support property\n");
   }
 
-  ret = drm_->GetConnectorProperty(*this, "vrr_switch_duration", &vrr_switch_duration_);
+  ret = drm_->GetConnectorProperty(*this, "rr_switch_duration", &rr_switch_duration_);
   if (ret) {
-    ALOGE("Could not get vrr_switch_duration property\n");
+      ALOGE("Could not get rr_switch_duration property\n");
+  }
+
+  ret = drm_->GetConnectorProperty(*this, "operation_rate", &operation_rate_);
+  if (ret) {
+    ALOGE("Could not get operation_rate property\n");
+  }
+
+  ret = drm_->GetConnectorProperty(*this, "refresh_on_lp", &refresh_on_lp_);
+  if (ret) {
+    ALOGE("Could not get refresh_on_lp property\n");
+  }
+
+  ret = drm_->GetConnectorProperty(*this, "Content Protection", &content_protection_);
+  if (ret) {
+    ALOGE("Could not get Content Protection property\n");
   }
 
   properties_.push_back(&dpms_property_);
@@ -181,7 +197,10 @@ int DrmConnector::Init() {
   properties_.push_back(&lhbm_on_);
   properties_.push_back(&mipi_sync_);
   properties_.push_back(&panel_idle_support_);
-  properties_.push_back(&vrr_switch_duration_);
+  properties_.push_back(&rr_switch_duration_);
+  properties_.push_back(&operation_rate_);
+  properties_.push_back(&refresh_on_lp_);
+  properties_.push_back(&content_protection_);
 
   return 0;
 }
@@ -239,7 +258,9 @@ std::string DrmConnector::name() const {
   }
 }
 
-int DrmConnector::UpdateModes() {
+int DrmConnector::UpdateModes(bool is_vrr_mode) {
+  std::lock_guard<std::recursive_mutex> lock(modes_lock_);
+
   int fd = drm_->fd();
 
   drmModeConnectorPtr c = drmModeGetConnector(fd, id_);
@@ -248,7 +269,23 @@ int DrmConnector::UpdateModes() {
     return -ENODEV;
   }
 
+  if (state_ == DRM_MODE_CONNECTED &&
+      c->connection == DRM_MODE_CONNECTED && modes_.size() > 0) {
+    // no need to update modes
+    return 0;
+  }
+
+  if (state_ == DRM_MODE_DISCONNECTED &&
+      c->connection == DRM_MODE_DISCONNECTED && modes_.size() == 0) {
+    // no need to update modes
+    return 0;
+  }
+
   state_ = c->connection;
+
+  // Update mm_width_ and mm_height_ for xdpi/ydpi calculations
+  mm_width_ = c->mmWidth;
+  mm_height_ = c->mmHeight;
 
   bool preferred_mode_found = false;
   std::vector<DrmMode> new_modes;
@@ -262,10 +299,14 @@ int DrmConnector::UpdateModes() {
       }
     }
     if (!exists) {
-    DrmMode m(&c->modes[i]);
-    m.set_id(drm_->next_mode_id());
-    new_modes.push_back(m);
-  }
+      // Remove modes that mismatch with the VRR setting..
+      if (is_vrr_mode != ((c->modes[i].type & DRM_MODE_TYPE_VRR) != 0)) {
+        continue;
+      }
+      DrmMode m(&c->modes[i]);
+      m.set_id(drm_->next_mode_id());
+      new_modes.push_back(m);
+    }
     // Use only the first DRM_MODE_TYPE_PREFERRED mode found
     if (!preferred_mode_found &&
         (new_modes.back().type() & DRM_MODE_TYPE_PREFERRED)) {
@@ -277,6 +318,28 @@ int DrmConnector::UpdateModes() {
   if (!preferred_mode_found && modes_.size() != 0) {
     preferred_mode_id_ = modes_[0].id();
   }
+  return 1;
+}
+
+int DrmConnector::UpdateEdidProperty() {
+  return drm_->UpdateConnectorProperty(*this, &edid_property_);
+}
+
+int DrmConnector::UpdateLuminanceAndHdrProperties() {
+  int res = 0;
+
+  res = drm_->UpdateConnectorProperty(*this, &max_luminance_);
+  if (res)
+    return res;
+  res = drm_->UpdateConnectorProperty(*this, &max_avg_luminance_);
+  if (res)
+    return res;
+  res = drm_->UpdateConnectorProperty(*this, &min_luminance_);
+  if (res)
+    return res;
+  res = drm_->UpdateConnectorProperty(*this, &hdr_formats_);
+  if (res)
+    return res;
   return 0;
 }
 
@@ -360,6 +423,14 @@ const DrmMode &DrmConnector::lp_mode() const {
     return lp_mode_;
 }
 
+const DrmProperty &DrmConnector::operation_rate() const {
+    return operation_rate_;
+}
+
+const DrmProperty &DrmConnector::refresh_on_lp() const {
+    return refresh_on_lp_;
+}
+
 int DrmConnector::UpdateLpMode() {
     auto [ret, blobId] = lp_mode_property_.value();
     if (ret) {
@@ -397,8 +468,12 @@ const DrmProperty &DrmConnector::panel_idle_support() const {
     return panel_idle_support_;
 }
 
-const DrmProperty &DrmConnector::vrr_switch_duration() const {
-  return vrr_switch_duration_;
+const DrmProperty &DrmConnector::rr_switch_duration() const {
+    return rr_switch_duration_;
+}
+
+const DrmProperty &DrmConnector::content_protection() const {
+    return content_protection_;
 }
 
 DrmEncoder *DrmConnector::encoder() const {
