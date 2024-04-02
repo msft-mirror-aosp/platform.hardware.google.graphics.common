@@ -2127,7 +2127,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
             auto desiredVsyncPeriod = mVsyncCallback.getDesiredVsyncPeriod();
             auto currentVsyncPeriod = mExynosDisplay->mVsyncPeriod;
             constexpr auto nsecsPerMs = std::chrono::nanoseconds(1ms).count();
-            if (currentVsyncPeriod > desiredVsyncPeriod &&
+            if (currentVsyncPeriod >= desiredVsyncPeriod &&
                 (((currentVsyncPeriod % desiredVsyncPeriod) < nsecsPerMs) ||
                  (desiredVsyncPeriod - (currentVsyncPeriod % desiredVsyncPeriod)) < nsecsPerMs)) {
                 ignoreExpectedPresentTime = false;
