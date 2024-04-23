@@ -111,7 +111,6 @@ static std::string loadPanelGammaCalibration(const std::string &file) {
 ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice* device,
                                            const std::string& displayName)
       : ExynosDisplay(HWC_DISPLAY_PRIMARY, index, device, displayName),
-        mUseBlockingZoneForMinIdleRefreshRate(false),
         mMinIdleRefreshRate(0),
         mRrThrottleFps{0},
         mRrThrottleNanos{0},
@@ -129,21 +128,6 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice* device,
     mFramesToReachLhbmPeakBrightness =
             property_get_int32("vendor.primarydisplay.lhbm.frames_to_reach_peak_brightness", 3);
 
-    /* TODO(b/274705046): use drm properties instead of system properties */
-    mDefaultMinIdleRefreshRate =
-            property_get_int32("vendor.primarydisplay.min_idle_refresh_rate.default", 0);
-    mMinIdleRefreshRateForBlockingZone =
-            property_get_int32("vendor.primarydisplay.min_idle_refresh_rate.blocking_zone", 0);
-    mDbvThresholdForBlockingZone =
-            property_get_int32("vendor.primarydisplay.min_idle_refresh_rate.blocking_zone_dbv", 0);
-    if (mDefaultMinIdleRefreshRate && mMinIdleRefreshRateForBlockingZone &&
-        mDbvThresholdForBlockingZone) {
-        mUseBlockingZoneForMinIdleRefreshRate = true;
-        ALOGI("%s min_default=%d min_blocking_zone=%d dbv_blocking_zone=%d", __func__,
-              mDefaultMinIdleRefreshRate, mMinIdleRefreshRateForBlockingZone,
-              mDbvThresholdForBlockingZone);
-    }
-
     DisplayType displayType = getDcDisplayType();
     std::string displayTypeIdentifier;
     if (displayType == DisplayType::DISPLAY_PRIMARY) {
@@ -157,6 +141,61 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice* device,
     }
 #endif
     if (!displayTypeIdentifier.empty()) {
+        // Blocking zone
+        auto propertyName =
+                "ro.vendor." + displayTypeIdentifier + ".blocking_zone.min_refresh_rate_by_nits";
+        auto minRefreshRateByBrightnessString = android::base::GetProperty(propertyName, "");
+        ALOGD("%s brightness blocking zone propterty = %s", __func__,
+              minRefreshRateByBrightnessString.c_str());
+        if (!minRefreshRateByBrightnessString.empty()) {
+            std::vector<std::string> patterns;
+            size_t pos = 0;
+            while ((pos = minRefreshRateByBrightnessString.find(',')) != std::string::npos) {
+                patterns.emplace_back(minRefreshRateByBrightnessString.substr(0, pos));
+                minRefreshRateByBrightnessString.erase(0, pos + 1);
+            }
+            patterns.emplace_back(minRefreshRateByBrightnessString);
+            std::string brightnessString, fpsString;
+            for (auto& pattern : patterns) {
+                int brightness, fps;
+                char* endPos;
+                pos = pattern.find(':');
+                if (pos == std::string::npos) {
+                    ALOGE("%s(): cannot find the delimiter ':' of the pattern {brightness}:{fps} "
+                          "in "
+                          "pattern = %s",
+                          __func__, pattern.c_str());
+                    break;
+                } else {
+                    brightnessString = pattern.substr(0, pos);
+                    pattern.erase(0, pos + 1);
+                    if (pattern.empty()) {
+                        ALOGE("%s(): miss the {fps} of the pattern = %s", __func__,
+                              pattern.c_str());
+                        break;
+                    } else {
+                        fpsString = pattern;
+                    }
+                    brightness = brightnessString.empty()
+                            ? INT_MAX
+                            : std::strtol(brightnessString.c_str(), &endPos, 10);
+                    fps = std::strtol(fpsString.c_str(), &endPos, 10);
+                }
+                mBrightnessBlockingZonesLookupTable[brightness] = fps;
+            }
+            ALOGI("Brightness blocking zone lookup table:");
+            int upperBound;
+            int lowerBound = INT_MIN;
+            for (const auto& brightnessBlockingZone : mBrightnessBlockingZonesLookupTable) {
+                upperBound = brightnessBlockingZone.first;
+                ALOGI("Brightness blocking zone: range [%s %s) fps = %d",
+                      (lowerBound == INT_MIN ? "Min" : std::to_string(lowerBound).c_str()),
+                      (upperBound == INT_MAX ? "Max" : std::to_string(upperBound).c_str()),
+                      brightnessBlockingZone.second);
+                lowerBound = upperBound;
+            }
+        }
+        // XRR version
         auto xrrVersion =
                 android::hardware::graphics::composer::getDisplayXrrVersion(displayTypeIdentifier);
         mXrrSettings.versionInfo.majorVersion = xrrVersion.first;
@@ -182,14 +221,14 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice* device,
                 ALOGE("%s(): cannot find file node %s of display %s", __func__,
                       displayFileNodePath.c_str(), mDisplayName.c_str());
             } else {
-                FileNode fileNodeWriter(displayFileNodePath);
-                auto content = fileNodeWriter.read(kRefreshControlNodeName);
+                FileNode fileNode(displayFileNodePath);
+                auto content = fileNode.read(kRefreshControlNodeName);
                 if (content.has_value() &&
                     !(content.value().compare(0, kRefreshControlNodeEnabled.length(),
                                               kRefreshControlNodeEnabled))) {
                     uint32_t cmd = kPanelRefreshCtrlFrameInsertionAutoMode |
                             kPanelRefreshCtrlIdleEnabled | kPanelRefreshCtrlTeTypeChangeable;
-                    bool ret = fileNodeWriter.WriteCommandString(kRefreshControlNodeName, cmd);
+                    bool ret = fileNode.WriteCommandString(kRefreshControlNodeName, cmd);
                     if (!ret) {
                         ALOGE("%s(): write command to file node %s%s failed.", __func__,
                               displayFileNodePath.c_str(), kRefreshControlNodeName.c_str());
@@ -446,6 +485,8 @@ int32_t ExynosPrimaryDisplay::setPowerOn() {
         }
     }
 
+    if (mDisplayTe2Manager) mDisplayTe2Manager->restoreTe2FromDozeMode();
+
     if (mFirstPowerOn) {
         firstPowerOn();
     }
@@ -508,6 +549,8 @@ int32_t ExynosPrimaryDisplay::setPowerDoze(hwc2_power_mode_t mode) {
     mLhbmOn = false;
 
     ExynosDisplay::updateRefreshRateHint();
+
+    if (mDisplayTe2Manager) mDisplayTe2Manager->updateTe2ForDozeMode();
 
     return HWC2_ERROR_NONE;
 }
@@ -1223,11 +1266,18 @@ int32_t ExynosPrimaryDisplay::setFixedTe2Rate(const int targetTe2RateHz) {
 
 int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
                                                     const RrThrottleRequester requester) {
-    int fps = (targetFps <= 0) ? mDefaultMinIdleRefreshRate : targetFps;
-    if (requester == RrThrottleRequester::BRIGHTNESS && mUseBlockingZoneForMinIdleRefreshRate) {
-        uint32_t level = mBrightnessController->getBrightnessLevel();
-        fps = (level < mDbvThresholdForBlockingZone) ? mMinIdleRefreshRateForBlockingZone
-                                                     : mDefaultMinIdleRefreshRate;
+    if (targetFps < 0) {
+        return HWC2_ERROR_BAD_PARAMETER;
+    }
+    int fps = targetFps;
+    if ((requester == RrThrottleRequester::BRIGHTNESS) &&
+        (!mBrightnessBlockingZonesLookupTable.empty())) {
+        auto res = mBrightnessController->getBrightnessNitsAndMode();
+        if (res != std::nullopt) {
+            const auto it =
+                    mBrightnessBlockingZonesLookupTable.upper_bound(std::get<0>(res.value()));
+            fps = std::max(fps, it->second);
+        }
     }
 
     std::lock_guard<std::mutex> lock(mMinIdleRefreshRateMutex);
@@ -1250,9 +1300,12 @@ int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
     if (mDisplayTe2Manager &&
         (requester == RrThrottleRequester::PIXEL_DISP || requester == RrThrottleRequester::TEST)) {
         bool proximityActive = !!targetFps;
-        ALOGD("%s: proximity state: %s (min %dhz)", __func__,
-              proximityActive ? "active" : "inactive", targetFps);
-        mDisplayTe2Manager->updateTe2Option(proximityActive, targetFps);
+        bool dozeMode = (mPowerModeState.has_value() &&
+                         (*mPowerModeState == HWC2_POWER_MODE_DOZE ||
+                          *mPowerModeState == HWC2_POWER_MODE_DOZE_SUSPEND));
+        ALOGD("%s: proximity state %s, min %dhz, doze mode %d", __func__,
+              proximityActive ? "active" : "inactive", targetFps, dozeMode);
+        mDisplayTe2Manager->updateTe2OptionForProximity(proximityActive, targetFps, dozeMode);
     }
 
     if (mVariableRefreshRateController) {
@@ -1343,11 +1396,20 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
         result.appendFormat("\t[%u] vote to %" PRId64 " ns\n", i, mDisplayIdleTimerNanos[i]);
     }
 
-    result.appendFormat("Min idle refresh rate: %d, default: %d", mMinIdleRefreshRate,
-                        mDefaultMinIdleRefreshRate);
-    if (mUseBlockingZoneForMinIdleRefreshRate) {
-        result.appendFormat(", blocking zone level: %d, min refresh rate: %d\n",
-                            mDbvThresholdForBlockingZone, mMinIdleRefreshRateForBlockingZone);
+    if (!mBrightnessBlockingZonesLookupTable.empty()) {
+        int upperBound;
+        int lowerBound = INT_MIN;
+        result.appendFormat("Brightness blocking zone lookup table:");
+        for (const auto& brightnessBlockingZone : mBrightnessBlockingZonesLookupTable) {
+            upperBound = brightnessBlockingZone.first;
+            result.appendFormat("Brightness blocking zone: range [%s %s) fps = %d",
+                                (lowerBound == INT_MIN ? "Min"
+                                                       : std::to_string(lowerBound).c_str()),
+                                (upperBound == INT_MAX ? "Max"
+                                                       : std::to_string(upperBound).c_str()),
+                                brightnessBlockingZone.second);
+            lowerBound = upperBound;
+        }
     } else {
         result.appendFormat("\n");
     }
@@ -1550,4 +1612,16 @@ const std::string& ExynosPrimaryDisplay::getPanelName() {
         }
     }
     return mPanelName;
+}
+
+int32_t ExynosPrimaryDisplay::registerRefreshRateChangeListener(
+        std::shared_ptr<RefreshRateChangeListener> listener) {
+    if (!mXrrSettings.versionInfo.hasVrrController()) return HWC2_ERROR_UNSUPPORTED;
+
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->registerRefreshRateChangeListener(listener);
+        return NO_ERROR;
+    } else {
+        return -EINVAL;
+    }
 }

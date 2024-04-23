@@ -418,17 +418,30 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
         uint32_t minimumRefreshRate, uint64_t maximumPeakRefreshRateTimeoutNs) {
     const std::lock_guard<std::mutex> lock(mMutex);
 
+    // If the new setting is equivalent to the old setting.
+    if ((minimumRefreshRate) <= 1 && (mMinimumRefreshRate <= 1)) {
+        // When |mMinimumRefreshRate| is 0 or 1, it is normal mode; there's no need to compare
+        // |mMaximumPeakRefreshRateTimeoutNs|.
+        return NO_ERROR;
+    } else {
+        if ((minimumRefreshRate == mMinimumRefreshRate) &&
+            (mMaximumPeakRefreshRateTimeoutNs == maximumPeakRefreshRateTimeoutNs)) {
+            return NO_ERROR;
+        }
+    }
     uint32_t command = 0;
+    mMinimumRefreshRate = minimumRefreshRate;
     mMaximumPeakRefreshRateTimeoutNs = maximumPeakRefreshRateTimeoutNs;
     dropEventLocked(VrrControllerEventType::kPeakRefreshRateTimeout);
-    if (minimumRefreshRate > 0) {
-        mMinimumRefreshRate = minimumRefreshRate;
+    if (mMinimumRefreshRate > 1) {
         // Delegate timeout management to hardware.
         command |= getPanelRefreshCtrlFrameInsertionAutoModeCmd(true);
         dropEventLocked(VrrControllerEventType::kVendorRenderingTimeout);
         // Configure panel to maintain the minimum refresh rate.
         command |= getPanelRefreshCtrlMinimumRefreshRateCmd(minimumRefreshRate);
         command |= getPanelRefreshCtrlIdleEnabledCmd(true);
+        // TODO(b/333204544): ensure the correct refresh rate is set when calling
+        // setFixedRefreshRate().
         // Inform Statistics to stay at the minimum refresh rate change.
         if (mVariableRefreshRateStatistic) {
             mVariableRefreshRateStatistic->setFixedRefreshRate(mMinimumRefreshRate);
@@ -444,6 +457,8 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
                 uint32_t command = getPanelRefreshCtrlFrameInsertionAutoModeCmd(true);
                 command |= getPanelRefreshCtrlMinimumRefreshRateCmd(mMinimumRefreshRate);
                 command |= getPanelRefreshCtrlIdleEnabledCmd(true);
+                // TODO(b/333204544): ensure the correct refresh rate is set when calling
+                // setFixedRefreshRate().
                 if (mVariableRefreshRateStatistic) {
                     mVariableRefreshRateStatistic->setFixedRefreshRate(mMinimumRefreshRate);
                 }
@@ -459,7 +474,6 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
         // Report refresh rate change.
         onRefreshRateChangedInternal(mMinimumRefreshRate);
     } else {
-        mMinimumRefreshRate = 0;
         command |= getPanelRefreshCtrlFrameInsertionAutoModeCmd(false);
         // Configure panel with the minimum refresh rate = 1.
         command |= getPanelRefreshCtrlMinimumRefreshRateCmd(1);
@@ -468,9 +482,12 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
         if (!mFileNode->WriteCommandString(composer::kRefreshControlNodeName, command)) {
             return -1;
         }
+        // TODO(b/333204544): ensure the correct refresh rate is set when calling
+        // setFixedRefreshRate().
         if (mVariableRefreshRateStatistic) {
             mVariableRefreshRateStatistic->setFixedRefreshRate(0);
         }
+        mMaximumPeakRefreshRateTimeoutNs = 0;
         onRefreshRateChangedInternal(1);
         mPeakRefreshRateTimeoutEvent = std::nullopt;
         mAtPeakRefreshRate = false;
@@ -497,7 +514,34 @@ void VariableRefreshRateController::onPresent(int fence) {
     ATRACE_CALL();
     {
         const std::lock_guard<std::mutex> lock(mMutex);
-        if (mMinimumRefreshRate > 0) {
+        if (mState == VrrControllerState::kDisable) {
+            return;
+        }
+        if (!mRecord.mPendingCurrentPresentTime.has_value()) {
+            LOG(WARNING) << "VrrController: VrrController: Present without expected present time "
+                            "information";
+            return;
+        } else {
+            if (mRefreshRateCalculator) {
+                mRefreshRateCalculator->onPresent(mRecord.mPendingCurrentPresentTime.value().mTime,
+                                                  getPresentFrameFlag());
+            }
+            if (mVariableRefreshRateStatistic) {
+                mVariableRefreshRateStatistic
+                        ->onPresent(mRecord.mPendingCurrentPresentTime.value().mTime,
+                                    getPresentFrameFlag());
+            }
+            mRecord.mPresentHistory.next() = mRecord.mPendingCurrentPresentTime.value();
+            mRecord.mPendingCurrentPresentTime = std::nullopt;
+        }
+        if (mState == VrrControllerState::kHibernate) {
+            LOG(WARNING) << "VrrController: Present during hibernation without prior notification "
+                            "via notifyExpectedPresent.";
+            mState = VrrControllerState::kRendering;
+            dropEventLocked(VrrControllerEventType::kHibernateTimeout);
+        }
+
+        if (mMinimumRefreshRate > 1) {
             if (!mAtPeakRefreshRate) {
                 uint32_t command = 0;
                 auto maxFrameRate =
@@ -517,35 +561,6 @@ void VariableRefreshRateController::onPresent(int fence) {
                           mPeakRefreshRateTimeoutEvent.value());
             }
             return;
-        }
-
-        if (mState == VrrControllerState::kDisable) {
-            return;
-        }
-        if (!mRecord.mPendingCurrentPresentTime.has_value()) {
-            LOG(WARNING) << "VrrController: VrrController: Present without expected present time "
-                            "information";
-            return;
-        } else {
-            if (mRefreshRateCalculator) {
-                mRefreshRateCalculator->onPresent(mRecord.mPendingCurrentPresentTime.value().mTime,
-                                                  getPresentFrameFlag());
-            }
-
-            if (mVariableRefreshRateStatistic) {
-                mVariableRefreshRateStatistic
-                        ->onPresent(mRecord.mPendingCurrentPresentTime.value().mTime,
-                                    getPresentFrameFlag());
-            }
-
-            mRecord.mPresentHistory.next() = mRecord.mPendingCurrentPresentTime.value();
-            mRecord.mPendingCurrentPresentTime = std::nullopt;
-        }
-        if (mState == VrrControllerState::kHibernate) {
-            LOG(WARNING) << "VrrController: Present during hibernation without prior notification "
-                            "via notifyExpectedPresent.";
-            mState = VrrControllerState::kRendering;
-            dropEventLocked(VrrControllerEventType::kHibernateTimeout);
         }
     }
 
@@ -744,7 +759,7 @@ void VariableRefreshRateController::handlePresentTimeout(const VrrControllerEven
 }
 
 void VariableRefreshRateController::onRefreshRateChanged(int refreshRate) {
-    if (mMinimumRefreshRate > 0) {
+    if (mMinimumRefreshRate > 1) {
         // If the minimum refresh rate has been set, the refresh rate remains fixed at a specific
         // value.
         return;
@@ -759,10 +774,8 @@ void VariableRefreshRateController::onRefreshRateChangedInternal(int refreshRate
     }
     refreshRate =
             refreshRate == kDefaultInvalidRefreshRate ? kDefaultMinimumRefreshRate : refreshRate;
-    // TODO: move to outside of VariableRefreshRateController
-    if (refreshRate > 0 && mMinimumRefreshRate > 0 && mDisplay->mDisplayTe2Manager &&
-        !mDisplay->mDisplayTe2Manager->isOptionFixedTe2()) {
-        mDisplay->mDisplayTe2Manager->setChangeableTe2Rate(refreshRate);
+    for (const auto& listener : mRefreshRateChangeListeners) {
+        if (listener) listener->onRefreshRateChange(refreshRate);
     }
     if (!mDisplay->mDevice->isVrrApiSupported()) {
         // For legacy API, vsyncPeriodNanos is utilized to denote the refresh rate,
@@ -814,6 +827,9 @@ void VariableRefreshRateController::threadBody() {
             }
 
             auto event = mEventQueue.mPriorityQueue.top();
+            if (event.mWhenNs > getNowNs()) {
+                continue;
+            }
             mEventQueue.mPriorityQueue.pop();
             if (static_cast<int>(event.mEventType) &
                 static_cast<int>(VrrControllerEventType::kCallbackEventMask)) {

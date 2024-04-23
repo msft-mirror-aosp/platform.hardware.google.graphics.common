@@ -39,12 +39,15 @@
 #include "drmeventlistener.h"
 #include "worker.h"
 
+#include "../libvrr/interface/VariableRefreshRateInterface.h"
+
 #define HWC_CLEARDISPLAY_WITH_COLORMAP
 #define HWC_PRINT_FRAME_NUM     10
 
 #define LOW_FPS_THRESHOLD     5
 
 using ::aidl::android::hardware::drm::HdcpLevels;
+using ::android::hardware::graphics::composer::RefreshRateChangeListener;
 using ::android::hardware::graphics::composer::V2_4::VsyncPeriodNanos;
 using namespace std::chrono_literals;
 
@@ -378,6 +381,19 @@ typedef struct XrrSettings {
 } XrrSettings_t;
 
 typedef struct displayConfigs {
+    std::string toString() const {
+        std::ostringstream os;
+        os << "vsyncPeriod = " << vsyncPeriod;
+        os << ", w = " << width;
+        os << ", h = " << height;
+        os << ", Xdpi = " << Xdpi;
+        os << ", Ydpi = " << Ydpi;
+        os << ", groupId = " << groupId;
+        os << (isNsMode ? ", NS " : ", HS ");
+        os << ", refreshRate = " << refreshRate;
+        return os.str();
+    }
+
     // HWC2_ATTRIBUTE_VSYNC_PERIOD
     VsyncPeriodNanos vsyncPeriod;
     // HWC2_ATTRIBUTE_WIDTH
@@ -1356,6 +1372,11 @@ class ExynosDisplay {
 
         virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
 
+        virtual int32_t registerRefreshRateChangeListener(
+                std::shared_ptr<RefreshRateChangeListener> listener) {
+            return NO_ERROR;
+        }
+
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig);
@@ -1715,7 +1736,7 @@ class ExynosDisplay {
 
         bool mHpdStatus;
 
-        void invalidate();
+        virtual void invalidate();
         virtual bool checkHotplugEventUpdated(bool &hpdStatus);
         virtual void handleHotplugEvent(bool hpdStatus);
         virtual void hotplug();
