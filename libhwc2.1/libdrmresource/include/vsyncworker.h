@@ -17,50 +17,54 @@
 #ifndef ANDROID_EVENT_WORKER_H_
 #define ANDROID_EVENT_WORKER_H_
 
-#include "drmdevice.h"
-#include "worker.h"
-
-#include <stdint.h>
-#include <map>
-
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer.h>
+#include <stdint.h>
+#include <utils/String8.h>
+
+#include <map>
+
+#include "drmdevice.h"
+#include "worker.h"
 
 namespace android {
 
 class VsyncCallback {
- public:
-     virtual ~VsyncCallback() {}
-     virtual void Callback(int display, int64_t timestamp) = 0;
+    public:
+        virtual ~VsyncCallback() {}
+        virtual void Callback(int display, int64_t timestamp) = 0;
 };
 
 class VSyncWorker : public Worker {
- public:
-     VSyncWorker();
-     ~VSyncWorker() override;
+    public:
+        VSyncWorker();
+        ~VSyncWorker() override;
 
-     int Init(DrmDevice *drm, int display);
-     void RegisterCallback(std::shared_ptr<VsyncCallback> callback);
+        int Init(DrmDevice* drm, int display, const String8& displayTraceName);
+        void RegisterCallback(std::shared_ptr<VsyncCallback> callback);
 
-     void VSyncControl(bool enabled);
+        void VSyncControl(bool enabled);
 
- protected:
-     void Routine() override;
+    protected:
+        void Routine() override;
 
- private:
-     int GetPhasedVSync(int64_t frame_ns, int64_t &expect);
-     int SyntheticWaitVBlank(int64_t &timestamp);
+    private:
+        int GetPhasedVSync(uint32_t vsyncPeriodNs, int64_t& expectTimeNs);
+        int SyntheticWaitVBlank(int64_t& timestamp);
 
-     DrmDevice *drm_;
+        DrmDevice* mDrmDevice;
 
-     // shared_ptr since we need to use this outside of the thread lock (to
-     // actually call the hook) and we don't want the memory freed until we're
-     // done
-     std::shared_ptr<VsyncCallback> callback_ = NULL;
+        // shared_ptr since we need to use this outside of the thread lock (to
+        // actually call the hook) and we don't want the memory freed until we're
+        // done
+        std::shared_ptr<VsyncCallback> mCallback = NULL;
 
-     int display_;
-     std::atomic_bool enabled_;
-     int64_t last_timestamp_;
+        int mDisplay;
+        std::atomic_bool mEnabled;
+        int64_t mLastTimestampNs;
+        String8 mHwVsyncPeriodTag;
+        String8 mHwVsyncEnabledTag;
+        String8 mDisplayTraceName;
 };
 }  // namespace android
 

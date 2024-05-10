@@ -27,9 +27,7 @@
 #include "ExynosResourceManager.h"
 #include "ExynosResourceRestriction.h"
 
-#ifndef USE_MODULE_ATTR
-extern feature_support_t feature_table[];
-#endif
+using namespace SOC_VERSION;
 
 void ExynosDeviceInterface::printDppRestriction(struct hwc_dpp_ch_restriction res)
 {
@@ -101,7 +99,7 @@ int32_t ExynosDeviceInterface::makeDPURestrictions() {
             queried_format.format = format;
             queried_format.reserved = 0;
             resourceManager->makeFormatRestrictions(queried_format);
-            HDEBUGLOGD(eDebugAttrSetting, "%s : %d", getMPPStr(hwType).string(), format);
+            HDEBUGLOGD(eDebugAttrSetting, "%s : %d", getMPPStr(hwType).c_str(), format);
         }
     }
 

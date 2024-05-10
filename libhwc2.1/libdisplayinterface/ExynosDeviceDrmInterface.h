@@ -28,17 +28,24 @@ class ExynosDeviceDrmInterface : public ExynosDeviceInterface {
         ExynosDeviceDrmInterface(ExynosDevice *exynosDevice);
         virtual ~ExynosDeviceDrmInterface();
         virtual void init(ExynosDevice *exynosDevice) override;
+        virtual void postInit() override;
         virtual int32_t initDisplayInterface(
                 std::unique_ptr<ExynosDisplayInterface> &dispInterface) override;
         virtual void updateRestrictions() override;
+        virtual int32_t registerSysfsEventHandler(
+                std::shared_ptr<DrmSysfsEventHandler> handler) override;
+        virtual int32_t unregisterSysfsEventHandler(int sysfsFd) override;
+
     protected:
         class ExynosDrmEventHandler : public DrmEventHandler,
                                       public DrmHistogramEventHandler,
+                                      public DrmHistogramChannelEventHandler,
                                       public DrmTUIEventHandler,
                                       public DrmPanelIdleEventHandler {
         public:
             void handleEvent(uint64_t timestamp_us) override;
             void handleHistogramEvent(uint32_t crtc_id, void *bin) override;
+            void handleHistogramChannelEvent(void *event) override;
             void handleTUIEvent() override;
             void handleIdleEnterEvent(char const *event) override;
             void init(ExynosDevice *exynosDevice, DrmDevice *drmDevice);

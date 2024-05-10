@@ -57,30 +57,56 @@ public:
     HistogramMediator(ExynosDisplay *display);
     ~HistogramMediator() {}
 
-    bool isDisplayPowerOff();
-    bool isSecureContentPresenting();
     HistogramErrorCode requestHist();
     HistogramErrorCode cancelHistRequest();
     HistogramErrorCode collectRoiLuma(std::vector<char16_t> *buf);
-    HistogramErrorCode setRoiWeightThreshold(const RoiRect roi, const Weight weight,
-                                             const HistogramPos pos);
-    RoiRect calRoi(RoiRect roi);
+    HistogramErrorCode setRoiWeightThreshold(const RoiRect &roi, const Weight &weight,
+                                             const HistogramPos &pos);
+    RoiRect calRoi(const RoiRect &roi);
     struct HistogramReceiver : public IDLHistogram {
-        HistogramReceiver() : mHistData() {}
+        HistogramReceiver() : mHistData(){};
         void callbackHistogram(char16_t *bin) override;
         uint16_t mHistData[HISTOGRAM_BINS_SIZE]; // luma buffer
         std::condition_variable mHistData_cv;    // for pullback data sync ctrl
         bool mHistReq_pending = false;
         std::mutex mDataCollectingMutex; // for data collecting operations
     };
+
+    struct HistogramConfig {
+        RoiRect mRoi;
+        Weight mWeights;
+        HistogramPos mPos;
+
+        HistogramConfig() {}
+
+        HistogramConfig(const RoiRect &roi, const Weight &weights, const HistogramPos &pos) {
+            mRoi = roi;
+            mWeights = weights;
+            mPos = pos;
+        }
+
+        bool operator!=(const HistogramConfig &rhs) {
+            return mRoi != rhs.mRoi || mWeights != rhs.mWeights || mPos != rhs.mPos;
+        }
+
+        HistogramConfig &operator=(const HistogramConfig &rhs) {
+            mRoi = rhs.mRoi;
+            mWeights = rhs.mWeights;
+            mPos = rhs.mPos;
+            return *this;
+        }
+    };
+
     uint32_t getFrameCount();
     void setSampleFrameCounter(int32_t id) { mSampledFrameCounter = id; }
     uint32_t getSampleFrameCounter() { return mSampledFrameCounter; }
-    bool histRequested() { return mIDLHistogram.mHistReq_pending; }
+    bool histRequested() { return mIDLHistogram->mHistReq_pending; }
+    std::mutex mConfigMutex;
+    HistogramConfig mConfig GUARDED_BY(mConfigMutex);
 
 private:
     int calculateThreshold(const RoiRect &roi);
-    HistogramReceiver mIDLHistogram;
+    std::shared_ptr<HistogramReceiver> mIDLHistogram;
     ExynosDisplay *mDisplay = nullptr;
     uint32_t mSampledFrameCounter = 0;
 };

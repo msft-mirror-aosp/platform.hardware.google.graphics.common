@@ -19,9 +19,9 @@ histogram::HistogramMediator::HistogramMediator(ExynosDisplay *display) {
     mDisplay = display;
     ExynosDisplayDrmInterface *moduleDisplayInterface =
             static_cast<ExynosDisplayDrmInterface *>(display->mDisplayInterface.get());
+    mIDLHistogram = std::make_shared<HistogramReceiver>();
 
-    moduleDisplayInterface->registerHistogramInfo(static_cast<IDLHistogram *>(&mIDLHistogram));
-    moduleDisplayInterface->getPanelResolution();
+    moduleDisplayInterface->registerHistogramInfo(mIDLHistogram);
 }
 uint32_t histogram::HistogramMediator::getFrameCount() {
     ExynosDisplayDrmInterface *moduleDisplayInterface =
@@ -29,39 +29,20 @@ uint32_t histogram::HistogramMediator::getFrameCount() {
     return moduleDisplayInterface->getFrameCount();
 }
 
-bool histogram::HistogramMediator::isDisplayPowerOff() {
-    if (!mDisplay->mPowerModeState.has_value() ||
-        ((mDisplay->mPowerModeState.value() == HWC2_POWER_MODE_OFF) ||
-         (mDisplay->mPowerModeState.value() == HWC2_POWER_MODE_DOZE))) {
-        return true;
-    }
-    return false;
-}
-
-bool histogram::HistogramMediator::isSecureContentPresenting() {
-    Mutex::Autolock lock(mDisplay->mDRMutex);
-    for (uint32_t i = 0; i < mDisplay->mLayers.size(); i++) {
-        ExynosLayer *layer = mDisplay->mLayers[i];
-        if (layer != NULL && layer->isDrm()) { /* there is some DRM layer */
-            return true;
-        }
-    }
-    return false;
-}
 histogram::HistogramErrorCode histogram::HistogramMediator::requestHist() {
-    if (isSecureContentPresenting()) { /* there is some DRM layer */
+    if (mDisplay->isSecureContentPresenting()) {
         return histogram::HistogramErrorCode::DRM_PLAYING;
     }
     ExynosDisplayDrmInterface *moduleDisplayInterface =
             static_cast<ExynosDisplayDrmInterface *>(mDisplay->mDisplayInterface.get());
 
-    if (moduleDisplayInterface->setHistogramControl(
-                hidl_histogram_control_t::HISTOGRAM_CONTROL_REQUEST) != NO_ERROR) {
-        return histogram::HistogramErrorCode::ENABLE_HIST_ERROR;
-    }
     {
-        std::unique_lock<std::mutex> lk(mIDLHistogram.mDataCollectingMutex);
-        mIDLHistogram.mHistReq_pending = true;
+        std::unique_lock<std::mutex> lk(mIDLHistogram->mDataCollectingMutex);
+        if (moduleDisplayInterface->setHistogramControl(
+                hidl_histogram_control_t::HISTOGRAM_CONTROL_REQUEST) != NO_ERROR) {
+            return histogram::HistogramErrorCode::ENABLE_HIST_ERROR;
+        }
+        mIDLHistogram->mHistReq_pending = true;
     }
     return histogram::HistogramErrorCode::NONE;
 }
@@ -92,42 +73,42 @@ int histogram::HistogramMediator::calculateThreshold(const RoiRect &roi) {
 }
 
 histogram::HistogramErrorCode histogram::HistogramMediator::setRoiWeightThreshold(
-        const RoiRect roi, const Weight weight, const HistogramPos pos) {
+        const RoiRect &roi, const Weight &weight, const HistogramPos &pos) {
     int threshold = calculateThreshold(roi);
-    mIDLHistogram.setHistogramROI((uint16_t)roi.left, (uint16_t)roi.top,
-                                  (uint16_t)(roi.right - roi.left),
-                                  (uint16_t)(roi.bottom - roi.top));
-    mIDLHistogram.setHistogramWeights(weight.weightR, weight.weightG, weight.weightB);
-    mIDLHistogram.setHistogramThreshold(threshold);
-    mIDLHistogram.setHistogramPos(pos);
+    mIDLHistogram->setHistogramROI((uint16_t)roi.left, (uint16_t)roi.top,
+                                   (uint16_t)(roi.right - roi.left),
+                                   (uint16_t)(roi.bottom - roi.top));
+    mIDLHistogram->setHistogramWeights(weight.weightR, weight.weightG, weight.weightB);
+    mIDLHistogram->setHistogramThreshold(threshold);
+    mIDLHistogram->setHistogramPos(pos);
 
     return histogram::HistogramErrorCode::NONE;
 }
 
 histogram::HistogramErrorCode histogram::HistogramMediator::collectRoiLuma(
         std::vector<char16_t> *buf) {
-    std::unique_lock<std::mutex> lk(mIDLHistogram.mDataCollectingMutex);
+    std::unique_lock<std::mutex> lk(mIDLHistogram->mDataCollectingMutex);
 
-    mIDLHistogram.mHistData_cv.wait_for(lk, std::chrono::milliseconds(50), [this]() {
-        return (!isDisplayPowerOff() && !mIDLHistogram.mHistReq_pending);
+    mIDLHistogram->mHistData_cv.wait_for(lk, std::chrono::milliseconds(50), [this]() {
+        return (!mDisplay->isPowerModeOff() && !mIDLHistogram->mHistReq_pending);
     });
-    if (mIDLHistogram.mHistReq_pending == false) setSampleFrameCounter(getFrameCount());
-    buf->assign(mIDLHistogram.mHistData, mIDLHistogram.mHistData + HISTOGRAM_BINS_SIZE);
+    if (mIDLHistogram->mHistReq_pending == false) setSampleFrameCounter(getFrameCount());
+    buf->assign(mIDLHistogram->mHistData, mIDLHistogram->mHistData + HISTOGRAM_BINS_SIZE);
 
     return histogram::HistogramErrorCode::NONE;
 }
 
-histogram::RoiRect histogram::HistogramMediator::calRoi(RoiRect roi) {
+histogram::RoiRect histogram::HistogramMediator::calRoi(const RoiRect &roi) {
     RoiRect roi_return = {-1, -1, -1, -1};
     ExynosDisplayDrmInterface *moduleDisplayInterface =
             static_cast<ExynosDisplayDrmInterface *>(mDisplay->mDisplayInterface.get());
     roi_return.left = roi.left * moduleDisplayInterface->getActiveModeHDisplay() /
-            moduleDisplayInterface->panelHsize();
+            moduleDisplayInterface->getPanelFullResolutionHSize();
     roi_return.top = roi.top * moduleDisplayInterface->getActiveModeVDisplay() /
-            moduleDisplayInterface->panelVsize();
+            moduleDisplayInterface->getPanelFullResolutionVSize();
     roi_return.right = roi.right * moduleDisplayInterface->getActiveModeHDisplay() /
-            moduleDisplayInterface->panelHsize();
+            moduleDisplayInterface->getPanelFullResolutionHSize();
     roi_return.bottom = roi.bottom * moduleDisplayInterface->getActiveModeVDisplay() /
-            moduleDisplayInterface->panelVsize();
+            moduleDisplayInterface->getPanelFullResolutionVSize();
     return roi_return;
 }

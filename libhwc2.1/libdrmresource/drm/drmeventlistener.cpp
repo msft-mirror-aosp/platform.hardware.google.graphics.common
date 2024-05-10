@@ -17,18 +17,20 @@
 #define LOG_TAG "hwc-drm-event-listener"
 
 #include "drmeventlistener.h"
-#include "drmdevice.h"
-#include <drm/samsung_drm.h>
 
 #include <assert.h>
+#include <drm/samsung_drm.h>
 #include <errno.h>
-#include <linux/netlink.h>
-#include <sys/socket.h>
-
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer.h>
+#include <inttypes.h>
+#include <linux/netlink.h>
 #include <log/log.h>
+#include <sys/socket.h>
+#include <utils/String8.h>
 #include <xf86drm.h>
+
+#include "drmdevice.h"
 
 namespace android {
 
@@ -98,7 +100,7 @@ int DrmEventListener::Init() {
     return -errno;
   }
 
-  return InitWorker();
+  return 0;
 }
 
 void DrmEventListener::RegisterHotplugHandler(DrmEventHandler *handler) {
@@ -118,6 +120,25 @@ void DrmEventListener::RegisterHistogramHandler(DrmHistogramEventHandler *handle
 
 void DrmEventListener::UnRegisterHistogramHandler(DrmHistogramEventHandler *handler) {
     if (handler == histogram_handler_.get()) histogram_handler_ = NULL;
+}
+
+void DrmEventListener::RegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler) {
+    assert(!histogram_channel_handler_);
+
+    if (handler) {
+        histogram_channel_handler_.reset(handler);
+    } else {
+        ALOGE("%s: failed to register, handler is nullptr", __func__);
+    }
+}
+
+void DrmEventListener::UnRegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler) {
+    if (handler == histogram_channel_handler_.get()) {
+        histogram_channel_handler_ = NULL;
+    } else {
+        ALOGE("%s: failed to unregister, handler(%p), histogram_channel_handler(%p)", __func__,
+              handler, histogram_channel_handler_.get());
+    }
 }
 
 void DrmEventListener::RegisterTUIHandler(DrmTUIEventHandler *handler) {
@@ -141,6 +162,43 @@ void DrmEventListener::RegisterPanelIdleHandler(DrmPanelIdleEventHandler *handle
 void DrmEventListener::UnRegisterPanelIdleHandler(DrmPanelIdleEventHandler *handler) {
   if (handler == panel_idle_handler_.get())
     panel_idle_handler_ = NULL;
+}
+
+int DrmEventListener::RegisterSysfsHandler(std::shared_ptr<DrmSysfsEventHandler> handler) {
+  if (!handler)
+    return -EINVAL;
+  if (handler->getFd() < 0)
+    return -EINVAL;
+  std::scoped_lock lock(mutex_);
+  if (sysfs_handlers_.find(handler->getFd()) != sysfs_handlers_.end()) {
+    ALOGE("%s: DrmSysfsEventHandler for fd:%d has been added to epoll", __func__, handler->getFd());
+    return -EINVAL;
+  }
+
+  struct epoll_event ev;
+  ev.events = EPOLLPRI;
+  ev.data.fd = handler->getFd();
+  if (epoll_ctl(epoll_fd_.get(), EPOLL_CTL_ADD, handler->getFd(), &ev) < 0) {
+    ALOGE("%s: Failed to add fd into epoll: %s", __func__, strerror(errno));
+    return -errno;
+  }
+  sysfs_handlers_.emplace(handler->getFd(), std::move(handler));
+  return 0;
+}
+
+int DrmEventListener::UnRegisterSysfsHandler(int sysfs_fd) {
+  std::scoped_lock lock(mutex_);
+  auto it = sysfs_handlers_.find(sysfs_fd);
+  if (it == sysfs_handlers_.end()) {
+    ALOGE("%s: DrmSysfsEventHandler for fd:%d not found", __func__, sysfs_fd);
+    return -EINVAL;
+  }
+  if (epoll_ctl(epoll_fd_.get(), EPOLL_CTL_DEL, sysfs_fd, nullptr) < 0) {
+    ALOGE("%s: Failed to remove fd from epoll: %s", __func__, strerror(errno));
+    return -errno;
+  }
+  sysfs_handlers_.erase(it);
+  return 0;
 }
 
 bool DrmEventListener::IsDrmInTUI() {
@@ -239,6 +297,15 @@ void DrmEventListener::DRMEventHandler() {
                                                              (void *)&(histo->bins));
                 }
                 break;
+#if defined(EXYNOS_DRM_HISTOGRAM_CHANNEL_EVENT)
+            case EXYNOS_DRM_HISTOGRAM_CHANNEL_EVENT:
+                if (histogram_channel_handler_) {
+                    histogram_channel_handler_->handleHistogramChannelEvent((void *)e);
+                } else {
+                    ALOGE("%s: no valid histogram channel event handler", __func__);
+                }
+                break;
+#endif
             case DRM_EVENT_FLIP_COMPLETE:
                 vblank = (struct drm_event_vblank *)e;
                 user_data = (void *)(unsigned long)(vblank->user_data);
@@ -267,6 +334,23 @@ void DrmEventListener::TUIEventHandler() {
   tui_handler_->handleTUIEvent();
 }
 
+void DrmEventListener::SysfsEventHandler(int fd) {
+  std::shared_ptr<DrmSysfsEventHandler> handler;
+  {
+    std::scoped_lock lock(mutex_);
+    // Copy the shared_ptr to avoid the handler object gets destroyed
+    // while it's handling the event without holding mutex_
+    auto it = sysfs_handlers_.find(fd);
+    if (it != sysfs_handlers_.end())
+            handler = it->second;
+  }
+  if (handler) {
+    handler->handleSysfsEvent();
+  } else {
+    ALOGW("Unhandled sysfs event from fd:%d", fd);
+  }
+}
+
 void DrmEventListener::Routine() {
   struct epoll_event events[maxFds];
   int nfds, n;
@@ -280,11 +364,13 @@ void DrmEventListener::Routine() {
       if (events[n].data.fd == uevent_fd_.get()) {
         UEventHandler();
       } else if (events[n].data.fd == drm_->fd()) {
-          DRMEventHandler();
+        DRMEventHandler();
       }
     } else if (events[n].events & EPOLLPRI) {
       if (tuievent_fd_.get() >= 0 && events[n].data.fd == tuievent_fd_.get()) {
         TUIEventHandler();
+      } else {
+        SysfsEventHandler(events[n].data.fd);
       }
     }
   }

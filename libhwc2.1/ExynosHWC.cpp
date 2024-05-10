@@ -192,7 +192,7 @@ void exynos_getCapabilities(struct hwc2_device *dev, uint32_t *outCount, int32_t
     if (!exynosDevice)
         *outCapabilities = 0;
     else
-        return exynosDevice->getCapabilities(outCount, outCapabilities);
+        return exynosDevice->getCapabilitiesLegacy(outCount, outCapabilities);
 }
 
 void exynos_dump(hwc2_device_t *dev, uint32_t *outSize, char *outBuffer)
@@ -520,10 +520,10 @@ int32_t exynos_presentDisplay(hwc2_device_t *dev, hwc2_display_t display,
 
         if (exynosDisplay->mHWCRenderingState == RENDERING_STATE_VALIDATED) {
             ALOGI("%s:: acceptDisplayChanges was not called",
-                    exynosDisplay->mDisplayName.string());
+                    exynosDisplay->mDisplayName.c_str());
             if (exynosDisplay->acceptDisplayChanges() != HWC2_ERROR_NONE) {
                 ALOGE("%s:: acceptDisplayChanges is failed",
-                        exynosDisplay->mDisplayName.string());
+                        exynosDisplay->mDisplayName.c_str());
             }
         }
         int32_t ret = exynosDisplay->presentDisplay(outRetireFence);
@@ -1149,15 +1149,34 @@ int32_t exynos_SetActiveConfigWithConstraints(hwc2_device_t* dev, hwc2_display_t
 {
     HDEBUGLOGD(eDebugDisplayConfig, "%s, %d", __func__, config);
     ExynosDevice *exynosDevice = checkDevice(dev);
+    if (!exynosDevice) {
+        return HWC2_ERROR_BAD_DISPLAY;
+    }
 
-    if (exynosDevice) {
-        ExynosDisplay *exynosDisplay = checkDisplay(exynosDevice, display);
-        if (exynosDisplay) {
-            return exynosDisplay->setActiveConfigWithConstraints(config, vsyncPeriodChangeConstraints, outTimeline);
+    ExynosDisplay *exynosDisplay = checkDisplay(exynosDevice, display);
+    if (!exynosDisplay) {
+        return HWC2_ERROR_BAD_DISPLAY;
+    }
+
+    const auto prevXres = exynosDisplay->mXres, prevYres = exynosDisplay->mYres;
+    auto ret = exynosDisplay->setActiveConfigWithConstraints(config,
+                                                             vsyncPeriodChangeConstraints,
+                                                             outTimeline);
+    if (ret != HWC2_ERROR_NONE) {
+        ALOGE("exynos_SetActiveConfigWithConstraints() failed config(%d)", config);
+        return ret;
+    }
+
+    // when resolution is changed, HWC2 updates the property
+    if (prevXres != exynosDisplay->mDisplayConfigs[config].width ||
+        prevYres != exynosDisplay->mDisplayConfigs[config].height) {
+        if ((ret = exynosDisplay->setBootDisplayConfig(config)) != HWC2_ERROR_NONE) {
+            ALOGE("setBootDisplayConfig() failed when setActiveConfigWithConstraints()");
+            return ret;
         }
     }
 
-    return HWC2_ERROR_BAD_DISPLAY;
+    return HWC2_ERROR_NONE;
 }
 
 int32_t exynos_SetAutoLowLatencyMode(hwc2_device_t* dev, hwc2_display_t display, bool on)
@@ -1275,8 +1294,11 @@ void exynos_boot_finished(ExynosHWCCtx *dev)
         if (read(sw_fd, &val, 1) == 1 && val == '1') {
             ALOGI("%s : try to reconnect displayport", __func__);
             ExynosExternalDisplayModule *display = (ExynosExternalDisplayModule*)dev->device->getDisplay(getDisplayId(HWC_DISPLAY_EXTERNAL, 0));
-            if (display != nullptr)
-                display->handleHotplugEvent();
+            if (display != nullptr) {
+                bool hpdStatus = false;
+                display->checkHotplugEventUpdated(hpdStatus);
+                display->handleHotplugEvent(hpdStatus);
+            }
         }
         hwcFdClose(sw_fd);
     }
@@ -1318,7 +1340,8 @@ int exynos_open(const struct hw_module_t *module, const char *name,
     dev = (struct exynos_hwc2_device_t *)malloc(sizeof(*dev));
     memset(dev, 0, sizeof(*dev));
 
-    dev->device = new ExynosDeviceModule;
+    // The legacy HIDL does not provide compatibility for the Vrr API as defined by AIDL.
+    dev->device = new ExynosDeviceModule(false);
     g_exynosDevice = dev->device;
 
     dev->base.common.tag = HARDWARE_DEVICE_TAG;

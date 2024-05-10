@@ -20,6 +20,9 @@
 #include <android/hardware/graphics/common/1.1/types.h>
 #include <android/hardware/graphics/common/1.2/types.h>
 
+#include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 
 namespace displaycolor {
@@ -34,6 +37,7 @@ using android::hardware::graphics::common::V1_2::PixelFormat;
 /**
  * hwc/displaycolor interface history
  *
+ * 7.0.0.2022-03-22 Interface refactor
  * 6.2.0.2022-05-18 Get calibrated serial number.
  * 6.1.0.2022-04-29 dim solid color layer
  * 6.0.0.2022-02-22 Get whether dimming in linear.
@@ -55,14 +59,18 @@ constexpr struct DisplayColorIntfVer {
             patch == rhs.patch;
     }
 
+    bool operator!=(const DisplayColorIntfVer &rhs) const {
+        return !operator==(rhs);
+    }
+
     bool Compatible(const DisplayColorIntfVer &rhs) const {
         return major == rhs.major &&
             minor == rhs.minor;
     }
 
 } kInterfaceVersion {
-    6,
-    2,
+    7,
+    0,
     0,
 };
 
@@ -78,14 +86,17 @@ enum DisplayType {
     DISPLAY_PRIMARY = 0,
     /// builtin secondary display
     DISPLAY_SECONDARY = 1,
+    /// external display
+    DISPLAY_EXTERNAL = 2,
     /// number of display
-    DISPLAY_MAX = 2,
+    DISPLAY_MAX = 3,
 };
 
 enum BrightnessMode {
     BM_NOMINAL = 0,
     BM_HBM = 1,
     BM_MAX = 2,
+    BM_INVALID = BM_MAX,
 };
 
 enum class HdrLayerState {
@@ -97,23 +108,55 @@ enum class HdrLayerState {
     kHdrLarge,
 };
 
-struct DisplayBrightnessTable {
-    float nbm_nits_min;
-    float nbm_nits_max;
-    float hbm_nits_min;
-    float hbm_nits_max;
+struct DisplayBrightnessRange {
+    // inclusive lower bound
+    float nits_min;
+    // inclusive upper bound
+    float nits_max;
 
-    uint32_t nbm_dbv_min;
-    uint32_t nbm_dbv_max;
-    uint32_t hbm_dbv_min;
-    uint32_t hbm_dbv_max;
+    // inclusive lower bound
+    uint32_t dbv_min;
+    // inclusive upper bound
+    uint32_t dbv_max;
+
+    bool brightness_min_exclusive;
+    float brightness_min;
+    // inclusive upper bound
+    float brightness_max;
+
+    bool IsValid() const {
+        // Criteria
+        // 1. max >= min
+        // 2. float min >= 0
+        return nits_min >= 0 && brightness_min >= 0 && nits_max >= nits_min && dbv_max >= dbv_min &&
+                brightness_max >= brightness_min;
+    }
+};
+typedef std::map<BrightnessMode, DisplayBrightnessRange> BrightnessRangeMap;
+
+class IBrightnessTable {
+   public:
+    virtual ~IBrightnessTable(){};
+
+    virtual std::optional<std::reference_wrapper<const DisplayBrightnessRange>> GetBrightnessRange(
+        BrightnessMode bm) const = 0;
+    virtual std::optional<float> BrightnessToNits(float brightness, BrightnessMode &bm) const = 0;
+    virtual std::optional<uint32_t> NitsToDbv(BrightnessMode bm, float nits) const = 0;
+    virtual std::optional<float> DbvToNits(BrightnessMode bm, uint32_t dbv) const = 0;
+    virtual std::optional<float> NitsToBrightness(float nits) const = 0;
+    virtual std::optional<float> DbvToBrightness(uint32_t dbv) const = 0;
 };
 
+/**
+ * @brief This structure holds data imported from HWC.
+ */
 struct DisplayInfo {
+    DisplayType display_type;
     std::string panel_name;
     std::string panel_serial;
 
-    DisplayBrightnessTable brightness_table;
+    // If brightness table exists in pb file, it will overwrite values in brightness_ranges
+    BrightnessRangeMap brightness_ranges;
 };
 
 struct Color {
@@ -257,6 +300,12 @@ struct LayerColorData {
      * @brief color for solid color layer
      */
     Color solid_color;
+
+    /**
+     * @brief indicates if the layer is client target
+     *
+     */
+    bool is_client_target = false;
 };
 
 /**
@@ -273,9 +322,13 @@ struct DisplayScene {
                force_hdr == rhs.force_hdr &&
                bm == rhs.bm &&
                lhbm_on == rhs.lhbm_on &&
-               (lhbm_on && dbv == rhs.dbv) &&
+               dbv == rhs.dbv &&
                refresh_rate == rhs.refresh_rate &&
+               operation_rate == rhs.operation_rate &&
                hdr_layer_state == rhs.hdr_layer_state;
+    }
+    bool operator!=(const DisplayScene &rhs) const {
+        return !(*this == rhs);
     }
 
     /// A vector of layer color data.
@@ -297,29 +350,32 @@ struct DisplayScene {
     // clang-format on
     /// When this bit is set, process hdr layers and the layer matrix even if
     //it's in native color mode.
-    bool force_hdr;
+    bool force_hdr = false;
 
     /// display brightness mode
-    BrightnessMode bm;
+    BrightnessMode bm = BrightnessMode::BM_NOMINAL;
 
     /// dbv level
-    uint32_t dbv;
+    uint32_t dbv = 0;
 
     /// lhbm status
-    bool lhbm_on;
+    bool lhbm_on = false;
 
     /// refresh rate
-    float refresh_rate;
+    float refresh_rate = 60.0f;
+
+    /// operation rate to switch between hs/ns mode
+    uint32_t operation_rate = 120;
 
     /// hdr layer state on screen
-    HdrLayerState hdr_layer_state;
+    HdrLayerState hdr_layer_state = HdrLayerState::kHdrNone;
 };
 
 struct CalibrationInfo {
-    bool factory_cal_loaded;
-    bool golden_cal_loaded;
-    bool common_cal_loaded;
-    bool dev_cal_loaded;
+    bool factory_cal_loaded = false;
+    bool golden_cal_loaded = false;
+    bool common_cal_loaded = false;
+    bool dev_cal_loaded = false;
 };
 
 /// An interface specifying functions that are HW-agnostic.
@@ -345,6 +401,13 @@ class IDisplayColorGeneric {
         const ConfigType *config = nullptr;
     };
 
+    /// A collection of stages. For example, It could be pre-blending stages
+    //(per-channel) or post-blending stages.
+    template <typename ... IStageData>
+    struct IStageDataCollection : public IStageData ... {
+        virtual ~IStageDataCollection() {}
+    };
+
     /// Interface for accessing data for panel
     class IPanel {
       public:
@@ -364,7 +427,7 @@ class IDisplayColorGeneric {
      * @param scene Display scene data to use during the update.
      * @return OK if successful, error otherwise.
      */
-    virtual int Update(DisplayType display, const DisplayScene &scene) = 0;
+    virtual int Update(const DisplayType display, const DisplayScene &scene) = 0;
 
     /**
      * @brief Update display color data. This function is expected to be called
@@ -375,29 +438,27 @@ class IDisplayColorGeneric {
      * @param scene Display scene data to use during the update.
      * @return OK if successful, error otherwise.
      */
-    virtual int UpdatePresent(DisplayType display, const DisplayScene &scene) = 0;
+    virtual int UpdatePresent(const DisplayType display, const DisplayScene &scene) = 0;
 
     /**
      * @brief Check if refresh rate regamma compensation is enabled.
      *
      * @return true for yes.
      */
-    virtual bool IsRrCompensationEnabled(DisplayType display) = 0;
+    virtual bool IsRrCompensationEnabled(const DisplayType display) = 0;
 
     /**
      * @brief Get calibration information for each profiles.
      * @param display The display to get the calibration information.
      */
-    virtual const CalibrationInfo &GetCalibrationInfo(
-        DisplayType display) const = 0;
+    virtual const CalibrationInfo &GetCalibrationInfo(const DisplayType display) const = 0;
 
     /**
      * @brief Get a map of supported ColorModes, and supported RenderIntents for
      * each ColorMode.
      * @param display The display to get the color modes and render intents.
      */
-    virtual const ColorModesMap &ColorModesAndRenderIntents(
-        DisplayType display) const = 0;
+    virtual const ColorModesMap &ColorModesAndRenderIntents(const DisplayType display) const = 0;
 
     /**
      * @brief Get pixel format and dataspace of blending stage.
@@ -406,7 +467,7 @@ class IDisplayColorGeneric {
      * @param dataspace Dataspace of blending stage
      * @return OK if successful, error otherwise.
      */
-    virtual int GetBlendingProperty(DisplayType display,
+    virtual int GetBlendingProperty(const DisplayType display,
                                     hwc::PixelFormat &pixel_format,
                                     hwc::Dataspace &dataspace,
                                     bool &dimming_linear) const = 0;
@@ -417,6 +478,17 @@ class IDisplayColorGeneric {
      * @return The calibrated serial number.
      */
     virtual const std::string& GetCalibratedSerialNumber(DisplayType display) const = 0;
+
+    /**
+     * @brief Get brightness table to do brightness conversion between {normalized brightness, nits,
+     * dbv}.
+     * @param display Reserved field to choose display type.
+     * @param table Return brightness table if successful, nullptr if the table is not valid.
+     * @return OK if successful, error otherwise.
+     */
+    virtual int GetBrightnessTable(DisplayType display,
+                                   std::unique_ptr<const IBrightnessTable> &table) const = 0;
+
 };
 
 extern "C" {

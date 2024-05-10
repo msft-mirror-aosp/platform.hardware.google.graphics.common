@@ -25,6 +25,7 @@
 
 #include "ExynosDisplay.h"
 #include "ExynosPrimaryDisplay.h"
+#include "HistogramController.h"
 
 extern int32_t load_png_image(const char *filepath, buffer_handle_t buffer);
 
@@ -137,6 +138,30 @@ ndk::ScopedAStatus Display::getLhbmState(bool *_aidl_return) {
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
+ndk::ScopedAStatus Display::setPeakRefreshRate(int rate) {
+    if (mDisplay && mDisplay->mOperationRateManager) {
+        mDisplay->mOperationRateManager->onPeakRefreshRate(rate);
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::setLowPowerMode(bool enabled) {
+    if (mDisplay && mDisplay->mOperationRateManager) {
+        mDisplay->mOperationRateManager->onLowPowerMode(enabled);
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::isOperationRateSupported(bool *_aidl_return) {
+    if (mDisplay) {
+        *_aidl_return = mDisplay->isOperationRateSupported();
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
 ndk::ScopedAStatus Display::setCompensationImageHandle(const NativeHandle &native_handle,
                                                        const std::string &imageName,
                                                        int *_aidl_return) {
@@ -150,7 +175,7 @@ ndk::ScopedAStatus Display::setCompensationImageHandle(const NativeHandle &nativ
 
 ndk::ScopedAStatus Display::setMinIdleRefreshRate(int fps, int *_aidl_return) {
     if (mDisplay) {
-        *_aidl_return = mDisplay->setMinIdleRefreshRate(fps);
+        *_aidl_return = mDisplay->setMinIdleRefreshRate(fps, RrThrottleRequester::PIXEL_DISP);
         return ndk::ScopedAStatus::ok();
     }
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
@@ -169,25 +194,44 @@ ndk::ScopedAStatus Display::setRefreshRateThrottle(int delayMs, int *_aidl_retur
                                                               std::chrono::nanoseconds>(
                                                               std::chrono::milliseconds(delayMs))
                                                               .count(),
-                                                      VrrThrottleRequester::PIXEL_DISP);
+                                                      RrThrottleRequester::PIXEL_DISP);
         return ndk::ScopedAStatus::ok();
     }
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
-bool Display::runMediator(const RoiRect roi, const Weight weight, const HistogramPos pos,
+bool Display::runMediator(const RoiRect &roi, const Weight &weight, const HistogramPos &pos,
                             std::vector<char16_t> *histogrambuffer) {
-    if (mMediator.setRoiWeightThreshold(roi, weight, pos) != HistogramErrorCode::NONE) {
-        ALOGE("histogram error, SET_ROI_WEIGHT_THRESHOLD ERROR\n");
-        return false;
+    bool isConfigChanged;
+    histogram::HistogramMediator::HistogramConfig pendingConfig(roi, weight, pos);
+
+    {
+        std::scoped_lock lock(mMediator.mConfigMutex);
+        isConfigChanged = mMediator.mConfig != pendingConfig;
+
+        if (isConfigChanged) {
+            if (mMediator.setRoiWeightThreshold(roi, weight, pos) != HistogramErrorCode::NONE) {
+                ALOGE("histogram error, SET_ROI_WEIGHT_THRESHOLD ERROR\n");
+                return false;
+            }
+            mMediator.mConfig = pendingConfig;
+        }
     }
+
     if (!mMediator.histRequested() &&
         mMediator.requestHist() == HistogramErrorCode::ENABLE_HIST_ERROR) {
         ALOGE("histogram error, ENABLE_HIST ERROR\n");
     }
-    if (mMediator.getFrameCount() != mMediator.getSampleFrameCounter()) {
-        mDisplay->mDevice->onRefresh(); // DRM not busy & sampled frame changed
+
+    /*
+     * DPU driver maintains always-on histogram engine state with up to date histogram data.
+     * Therefore we don't have explicitly to trigger onRefresh in case histogram configuration
+     * does not change.
+     */
+    if (isConfigChanged) {
+        mDisplay->mDevice->onRefresh(mDisplay->mDisplayId);
     }
+
     if (mMediator.collectRoiLuma(histogrambuffer) != HistogramErrorCode::NONE) {
         ALOGE("histogram error, COLLECT_ROI_LUMA ERROR\n");
         return false;
@@ -208,11 +252,11 @@ ndk::ScopedAStatus Display::histogramSample(const RoiRect &roi, const Weight &we
         *_aidl_return = HistogramErrorCode::BAD_HIST_DATA;
         return ndk::ScopedAStatus::ok();
     }
-    if (mMediator.isDisplayPowerOff() == true) {
+    if (mDisplay->isPowerModeOff() == true) {
         *_aidl_return = HistogramErrorCode::DISPLAY_POWEROFF; // panel is off
         return ndk::ScopedAStatus::ok();
     }
-    if (mMediator.isSecureContentPresenting() == true) {
+    if (mDisplay->isSecureContentPresenting() == true) {
         *_aidl_return = HistogramErrorCode::DRM_PLAYING; // panel is playing DRM content
         return ndk::ScopedAStatus::ok();
     }
@@ -241,7 +285,7 @@ ndk::ScopedAStatus Display::histogramSample(const RoiRect &roi, const Weight &we
     }
     RoiRect roiCaled = mMediator.calRoi(roi); // fit roi coordinates to RRS
     runMediator(roiCaled, weight, pos, histogrambuffer);
-    if (mMediator.isSecureContentPresenting() == true) {
+    if (mDisplay->isSecureContentPresenting() == true) {
         /* clear data to avoid leakage */
         std::fill(histogrambuffer->begin(), histogrambuffer->end(), 0);
         histogrambuffer->clear();
@@ -260,6 +304,67 @@ ndk::ScopedAStatus Display::getPanelCalibrationStatus(PanelCalibrationStatus *_a
     }
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
+
+ndk::ScopedAStatus Display::isDbmSupported(bool *_aidl_return) {
+    if (!mDisplay) {
+        return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+    }
+    *_aidl_return = mDisplay->isDbmSupported();
+    return ndk::ScopedAStatus::ok();
+}
+
+ndk::ScopedAStatus Display::setDbmState(bool enabled) {
+    if (!mDisplay) {
+        return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+    }
+    mDisplay->setDbmState(enabled);
+    return ndk::ScopedAStatus::ok();
+}
+
+ndk::ScopedAStatus Display::getHistogramCapability(HistogramCapability *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->getHistogramCapability(_aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::registerHistogram(const ndk::SpAIBinder &token,
+                                              const HistogramConfig &histogramConfig,
+                                              HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->registerHistogram(token, histogramConfig,
+                                                                 _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::queryHistogram(const ndk::SpAIBinder &token,
+                                           std::vector<char16_t> *histogramBuffer,
+                                           HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->queryHistogram(token, histogramBuffer, _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::reconfigHistogram(const ndk::SpAIBinder &token,
+                                              const HistogramConfig &histogramConfig,
+                                              HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->reconfigHistogram(token, histogramConfig,
+                                                                 _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::unregisterHistogram(const ndk::SpAIBinder &token,
+                                                HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->unregisterHistogram(token, _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
 } // namespace display
 } // namespace pixel
 } // namespace hardware

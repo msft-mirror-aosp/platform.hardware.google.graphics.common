@@ -30,14 +30,20 @@
 
 using namespace SOC_VERSION;
 
+namespace {
+
+static constexpr int32_t kMinComposerInterfaceVersionForVrrApi = 3;
+
+};
+
 namespace aidl::android::hardware::graphics::composer3::impl {
 
-std::unique_ptr<IComposerHal> IComposerHal::create() {
-    auto device = std::make_unique<ExynosDeviceModule>();
+std::unique_ptr<IComposerHal> IComposerHal::create(int32_t composerInterfaceVersion) {
+    bool vrrApiSupported = composerInterfaceVersion >= kMinComposerInterfaceVersionForVrrApi;
+    auto device = std::make_unique<ExynosDeviceModule>(vrrApiSupported);
     if (!device) {
         return nullptr;
     }
-
     return std::make_unique<HalImpl>(std::move(device));
 }
 
@@ -99,6 +105,22 @@ void seamlessPossible(hwc2_callback_data_t callbackData, hwc2_display_t hwcDispl
     hal->getEventCallback()->onSeamlessPossible(display);
 }
 
+void refreshRateChangedDebug(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
+                             hwc2_vsync_period_t hwcVsyncPeriodNanos) {
+    auto hal = static_cast<HalImpl*>(callbackData);
+    int64_t display;
+    int32_t vsyncPeriodNanos;
+
+    h2a::translate(hwcDisplay, display);
+    h2a::translate(hwcVsyncPeriodNanos, vsyncPeriodNanos);
+    // TODO (b/314527560) Update refreshPeriodNanos for VRR display
+    hal->getEventCallback()->onRefreshRateChangedDebug(RefreshRateChangedDebugData{
+            .display = display,
+            .vsyncPeriodNanos = vsyncPeriodNanos,
+            .refreshPeriodNanos = vsyncPeriodNanos,
+    });
+}
+
 } // nampesapce hook
 
 HalImpl::HalImpl(std::unique_ptr<ExynosDevice> device) : mDevice(std::move(device)) {
@@ -130,6 +152,7 @@ void HalImpl::initCaps() {
     }
 
     mCaps.insert(Capability::BOOT_DISPLAY_CONFIG);
+    mCaps.insert(Capability::REFRESH_RATE_CHANGED_CALLBACK_DEBUG);
 }
 
 int32_t HalImpl::getHalDisplay(int64_t display, ExynosDisplay*& halDisplay) {
@@ -193,6 +216,9 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
     // register HWC3 Callback
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this,
                                   reinterpret_cast<hwc2_function_pointer_t>(hook::vsyncIdle));
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
+                                  reinterpret_cast<hwc2_function_pointer_t>(
+                                          hook::refreshRateChangedDebug));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -204,6 +230,8 @@ void HalImpl::unregisterEventCallback() {
 
     // unregister HWC3 Callback
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this, nullptr);
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
+                                  nullptr);
 
     mEventCallback = nullptr;
 }
@@ -353,6 +381,67 @@ int32_t HalImpl::getDisplayConfigs(int64_t display, std::vector<int32_t>* config
     return HWC2_ERROR_NONE;
 }
 
+int32_t HalImpl::getDisplayConfigurations(int64_t display, int32_t,
+                                          std::vector<DisplayConfiguration>* outConfigs) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    std::vector<int32_t> configIds;
+    RET_IF_ERR(getDisplayConfigs(display, &configIds));
+
+    for (const auto configId : configIds) {
+        DisplayConfiguration config;
+        config.configId = configId;
+        // Get required display attributes
+        RET_IF_ERR(getDisplayAttribute(display, configId, DisplayAttribute::WIDTH, &config.width));
+        RET_IF_ERR(
+                getDisplayAttribute(display, configId, DisplayAttribute::HEIGHT, &config.height));
+        RET_IF_ERR(getDisplayAttribute(display, configId, DisplayAttribute::VSYNC_PERIOD,
+                                       &config.vsyncPeriod));
+        RET_IF_ERR(getDisplayAttribute(display, configId, DisplayAttribute::CONFIG_GROUP,
+                                       &config.configGroup));
+        // Get optional display attributes
+        int32_t dpiX, dpiY;
+        auto statusDpiX = getDisplayAttribute(display, configId, DisplayAttribute::DPI_X, &dpiX);
+        auto statusDpiY = getDisplayAttribute(display, configId, DisplayAttribute::DPI_Y, &dpiY);
+        // TODO(b/294120341): getDisplayAttribute for DPI should return dots per inch
+        if (statusDpiX == HWC2_ERROR_NONE && statusDpiY == HWC2_ERROR_NONE) {
+            config.dpi = {dpiX / 1000.0f, dpiY / 1000.0f};
+        }
+        // Determine whether there is a need to configure VRR.
+        hwc2_config_t hwcConfigId;
+        a2h::translate(configId, hwcConfigId);
+        std::optional<VrrConfig_t> vrrConfig = halDisplay->getVrrConfigs(hwcConfigId);
+        if (vrrConfig.has_value()) {
+            // TODO(b/290843234): complete the remaining values within vrrConfig.
+            VrrConfig hwc3VrrConfig;
+            VrrConfig::NotifyExpectedPresentConfig notifyExpectedPresentConfig;
+            hwc3VrrConfig.minFrameIntervalNs = vrrConfig->minFrameIntervalNs;
+            notifyExpectedPresentConfig.notifyExpectedPresentHeadsUpNs =
+                    vrrConfig->notifyExpectedPresentConfig.HeadsUpNs;
+            notifyExpectedPresentConfig.notifyExpectedPresentTimeoutNs =
+                    vrrConfig->notifyExpectedPresentConfig.TimeoutNs;
+            hwc3VrrConfig.notifyExpectedPresentConfig =
+                    std::make_optional(notifyExpectedPresentConfig);
+            config.vrrConfig = std::make_optional(hwc3VrrConfig);
+        }
+        outConfigs->push_back(config);
+    }
+
+    return HWC2_ERROR_NONE;
+}
+
+int32_t HalImpl::notifyExpectedPresent(int64_t display,
+                                       const ClockMonotonicTimestamp& expectedPresentTime,
+                                       int32_t frameIntervalNs) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    RET_IF_ERR(
+            halDisplay->notifyExpectedPresent(expectedPresentTime.timestampNanos, frameIntervalNs));
+    return HWC2_ERROR_NONE;
+}
+
 int32_t HalImpl::getDisplayConnectionType(int64_t display, DisplayConnectionType* outType) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
@@ -457,6 +546,10 @@ int32_t HalImpl::getHdrCapabilities(int64_t display, HdrCapabilities* caps) {
     return HWC2_ERROR_NONE;
 }
 
+int32_t HalImpl::getOverlaySupport(OverlayProperties* caps) {
+    return mDevice->getOverlaySupport(caps);
+}
+
 int32_t HalImpl::getMaxVirtualDisplayCount(int32_t* count) {
     uint32_t hwcCount = mDevice->getMaxVirtualDisplayCount();
     h2a::translate(hwcCount, *count);
@@ -558,10 +651,10 @@ int32_t HalImpl::presentDisplay(int64_t display, ndk::ScopedFileDescriptor& fenc
 
    // TODO: not expect acceptDisplayChanges if there are no changes to accept
     if (halDisplay->mRenderingState == RENDERING_STATE_VALIDATED) {
-        LOG(INFO) << halDisplay->mDisplayName.string()
+        LOG(INFO) << halDisplay->mDisplayName.c_str()
                    << ": acceptDisplayChanges was not called";
         if (halDisplay->acceptDisplayChanges() != HWC2_ERROR_NONE) {
-            LOG(ERROR) << halDisplay->mDisplayName.string()
+            LOG(ERROR) << halDisplay->mDisplayName.c_str()
             << ": acceptDisplayChanges is failed";
         }
     }
@@ -632,6 +725,14 @@ int32_t HalImpl::getPreferredBootDisplayConfig(int64_t display, int32_t* config)
     return halDisplay->getPreferredBootDisplayConfig(config);
 }
 
+int32_t HalImpl::getHdrConversionCapabilities(std::vector<common::HdrConversionCapability>*) {
+    return HWC2_ERROR_UNSUPPORTED;
+}
+
+int32_t HalImpl::setHdrConversionStrategy(const common::HdrConversionStrategy&, common::Hdr*) {
+    return HWC2_ERROR_UNSUPPORTED;
+}
+
 int32_t HalImpl::setAutoLowLatencyMode(int64_t display, bool on) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
@@ -657,6 +758,15 @@ int32_t HalImpl::setClientTarget(int64_t display, buffer_handle_t target,
     UNUSED(region);
 
     return halDisplay->setClientTarget(target, hwcFence, hwcDataspace);
+}
+
+int32_t HalImpl::getHasClientComposition(int64_t display, bool& outHasClientComp) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    outHasClientComp = halDisplay->hasClientComposition();
+
+    return HWC2_ERROR_NONE;
 }
 
 int32_t HalImpl::setColorMode(int64_t display, ColorMode mode, RenderIntent intent) {
@@ -1000,11 +1110,12 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
         h2a::translate(hwcProperty, *outClientTargetProperty);
     } // else ignore this error
 
-    return HWC2_ERROR_NONE;
+    return err;
 }
 
 int HalImpl::setExpectedPresentTime(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
@@ -1014,7 +1125,7 @@ int HalImpl::setExpectedPresentTime(
         ALOGW("HalImpl: set expected present time multiple times in one frame");
     }
 
-    halDisplay->setExpectedPresentTime(expectedPresentTime->timestampNanos);
+    halDisplay->setExpectedPresentTime(expectedPresentTime->timestampNanos, frameIntervalNs);
 
     return HWC2_ERROR_NONE;
 }
@@ -1043,6 +1154,20 @@ int32_t HalImpl::getDisplayIdleTimerSupport(int64_t display, bool& outSupport) {
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
     return halDisplay->getDisplayIdleTimerSupport(outSupport);
+}
+
+int32_t HalImpl::getDisplayMultiThreadedPresentSupport(const int64_t& display, bool& outSupport) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    return halDisplay->getDisplayMultiThreadedPresentSupport(outSupport);
+}
+
+int32_t HalImpl::setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool enabled) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    return halDisplay->setRefreshRateChangedCallbackDebugEnabled(enabled);
 }
 
 } // namespace aidl::android::hardware::graphics::composer3::impl

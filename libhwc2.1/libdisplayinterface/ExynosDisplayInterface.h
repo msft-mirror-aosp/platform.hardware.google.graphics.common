@@ -17,12 +17,16 @@
 #ifndef _EXYNOSDISPLAYINTERFACE_H
 #define _EXYNOSDISPLAYINTERFACE_H
 
-#include <sys/types.h>
 #include <hardware/hwcomposer2.h>
+#include <sys/types.h>
 #include <utils/Errors.h>
+
 #include "ExynosHWCHelper.h"
 
 class ExynosDisplay;
+
+struct VrrSettings;
+typedef struct VrrSettings VrrSettings_t;
 
 using namespace android;
 class ExynosDisplayInterface {
@@ -48,11 +52,13 @@ class ExynosDisplayInterface {
         {return NO_ERROR;};
         virtual int32_t getDisplayVsyncPeriod(hwc2_vsync_period_t* outVsyncPeriod);
         virtual int32_t getConfigChangeDuration() {return 0;};
+        virtual bool needRefreshOnLP() { return false; };
         virtual int32_t setCursorPositionAsync(uint32_t __unused x_pos,
                 uint32_t __unused y_pos) {return NO_ERROR;};
         virtual int32_t updateHdrCapabilities();
         virtual int32_t deliverWinConfigData() {return NO_ERROR;};
         virtual int32_t clearDisplay(bool __unused needModeClear = false) {return NO_ERROR;};
+        virtual int32_t triggerClearDisplayPlanes() { return NO_ERROR; }
         virtual int32_t disableSelfRefresh(uint32_t __unused disable) {return NO_ERROR;};
         virtual int32_t setForcePanic() {return NO_ERROR;};
         virtual int getDisplayFd() {return -1;};
@@ -79,8 +85,16 @@ class ExynosDisplayInterface {
         virtual int32_t getDefaultModeId(int32_t* __unused modeId) {
             return HWC2_ERROR_UNSUPPORTED;
         }
+        virtual uint32_t getActiveModeId() { return UINT_MAX; }
 
         virtual int32_t waitVBlank() { return 0; };
+
+        virtual bool readHotplugStatus() { return true; };
+        virtual int readHotplugErrorCode() { return 0; };
+        virtual void resetHotplugErrorCode(){};
+
+        virtual void setVrrSettings(const VrrSettings_t& vrrSettings);
+
     public:
         uint32_t mType = INTERFACE_TYPE_NONE;
 };
