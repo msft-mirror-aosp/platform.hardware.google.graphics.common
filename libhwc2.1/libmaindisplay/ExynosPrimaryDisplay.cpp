@@ -580,6 +580,39 @@ int32_t ExynosPrimaryDisplay::setPowerMode(int32_t mode) {
         return HWC2_ERROR_NONE;
     }
 
+    if (mode == HWC2_POWER_MODE_ON && mDevice->mNumPrimaryDisplays >= 2) {
+        ExynosDisplay* external_display =
+                mDevice->getDisplay(getDisplayId(HWC_DISPLAY_EXTERNAL, 0));
+        ExynosDisplayDrmInterface* external_display_intf = external_display
+                ? static_cast<ExynosDisplayDrmInterface*>(external_display->mDisplayInterface.get())
+                : nullptr;
+        if (external_display_intf && external_display_intf->borrowedCrtcFrom() == this) {
+            ALOGI("Display %s is powering on, adjusting decon assignments",
+                  mDisplayTraceName.c_str());
+            hwc2_config_t activeConfig = 0;
+            external_display->getActiveConfig(&activeConfig);
+            external_display->clearDisplay(true);
+            external_display->setPowerMode(HWC2_POWER_MODE_OFF);
+            // Restore the original decon assigned to external display, this will ensure
+            // primary displays remain on the same initially assigned decons.
+            external_display_intf->swapCrtcs(this);
+            // This display is about to be powered on, but its mPowerModeState is not updated yet,
+            // so we need to exclude it from consideration explicitly here.
+            ExynosDisplay* poweredOffPrimaryDisplay = mDevice->findPoweredOffPrimaryDisplay(this);
+            if (poweredOffPrimaryDisplay) {
+                ALOGI("Found powered off primary display %s, will use its decon for external "
+                      "display",
+                      poweredOffPrimaryDisplay->mDisplayTraceName.c_str());
+                external_display_intf->swapCrtcs(poweredOffPrimaryDisplay);
+            } else {
+                ALOGE("Could not find a powered off primary display!");
+            }
+            external_display->mActiveConfig = 0;
+            external_display->setActiveConfig(activeConfig);
+            external_display->setPowerMode(HWC2_POWER_MODE_ON);
+        }
+    }
+
     int fb_blank = (mode != HWC2_POWER_MODE_OFF) ? FB_BLANK_UNBLANK : FB_BLANK_POWERDOWN;
     ALOGD("%s:: FBIOBLANK mode(%d), blank(%d)", __func__, mode, fb_blank);
 
@@ -844,6 +877,15 @@ int32_t ExynosPrimaryDisplay::setPresentTimeoutController(uint32_t controllerTyp
         return NO_ERROR;
     }
     return HWC2_ERROR_UNSUPPORTED;
+}
+
+int32_t ExynosPrimaryDisplay::setRefreshRateChangedCallbackDebugEnabled(bool enabled) {
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->enableRefreshRateCalculator(enabled);
+    } else {
+        ExynosDisplay::setRefreshRateChangedCallbackDebugEnabled(enabled);
+    }
+    return NO_ERROR;
 }
 
 int32_t ExynosPrimaryDisplay::setLhbmDisplayConfigLocked(uint32_t peakRate) {
@@ -1302,6 +1344,15 @@ int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
                       "to %d",
                       __func__, std::get<0>(res.value()), it->second);
                 fps = std::max(fps, it->second);
+                if (mDisplayConfigs.count(mActiveConfig)) {
+                    if (fps > mDisplayConfigs[mActiveConfig].refreshRate) {
+                        ALOGI("%s() The brightness blocking zone votes for the FPS = %d, which is "
+                              "higher than the maximum refresh rate of the current configuration = "
+                              "%d",
+                              __func__, fps, mDisplayConfigs[mActiveConfig].refreshRate);
+                        fps = mDisplayConfigs[mActiveConfig].refreshRate;
+                    }
+                }
             }
         }
     }

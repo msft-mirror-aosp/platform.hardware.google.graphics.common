@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
+
 #include "InstantRefreshRateCalculator.h"
 
 #include <algorithm>
@@ -36,7 +38,7 @@ int InstantRefreshRateCalculator::getRefreshRate() const {
     return mLastRefreshRate;
 }
 
-void InstantRefreshRateCalculator::onPresent(int64_t presentTimeNs, int flag) {
+void InstantRefreshRateCalculator::onPresentInternal(int64_t presentTimeNs, int flag) {
     if (hasPresentFrameFlag(flag, PresentFrameFlag::kPresentingWhenDoze)) {
         return;
     }
@@ -71,7 +73,7 @@ void InstantRefreshRateCalculator::setEnabled(bool isEnabled) {
     if (!isEnabled) {
         mEventQueue->dropEvent(VrrControllerEventType::kInstantRefreshRateCalculatorUpdate);
     } else {
-        mTimeoutEvent.mWhenNs = getNowNs() + mMaxValidTimeNs;
+        mTimeoutEvent.mWhenNs = getSteadyClockTimeNs() + mMaxValidTimeNs;
         mEventQueue->mPriorityQueue.emplace(mTimeoutEvent);
     }
 }
@@ -84,6 +86,7 @@ bool InstantRefreshRateCalculator::isOutdated(int64_t timeNs) const {
 void InstantRefreshRateCalculator::setNewRefreshRate(int newRefreshRate) {
     if (newRefreshRate != mLastRefreshRate) {
         mLastRefreshRate = newRefreshRate;
+        ATRACE_INT(mName.c_str(), newRefreshRate);
         if (mRefreshRateChangeCallback) {
             mRefreshRateChangeCallback(newRefreshRate);
         }
@@ -91,7 +94,7 @@ void InstantRefreshRateCalculator::setNewRefreshRate(int newRefreshRate) {
 }
 
 int InstantRefreshRateCalculator::updateRefreshRate() {
-    if (isOutdated(getNowNs())) {
+    if (isOutdated(getSteadyClockTimeNs())) {
         reset();
     }
     return NO_ERROR;

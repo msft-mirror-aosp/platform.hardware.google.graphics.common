@@ -28,6 +28,8 @@
 #include "interface/DisplayContextProvider.h"
 #include "interface/VariableRefreshRateInterface.h"
 
+// #define DEBUG_VRR_STATISTICS 1
+
 namespace android::hardware::graphics::composer {
 
 // |DisplayStatus| is the intrinsic property of the key for statistics, representing the display
@@ -113,7 +115,8 @@ typedef struct DisplayPresentRecord {
     DisplayPresentRecord& operator+=(const DisplayPresentRecord& other) {
         this->mCount += other.mCount;
         this->mAccumulatedTimeNs += other.mAccumulatedTimeNs;
-        this->mLastTimeStampNs = std::max(mLastTimeStampNs, other.mLastTimeStampNs);
+        this->mLastTimeStampInBootClockNs =
+                std::max(mLastTimeStampInBootClockNs, other.mLastTimeStampInBootClockNs);
         mUpdated = true;
         return *this;
     }
@@ -121,12 +124,12 @@ typedef struct DisplayPresentRecord {
         std::ostringstream os;
         os << "Count = " << mCount;
         os << ", AccumulatedTimeNs = " << mAccumulatedTimeNs / 1000000;
-        os << ", LastTimeStampNs = " << mLastTimeStampNs;
+        os << ", LastTimeStampInBootClockNs = " << mLastTimeStampInBootClockNs;
         return os.str();
     }
     uint64_t mCount = 0;
     uint64_t mAccumulatedTimeNs = 0;
-    uint64_t mLastTimeStampNs = 0;
+    uint64_t mLastTimeStampInBootClockNs = 0;
     bool mUpdated = false;
 } DisplayPresentRecord;
 
@@ -138,11 +141,9 @@ class StatisticsProvider {
 public:
     virtual ~StatisticsProvider() = default;
 
-    virtual uint64_t getPowerOffDurationNs() const = 0;
-
     virtual uint64_t getStartStatisticTimeNs() const = 0;
 
-    virtual DisplayPresentStatistics getStatistics() const = 0;
+    virtual DisplayPresentStatistics getStatistics() = 0;
 
     virtual DisplayPresentStatistics getUpdatedStatistics() = 0;
 };
@@ -155,11 +156,11 @@ public:
                                  EventQueue* eventQueue, int maxFrameRate, int maxTeFrequency,
                                  int64_t updatePeriodNs);
 
-    uint64_t getPowerOffDurationNs() const override;
+    uint64_t getPowerOffDurationNs() const;
 
     uint64_t getStartStatisticTimeNs() const override;
 
-    DisplayPresentStatistics getStatistics() const override;
+    DisplayPresentStatistics getStatistics() override;
 
     DisplayPresentStatistics getUpdatedStatistics() override;
 
@@ -182,11 +183,13 @@ private:
 
     bool isPowerModeOffNowLocked() const;
 
-    int onPresentTimeout();
-
     void updateCurrentDisplayStatus();
 
+    void updateIdleStats(int64_t endTimeStampInBootClockNs = -1);
+
+#ifdef DEBUG_VRR_STATISTICS
     int updateStatistic();
+#endif
 
     CommonDisplayContextProvider* mDisplayContextProvider;
     EventQueue* mEventQueue;
@@ -200,12 +203,9 @@ private:
 
     const int64_t mUpdatePeriodNs;
 
-    int64_t mLastPresentTimeNs = kDefaultInvalidPresentTimeNs;
+    int64_t mLastPresentTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
 
     DisplayPresentStatistics mStatistics;
-    VrrControllerEvent mTimeoutEvent;
-    VrrControllerEvent mUpdateEvent;
-
     DisplayPresentProfile mDisplayPresentProfile;
 
     uint64_t mPowerOffDurationNs = 0;
@@ -214,6 +214,12 @@ private:
     uint64_t mMaximumFrameIntervalNs = kMaxPresentIntervalNs; // 1 second.
 
     uint64_t mStartStatisticTimeNs;
+
+    SystemClockTimeTranslator mSystemClockTimeTranslator;
+
+#ifdef DEBUG_VRR_STATISTICS
+    VrrControllerEvent mUpdateEvent;
+#endif
 
     mutable std::mutex mMutex;
 };

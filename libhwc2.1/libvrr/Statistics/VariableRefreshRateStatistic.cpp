@@ -16,8 +16,6 @@
 
 #include "VariableRefreshRateStatistic.h"
 
-// #define DEBUG_VRR_STATISTICS 1
-
 namespace android::hardware::graphics::composer {
 
 VariableRefreshRateStatistic::VariableRefreshRateStatistic(
@@ -31,12 +29,7 @@ VariableRefreshRateStatistic::VariableRefreshRateStatistic(
         mTeFrequency(maxFrameRate),
         mTeIntervalNs(roundDivide(std::nano::den, static_cast<int64_t>(mTeFrequency))),
         mUpdatePeriodNs(updatePeriodNs) {
-    mTimeoutEvent.mEventType = VrrControllerEventType::kStatisticPresentTimeout;
-    mTimeoutEvent.mFunctor =
-            std::move(std::bind(&VariableRefreshRateStatistic::onPresentTimeout, this));
-    mTimeoutEvent.mWhenNs = getNowNs() + mMaximumFrameIntervalNs;
-    mEventQueue->mPriorityQueue.emplace(mTimeoutEvent);
-    mStartStatisticTimeNs = getNowNs();
+    mStartStatisticTimeNs = getBootClockTimeNs();
 
     // For debugging purposes, this will only be triggered when DEBUG_VRR_STATISTICS is defined.
 #ifdef DEBUG_VRR_STATISTICS
@@ -48,7 +41,8 @@ VariableRefreshRateStatistic::VariableRefreshRateStatistic(
     mUpdateEvent.mEventType = VrrControllerEventType::kStaticticUpdate;
     mUpdateEvent.mFunctor =
             std::move(std::bind(&VariableRefreshRateStatistic::updateStatistic, this));
-    mUpdateEvent.mWhenNs = getNowNs() + mUpdatePeriodNs;
+    mUpdateEvent.mWhenNs = getSteadyClockTimeNs() + mUpdatePeriodNs;
+    mEventQueue->mPriorityQueue.emplace(mUpdateEvent);
 #endif
     mStatistics[mDisplayPresentProfile] = DisplayPresentRecord();
 }
@@ -60,7 +54,8 @@ uint64_t VariableRefreshRateStatistic::getPowerOffDurationNs() const {
             ALOGE("%s We should have inserted power-off item in constructor.", __func__);
             return 0;
         }
-        return mPowerOffDurationNs + (getNowNs() - item->second.mLastTimeStampNs);
+        return mPowerOffDurationNs +
+                (getBootClockTimeNs() - item->second.mLastTimeStampInBootClockNs);
     } else {
         return mPowerOffDurationNs;
     }
@@ -70,12 +65,14 @@ uint64_t VariableRefreshRateStatistic::getStartStatisticTimeNs() const {
     return mStartStatisticTimeNs;
 }
 
-DisplayPresentStatistics VariableRefreshRateStatistic::getStatistics() const {
+DisplayPresentStatistics VariableRefreshRateStatistic::getStatistics() {
+    updateIdleStats();
     std::scoped_lock lock(mMutex);
     return mStatistics;
 }
 
 DisplayPresentStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
+    updateIdleStats();
     std::scoped_lock lock(mMutex);
     DisplayPresentStatistics updatedStatistics;
     for (auto& it : mStatistics) {
@@ -98,43 +95,42 @@ void VariableRefreshRateStatistic::onPowerStateChange(int from, int to) {
         ALOGE("%s Power mode mismatch between storing state(%d) and actual mode(%d)", __func__,
               mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode, from);
     }
-
+    mSystemClockTimeTranslator.synchronize();
+    updateIdleStats();
     std::scoped_lock lock(mMutex);
     if (isPowerModeOff(to)) {
         // Currently the for power stats both |HWC_POWER_MODE_OFF| and |HWC_POWER_MODE_DOZE_SUSPEND|
         // are classified as "off" states in power statistics. Consequently,we assign the value of
         // |HWC_POWER_MODE_OFF| to |mPowerMode| when it is |HWC_POWER_MODE_DOZE_SUSPEND|.
         mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode = HWC_POWER_MODE_OFF;
-        mEventQueue->dropEvent(VrrControllerEventType::kStatisticPresentTimeout);
 
         auto& record = mStatistics[mDisplayPresentProfile];
         ++record.mCount;
-        record.mLastTimeStampNs = getNowNs();
+        record.mLastTimeStampInBootClockNs = getBootClockTimeNs();
         record.mUpdated = true;
 
-        mLastPresentTimeNs = kDefaultInvalidPresentTimeNs;
+        mLastPresentTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
     } else {
         if (isPowerModeOff(from)) {
-            mTimeoutEvent.mWhenNs = getNowNs() + mMaximumFrameIntervalNs;
-            mEventQueue->mPriorityQueue.emplace(mTimeoutEvent);
             mPowerOffDurationNs +=
-                    (getNowNs() - mStatistics[mDisplayPresentProfile].mLastTimeStampNs);
+                    (getBootClockTimeNs() -
+                     mStatistics[mDisplayPresentProfile].mLastTimeStampInBootClockNs);
         }
         mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode = to;
     }
 }
 
 void VariableRefreshRateStatistic::onPresent(int64_t presentTimeNs, int flag) {
-    mEventQueue->dropEvent(VrrControllerEventType::kStatisticPresentTimeout);
-    mTimeoutEvent.mWhenNs = presentTimeNs + mMaximumFrameIntervalNs;
-    mEventQueue->mPriorityQueue.emplace(mTimeoutEvent);
-
-    if (mLastPresentTimeNs == kDefaultInvalidPresentTimeNs) {
-        mLastPresentTimeNs = presentTimeNs;
+    int64_t presentTimeInBootClockNs =
+            mSystemClockTimeTranslator.steadyClockTimeToBootClockTimeNs(presentTimeNs);
+    if (mLastPresentTimeInBootClockNs == kDefaultInvalidPresentTimeNs) {
+        mLastPresentTimeInBootClockNs = presentTimeInBootClockNs;
         // Ignore first present after resume
         return;
     }
-    int numVsync = roundDivide((presentTimeNs - mLastPresentTimeNs), mTeIntervalNs);
+    updateIdleStats(presentTimeInBootClockNs);
+    int numVsync =
+            roundDivide((presentTimeInBootClockNs - mLastPresentTimeInBootClockNs), mTeIntervalNs);
     numVsync = std::max(1, numVsync);
     numVsync = std::min(mTeFrequency, numVsync);
 
@@ -148,19 +144,20 @@ void VariableRefreshRateStatistic::onPresent(int64_t presentTimeNs, int flag) {
     } else {
         mDisplayPresentProfile.mNumVsync = numVsync;
     }
-    mLastPresentTimeNs = presentTimeNs;
+    mLastPresentTimeInBootClockNs = presentTimeInBootClockNs;
     {
         std::scoped_lock lock(mMutex);
 
         auto& record = mStatistics[mDisplayPresentProfile];
         ++record.mCount;
         record.mAccumulatedTimeNs += (mTeIntervalNs * numVsync);
-        record.mLastTimeStampNs = presentTimeNs;
+        record.mLastTimeStampInBootClockNs = presentTimeInBootClockNs;
         record.mUpdated = true;
     }
 }
 
 void VariableRefreshRateStatistic::setActiveVrrConfiguration(int activeConfigId, int teFrequency) {
+    updateIdleStats();
     mDisplayPresentProfile.mCurrentDisplayConfig.mActiveConfigId = activeConfigId;
     mTeFrequency = teFrequency;
     if (mTeFrequency % mMaxFrameRate != 0) {
@@ -177,6 +174,7 @@ void VariableRefreshRateStatistic::setActiveVrrConfiguration(int activeConfigId,
 
 void VariableRefreshRateStatistic::setFixedRefreshRate(uint32_t rate) {
     if (mMinimumRefreshRate != rate) {
+        updateIdleStats();
         mMinimumRefreshRate = rate;
         if (mMinimumRefreshRate > 1) {
             mMaximumFrameIntervalNs =
@@ -197,26 +195,6 @@ bool VariableRefreshRateStatistic::isPowerModeOffNowLocked() const {
     return isPowerModeOff(mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode);
 }
 
-int VariableRefreshRateStatistic::onPresentTimeout() {
-    updateCurrentDisplayStatus();
-    mDisplayPresentProfile.mNumVsync =
-            (mMinimumRefreshRate > 1 ? (mTeFrequency / mMinimumRefreshRate) : mTeFrequency);
-    {
-        std::scoped_lock lock(mMutex);
-
-        auto& record = mStatistics[mDisplayPresentProfile];
-        ++record.mCount;
-        record.mAccumulatedTimeNs += mMaximumFrameIntervalNs;
-        mLastPresentTimeNs = record.mLastTimeStampNs = getNowNs();
-        record.mUpdated = true;
-    }
-
-    // Post next present timeout event.
-    mTimeoutEvent.mWhenNs = getNowNs() + mMaximumFrameIntervalNs;
-    mEventQueue->mPriorityQueue.emplace(mTimeoutEvent);
-    return 1;
-}
-
 void VariableRefreshRateStatistic::updateCurrentDisplayStatus() {
     mDisplayPresentProfile.mCurrentDisplayConfig.mBrightnessMode =
             mDisplayContextProvider->getBrightnessMode();
@@ -227,7 +205,34 @@ void VariableRefreshRateStatistic::updateCurrentDisplayStatus() {
     }
 }
 
+void VariableRefreshRateStatistic::updateIdleStats(int64_t endTimeStampInBootClockNs) {
+    if (mDisplayPresentProfile.isOff()) return;
+    if (mLastPresentTimeInBootClockNs == kDefaultInvalidPresentTimeNs) return;
+    endTimeStampInBootClockNs =
+            endTimeStampInBootClockNs < 0 ? getBootClockTimeNs() : endTimeStampInBootClockNs;
+    int numVsync =
+            roundDivide((endTimeStampInBootClockNs - mLastPresentTimeInBootClockNs), mTeIntervalNs);
+    mDisplayPresentProfile.mNumVsync =
+            (mMinimumRefreshRate > 1 ? (mTeFrequency / mMinimumRefreshRate) : mTeFrequency);
+    if (numVsync < mDisplayPresentProfile.mNumVsync) return;
+
+    auto count = numVsync / mDisplayPresentProfile.mNumVsync;
+    auto duration = mMaximumFrameIntervalNs * count;
+    {
+        std::scoped_lock lock(mMutex);
+
+        auto& record = mStatistics[mDisplayPresentProfile];
+        record.mCount += count;
+        record.mAccumulatedTimeNs += duration;
+        mLastPresentTimeInBootClockNs += duration;
+        record.mLastTimeStampInBootClockNs = mLastPresentTimeInBootClockNs;
+        record.mUpdated = true;
+    }
+}
+
+#ifdef DEBUG_VRR_STATISTICS
 int VariableRefreshRateStatistic::updateStatistic() {
+    updateIdleStats();
     for (const auto& it : mStatistics) {
         const auto& key = it.first;
         const auto& value = it.second;
@@ -235,13 +240,14 @@ int VariableRefreshRateStatistic::updateStatistic() {
               "= %d : count = %ld, last entry time =  %ld",
               __func__, key.mCurrentDisplayConfig.mPowerMode,
               key.mCurrentDisplayConfig.mActiveConfigId, key.mCurrentDisplayConfig.mBrightnessMode,
-              key.mNumVsync, value.mCount, value.mLastTimeStampNs);
+              key.mNumVsync, value.mCount, value.mLastTimeStampInBootClockNs);
     }
     // Post next update statistics event.
-    mUpdateEvent.mWhenNs = getNowNs() + mUpdatePeriodNs;
+    mUpdateEvent.mWhenNs = getSteadyClockTimeNs() + mUpdatePeriodNs;
     mEventQueue->mPriorityQueue.emplace(mUpdateEvent);
 
     return NO_ERROR;
 }
+#endif
 
 } // namespace android::hardware::graphics::composer

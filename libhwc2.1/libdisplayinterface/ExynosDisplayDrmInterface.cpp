@@ -782,7 +782,7 @@ int32_t ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
     }
 
     if (mExynosDisplay->mHistogramController) {
-        mExynosDisplay->mHistogramController->initDrm(*mDrmCrtc);
+        mExynosDisplay->mHistogramController->initDrm(*mDrmDevice, *mDrmCrtc);
     }
 
     return NO_ERROR;
@@ -931,6 +931,34 @@ int32_t ExynosDisplayDrmInterface::setPowerMode(int32_t mode)
     if ((ret = drmModeConnectorSetProperty(mDrmDevice->fd(), mDrmConnector->id(), prop.id(),
             dpms_value)) != NO_ERROR) {
         HWC_LOGE(mExynosDisplay, "setPower mode ret (%d)", ret);
+    }
+
+    if (mExynosDisplay->mDevice->mNumPrimaryDisplays >= 2 &&
+        mExynosDisplay->mType == HWC_DISPLAY_PRIMARY && mode == HWC_POWER_MODE_OFF) {
+        ExynosDisplay* external_display =
+                mExynosDisplay->mDevice->getDisplay(getDisplayId(HWC_DISPLAY_EXTERNAL, 0));
+        ExynosDisplayDrmInterface* external_display_intf = external_display
+                ? static_cast<ExynosDisplayDrmInterface*>(external_display->mDisplayInterface.get())
+                : nullptr;
+        if (external_display && external_display->mPowerModeState != HWC_POWER_MODE_OFF) {
+            ALOGI("setPowerMode: display %s power state changed, while external display is active",
+                  mExynosDisplay->mDisplayTraceName.c_str());
+            // Primary display has powered down, while external display doesn't have a borrowed
+            // decon, we can now reassign the powered off decon to the external displ.
+            // (Plug in during DCD mode case)
+            if (external_display_intf && external_display_intf->borrowedCrtcFrom() == nullptr) {
+                ALOGI("setPowerMode: DCD case - display %s powered off, reuse decon for external",
+                      mExynosDisplay->mDisplayTraceName.c_str());
+                hwc2_config_t activeConfig = 0;
+                external_display->getActiveConfig(&activeConfig);
+                external_display->clearDisplay(true);
+                external_display->setPowerMode(HWC2_POWER_MODE_OFF);
+                external_display_intf->swapCrtcs(mExynosDisplay);
+                external_display->mActiveConfig = 0;
+                external_display->setActiveConfig(activeConfig);
+                external_display->setPowerMode(HWC2_POWER_MODE_ON);
+            }
+        }
     }
 
     if (mode == HWC_POWER_MODE_OFF) {
@@ -2838,54 +2866,44 @@ void ExynosDisplayDrmInterface::retrievePanelFullResolution() {
     }
 }
 
-int32_t ExynosDisplayDrmInterface::setDisplayHistogramChannelSetting(
-        ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq, uint8_t channelId, void *blobData,
-        size_t blobLength) {
+int32_t ExynosDisplayDrmInterface::setHistogramChannelConfigBlob(
+        ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq, uint8_t channelId, uint32_t blobId) {
     int ret = NO_ERROR;
-    uint32_t blobId = 0;
 
-    ATRACE_NAME(String8::format("%s #%u", __func__, channelId).c_str());
+    ATRACE_NAME(String8::format("%s(chan#%u,blob#%u)", __func__, channelId, blobId).c_str());
 
-    const DrmProperty &prop = mDrmCrtc->histogram_channel_property(channelId);
+    const DrmProperty& prop = mDrmCrtc->histogram_channel_property(channelId);
     if (!prop.id()) {
-        ALOGE("Unsupported multi-channel histrogram for channel:%d", channelId);
+        ALOGE("%s: Unsupported multi-channel histrogram for chan#%d", __func__, channelId);
         return -ENOTSUP;
     }
 
-    ret = mDrmDevice->CreatePropertyBlob(blobData, blobLength, &blobId);
-    if (ret) {
-        HWC_LOGE(mExynosDisplay, "Failed to create histogram channel(%d) blob %d", channelId, ret);
-        return ret;
-    }
-
     if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(), prop, blobId)) < 0) {
-        HWC_LOGE(mExynosDisplay, "%s: Failed to add property", __func__);
+        HWC_LOGE(mExynosDisplay, "%s: Failed to add property for chan#%d and blob#%d, ret(%d)",
+                 __func__, channelId, blobId, ret);
         return ret;
     }
-
-    // TODO: b/295794044 - Clear the old histogram channel blob
 
     return ret;
 }
 
-int32_t ExynosDisplayDrmInterface::clearDisplayHistogramChannelSetting(
-        ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq, uint8_t channelId) {
+int32_t ExynosDisplayDrmInterface::clearHistogramChannelConfigBlob(
+        ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq, uint8_t channelId) {
     int ret = NO_ERROR;
 
-    ATRACE_NAME(String8::format("%s #%u", __func__, channelId).c_str());
+    ATRACE_NAME(String8::format("%s(chan#%u)", __func__, channelId).c_str());
 
-    const DrmProperty &prop = mDrmCrtc->histogram_channel_property(channelId);
+    const DrmProperty& prop = mDrmCrtc->histogram_channel_property(channelId);
     if (!prop.id()) {
-        ALOGE("Unsupported multi-channel histrogram for channel:%d", channelId);
+        ALOGE("%s: Unsupported multi-channel histrogram for chan#%d", __func__, channelId);
         return -ENOTSUP;
     }
 
     if ((ret = drmReq.atomicAddProperty(mDrmCrtc->id(), prop, 0)) < 0) {
-        HWC_LOGE(mExynosDisplay, "%s: Failed to add property", __func__);
+        HWC_LOGE(mExynosDisplay, "%s: Failed to add property for chan#%d and blob#0, ret(%d)",
+                 __func__, channelId, ret);
         return ret;
     }
-
-    // TODO: b/295794044 - Clear the old histogram channel blob
 
     return ret;
 }
@@ -2893,18 +2911,18 @@ int32_t ExynosDisplayDrmInterface::clearDisplayHistogramChannelSetting(
 // TODO: b/295990513 - Remove the if defined after kernel prebuilts are merged.
 #if defined(EXYNOS_HISTOGRAM_CHANNEL_REQUEST)
 int32_t ExynosDisplayDrmInterface::sendHistogramChannelIoctl(HistogramChannelIoctl_t control,
-                                                             uint8_t channelId) const {
+                                                             uint32_t blobId) const {
     struct exynos_drm_histogram_channel_request histogramRequest;
 
     histogramRequest.crtc_id = mDrmCrtc->id();
-    histogramRequest.hist_id = channelId;
+    histogramRequest.hist_id = blobId;
 
     if (control == HistogramChannelIoctl_t::REQUEST) {
-        ATRACE_NAME(String8::format("requestIoctl #%u", channelId).c_str());
+        ATRACE_NAME(String8::format("requestIoctl(blob#%u)", blobId).c_str());
         return mDrmDevice->CallVendorIoctl(DRM_IOCTL_EXYNOS_HISTOGRAM_CHANNEL_REQUEST,
                                            (void*)&histogramRequest);
     } else if (control == HistogramChannelIoctl_t::CANCEL) {
-        ATRACE_NAME(String8::format("cancelIoctl #%u", channelId).c_str());
+        ATRACE_NAME(String8::format("cancelIoctl(blob#%u)", blobId).c_str());
         return mDrmDevice->CallVendorIoctl(DRM_IOCTL_EXYNOS_HISTOGRAM_CHANNEL_CANCEL,
                                            (void*)&histogramRequest);
     } else {
@@ -2914,7 +2932,7 @@ int32_t ExynosDisplayDrmInterface::sendHistogramChannelIoctl(HistogramChannelIoc
 }
 #else
 int32_t ExynosDisplayDrmInterface::sendHistogramChannelIoctl(HistogramChannelIoctl_t control,
-                                                             uint8_t channelId) const {
+                                                             uint32_t blobId) const {
     ALOGE("%s: kernel doesn't support multi channel histogram ioctl", __func__);
     return INVALID_OPERATION;
 }
@@ -2967,4 +2985,72 @@ void ExynosDisplayDrmInterface::setManufacturerInfo(uint8_t edid8, uint8_t edid9
 
 void ExynosDisplayDrmInterface::setProductId(uint8_t edid10, uint8_t edid11) {
     mProductId = edid11 << 8 | edid10;
+}
+
+ExynosDisplay* ExynosDisplayDrmInterface::borrowedCrtcFrom() {
+    return mBorrowedCrtcFrom;
+}
+
+int32_t ExynosDisplayDrmInterface::swapCrtcs(ExynosDisplay* anotherDisplay) {
+    if (!anotherDisplay) {
+        HWC_LOGE(mExynosDisplay, "%s: failed, anotherDisplay is null", __func__);
+        return -EINVAL;
+    }
+    ExynosDisplayDrmInterface* anotherDisplayIntf =
+            static_cast<ExynosDisplayDrmInterface*>(anotherDisplay->mDisplayInterface.get());
+    if (!anotherDisplayIntf) {
+        HWC_LOGE(mExynosDisplay, "%s: failed to get ExynosDisplayDrmInterface of display %s",
+                 __func__, anotherDisplay->mDisplayTraceName.c_str());
+        return -EINVAL;
+    }
+
+    if (borrowedCrtcFrom() != nullptr && borrowedCrtcFrom() != anotherDisplay) {
+        HWC_LOGE(mExynosDisplay, "%s: display %s is already using decon borrowed from %s", __func__,
+                 mExynosDisplay->mDisplayTraceName.c_str(),
+                 borrowedCrtcFrom()->mDisplayTraceName.c_str());
+        return -EINVAL;
+    }
+
+    if (!mDrmCrtc || !mDrmConnector) {
+        HWC_LOGE(mExynosDisplay, "%s: failed to get crtc or connector of display %s", __func__,
+                 mExynosDisplay->mDisplayTraceName.c_str());
+        return -EINVAL;
+    }
+
+    DrmCrtc* anotherCrtc = anotherDisplayIntf->mDrmCrtc;
+    DrmConnector* anotherConnector = anotherDisplayIntf->mDrmConnector;
+    if (!anotherCrtc || !anotherConnector) {
+        HWC_LOGE(mExynosDisplay, "%s: failed to get crtc or connector of display %s", __func__,
+                 anotherDisplay->mDisplayTraceName.c_str());
+        return -EINVAL;
+    }
+
+    ALOGD("%s: switching %s (curr decon %u) <-> %s (curr decon %u)", __func__,
+          mExynosDisplay->mDisplayTraceName.c_str(), mDrmCrtc->pipe(),
+          anotherDisplay->mDisplayTraceName.c_str(), anotherCrtc->pipe());
+
+    anotherDisplayIntf->clearDisplay(true);
+
+    mDrmCrtc->set_display(anotherConnector->display());
+    anotherCrtc->set_display(mDrmConnector->display());
+
+    mDrmConnector->encoder()->set_crtc(anotherCrtc, anotherConnector->display());
+    anotherConnector->encoder()->set_crtc(mDrmCrtc, mDrmConnector->display());
+
+    int anotherConnDispl = anotherConnector->display();
+    anotherConnector->set_display(mDrmConnector->display());
+    mDrmConnector->set_display(anotherConnDispl);
+
+    anotherDisplayIntf->mDrmCrtc = mDrmCrtc;
+    mDrmCrtc = anotherCrtc;
+
+    clearOldCrtcBlobs();
+    anotherDisplayIntf->clearOldCrtcBlobs();
+
+    if (mBorrowedCrtcFrom == anotherDisplay) {
+        mBorrowedCrtcFrom = nullptr;
+    } else {
+        mBorrowedCrtcFrom = anotherDisplay;
+    }
+    return 0;
 }

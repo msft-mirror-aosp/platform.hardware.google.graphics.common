@@ -61,6 +61,17 @@ public:
         return nullptr;
     }
 
+    void enableRefreshRateCalculator(bool enabled) {
+        const std::lock_guard<std::mutex> lock(mMutex);
+
+        if (mRefreshRateCalculator) {
+            mRefreshRateCalculatorEnabled = enabled;
+            if (mRefreshRateCalculatorEnabled) {
+                onRefreshRateChanged(mRefreshRateCalculator->getRefreshRate());
+            }
+        }
+    };
+
     int notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs);
 
     // Clear historical record data.
@@ -233,9 +244,9 @@ private:
             if (layer->isLayerFormatYuv()) {
                 flag |= static_cast<int>(PresentFrameFlag::kIsYuv);
             }
-            if (layer->mRequestedCompositionType == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR) {
-                flag |= static_cast<int>(PresentFrameFlag::kHasRefreshRateIndicatorLayer);
-            }
+        }
+        if (mDisplay->isUpdateRRIndicatorOnly()) {
+            flag |= static_cast<int>(PresentFrameFlag::kUpdateRefreshRateIndicatorLayerOnly);
         }
         // Present when doze.
         if ((mPowerMode == HWC_POWER_MODE_DOZE) || (mPowerMode == HWC_POWER_MODE_DOZE_SUSPEND)) {
@@ -259,6 +270,8 @@ private:
     }
 
     void handlePresentTimeout(const VrrControllerEvent& event);
+
+    inline bool isMinimumRefreshRateActive() const { return (mMinimumRefreshRate > 1); }
 
     void onRefreshRateChanged(int refreshRate);
     void onRefreshRateChangedInternal(int refreshRate);
@@ -298,7 +311,11 @@ private:
 
     std::string mPanelName;
 
+    // Refresh rate indicator.
+    bool mRefreshRateCalculatorEnabled = false;
     std::unique_ptr<RefreshRateCalculator> mRefreshRateCalculator;
+
+    // Power stats.
     std::shared_ptr<DisplayStateResidencyWatcher> mResidencyWatcher;
     std::shared_ptr<VariableRefreshRateStatistic> mVariableRefreshRateStatistic;
 
