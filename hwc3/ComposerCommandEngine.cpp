@@ -18,6 +18,7 @@
 
 #include <hardware/hwcomposer2.h>
 
+#include <map>
 #include <set>
 
 #include "Util.h"
@@ -514,11 +515,13 @@ void ComposerCommandEngine::executeSetLayerBufferSlotsToClear(
 
     // get all cached buffers
     std::vector<buffer_handle_t> cachedBuffers;
+    std::map<buffer_handle_t, int32_t> handle2Slots;
     for (int32_t slot : bufferSlotsToClear) {
         auto err = mResources->getLayerBuffer(display, layer, slot, /*fromCache=*/true, nullptr,
                                               cachedBuffer, bufferReleaser.get());
         if (cachedBuffer) {
             cachedBuffers.push_back(cachedBuffer);
+            handle2Slots[cachedBuffer] = slot;
         } else {
             LOG(ERROR) << __func__ << ": Buffer slot " << slot << " is null";
         }
@@ -530,8 +533,11 @@ void ComposerCommandEngine::executeSetLayerBufferSlotsToClear(
     }
 
     // clear any other cache in composer
-    mHal->uncacheLayerBuffers(display, layer, cachedBuffers);
-    for (int32_t slot : bufferSlotsToClear) {
+    std::vector<buffer_handle_t> clearableBuffers;
+    mHal->uncacheLayerBuffers(display, layer, cachedBuffers, clearableBuffers);
+
+    for (auto buffer : clearableBuffers) {
+        auto slot = handle2Slots[buffer];
         // replace the slot with nullptr and release the buffer by bufferReleaser
         auto err = mResources->getLayerBuffer(display, layer, slot, /*fromCache=*/false, nullptr,
                                               cachedBuffer, bufferReleaser.get());

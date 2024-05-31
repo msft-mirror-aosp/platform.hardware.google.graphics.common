@@ -6276,9 +6276,22 @@ void ExynosDisplay::initDisplayInterface(uint32_t __unused interfaceType)
     mDisplayInterface->init(this);
 }
 
-int32_t ExynosDisplay::uncacheLayerBuffers(const ExynosLayer* layer,
-                                           const std::vector<buffer_handle_t>& buffers) {
-    return mDisplayInterface->uncacheLayerBuffers(layer, buffers);
+int32_t ExynosDisplay::uncacheLayerBuffers(ExynosLayer* layer,
+                                           const std::vector<buffer_handle_t>& buffers,
+                                           std::vector<buffer_handle_t>& outClearableBuffers) {
+    if (mPowerModeState.has_value() && mPowerModeState.value() == HWC2_POWER_MODE_OFF) {
+        for (auto buffer : buffers) {
+            if (layer->mLayerBuffer == buffer) {
+                layer->mLayerBuffer = nullptr;
+            }
+            if (layer->mLastLayerBuffer == buffer) {
+                layer->mLastLayerBuffer = nullptr;
+            }
+        }
+        outClearableBuffers = buffers;
+        return mDisplayInterface->uncacheLayerBuffers(layer, outClearableBuffers);
+    }
+    return NO_ERROR;
 }
 
 void ExynosDisplay::traceLayerTypes() {
