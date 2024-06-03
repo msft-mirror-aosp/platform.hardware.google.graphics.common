@@ -89,6 +89,8 @@ class FramebufferManager {
 
         void cleanup(const ExynosLayer *layer);
         void destroyAllSecureBuffers();
+        int32_t uncacheLayerBuffers(const ExynosLayer* layer,
+                                    const std::vector<buffer_handle_t>& buffers);
 
         // The flip function is to help clean up the cached fbIds of destroyed
         // layers after the previous fdIds were update successfully on the
@@ -110,6 +112,15 @@ class FramebufferManager {
                 bool operator==(const Framebuffer::BufferDesc &rhs) const {
                     return (bufferId == rhs.bufferId && drmFormat == rhs.drmFormat &&
                             isSecure == rhs.isSecure);
+                }
+                bool operator<(const Framebuffer::BufferDesc& rhs) const {
+                    if (bufferId != rhs.bufferId) {
+                        return bufferId < rhs.bufferId;
+                    }
+                    if (drmFormat != rhs.drmFormat) {
+                        return drmFormat < rhs.drmFormat;
+                    }
+                    return isSecure < rhs.isSecure;
                 }
             };
             struct SolidColorDesc {
@@ -373,11 +384,10 @@ class ExynosDisplayDrmInterface :
         }
 
         /* For Histogram Multi Channel support */
-        int32_t setDisplayHistogramChannelSetting(
-                ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq, uint8_t channelId,
-                void *blobData, size_t blobLength);
-        int32_t clearDisplayHistogramChannelSetting(
-                ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq, uint8_t channelId);
+        int32_t setHistogramChannelConfigBlob(ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq,
+                                              uint8_t channelId, uint32_t blobId);
+        int32_t clearHistogramChannelConfigBlob(ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq,
+                                                uint8_t channelId);
         enum class HistogramChannelIoctl_t {
             /* send the histogram data request by calling histogram_channel_request_ioctl */
             REQUEST = 0,
@@ -385,7 +395,7 @@ class ExynosDisplayDrmInterface :
             /* cancel the histogram data request by calling histogram_channel_cancel_ioctl */
             CANCEL,
         };
-        int32_t sendHistogramChannelIoctl(HistogramChannelIoctl_t control, uint8_t channelId) const;
+        int32_t sendHistogramChannelIoctl(HistogramChannelIoctl_t control, uint32_t blobId) const;
 
         int32_t getFrameCount() { return mFrameCounter; }
         virtual void registerHistogramInfo(const std::shared_ptr<IDLHistogram> &info) { return; }
@@ -416,6 +426,21 @@ class ExynosDisplayDrmInterface :
         virtual uint32_t getManufacturerInfo() override { return mManufacturerInfo; }
         virtual void setProductId(uint8_t edid10, uint8_t edid11) override;
         virtual uint32_t getProductId() override { return mProductId; }
+
+        // This function will swap crtc/decon assigned to this display, with the crtc/decon of
+        // the provided |anotherDisplay|. It is used on foldable devices, where decon0/1 support
+        // color management, but decon2 doesn't, to re-assign the decon0/1 of a powered off primary
+        // display for the external display. When the external display is disconnected, this
+        // function is called again with the same |anotherDisplay| parameter to restore the
+        // original crtc/decon assignment of the external and primary display.
+        // See b/329034082 for details.
+        virtual int32_t swapCrtcs(ExynosDisplay* anotherDisplay) override;
+        // After swapCrtcs has been successfully done, this function will return the display, whose
+        // crtc/decon this display is currently using.
+        virtual ExynosDisplay* borrowedCrtcFrom() override;
+
+        virtual int32_t uncacheLayerBuffers(const ExynosLayer* __unused layer,
+                                            const std::vector<buffer_handle_t>& buffers) override;
 
     protected:
         enum class HalMipiSyncType : uint32_t {
@@ -572,6 +597,8 @@ class ExynosDisplayDrmInterface :
         BlockingRegionState mBlockState;
         /* Mapping plane id to ExynosMPP, key is plane id */
         std::unordered_map<uint32_t, ExynosMPP*> mExynosMPPsForPlane;
+
+        ExynosDisplay* mBorrowedCrtcFrom = nullptr;
 
         DrmEnumParser::MapHal2DrmEnum mBlendEnums;
         DrmEnumParser::MapHal2DrmEnum mStandardEnums;

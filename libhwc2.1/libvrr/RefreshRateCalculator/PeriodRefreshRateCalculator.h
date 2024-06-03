@@ -52,7 +52,7 @@ public:
 
     void onPowerStateChange(int from, int to) final;
 
-    void onPresent(int64_t presentTimeNs, int flag) override;
+    void onPresentInternal(int64_t presentTimeNs, int flag) override;
 
     void reset() override;
 
@@ -67,13 +67,13 @@ private:
     PeriodRefreshRateCalculatorParameters mParams;
     VrrControllerEvent mMeasureEvent;
 
-    std::map<int, int> mStatistics;
+    std::map<Fraction<int>, int> mStatistics;
 
     int64_t mLastPresentTimeNs = kDefaultInvalidPresentTimeNs;
     int mLastRefreshRate = kDefaultInvalidRefreshRate;
-    // Regulate the frequency of measurements.
-    int mNumVsyncPerMeasure;
-    float mMeasurePeriodRatio;
+
+    int64_t mConfidenceThresholdTimeNs;
+
     // Control then next measurement.
     int64_t mLastMeasureTimeNs;
 };

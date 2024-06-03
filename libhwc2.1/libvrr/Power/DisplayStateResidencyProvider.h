@@ -22,7 +22,9 @@
 #include <aidl/android/hardware/power/stats/StateResidency.h>
 
 #include "../Statistics/VariableRefreshRateStatistic.h"
-#include "DisplayPresentProfileTokenGenerator.h"
+#include "PowerStatsPresentProfileTokenGenerator.h"
+
+// #define DEBUG_VRR_POWERSTATS 1
 
 namespace android::hardware::graphics::composer {
 
@@ -39,13 +41,13 @@ public:
 
     void getStateResidency(std::vector<StateResidency>* stats);
 
-    const std::vector<State>& getStates() const;
+    const std::vector<State>& getStates();
 
     DisplayStateResidencyProvider(const DisplayStateResidencyProvider& other) = delete;
     DisplayStateResidencyProvider& operator=(const DisplayStateResidencyProvider& other) = delete;
 
 private:
-    static const std::unordered_set<int> kFpsMappingTable;
+    static const std::set<Fraction<int>> kFpsMappingTable;
     static const std::unordered_set<int> kFpsLowPowerModeMappingTable;
     static const std::unordered_set<int> kActivePowerModes;
 
@@ -59,7 +61,7 @@ private:
     static constexpr char kDelimiterEnd = ')';
 
     void mapStatistics();
-    void aggregateStatistics();
+    uint64_t aggregateStatistics();
 
     void generatePowerStatsStates();
 
@@ -69,17 +71,24 @@ private:
 
     std::shared_ptr<StatisticsProvider> mStatisticsProvider;
 
-    DisplayPresentStatistics mRemappedStatistics;
+    DisplayPresentStatistics mStatistics;
 
-    DisplayPresentProfileTokenGenerator mDisplayPresentProfileTokenGenerator;
+    typedef std::map<PowerStatsPresentProfile, DisplayPresentRecord> PowerStatsPresentStatistics;
+
+    PowerStatsPresentStatistics mRemappedStatistics;
+
+    PowerStatsPresentProfileTokenGenerator mPowerStatsPresentProfileTokenGenerator;
     std::vector<std::pair<std::string, std::string>> mDisplayStateResidencyPattern;
 
     std::vector<State> mStates;
-    std::map<DisplayPresentProfile, int> mDisplayPresentProfileToIdMap;
+    std::map<PowerStatsPresentProfile, int> mPowerStatsPresentProfileToIdMap;
 
-    // For calculating the |Total time| for 'others'.
-    DisplayPresentStatistics mLastOthersStatistics;
-    std::map<DisplayPresentProfile, int64_t> mOthersTotalTimeNs;
+#ifdef DEBUG_VRR_POWERSTATS
+    int64_t mLastGetStateResidencyTimeNs = -1;
+    int64_t mLastPowerStatsTotalTimeNs = -1;
+#endif
+
+    uint64_t mStartStatisticTimeNs;
 
     std::vector<StateResidency> mStateResidency;
 };

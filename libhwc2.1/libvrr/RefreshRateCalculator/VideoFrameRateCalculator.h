@@ -56,18 +56,20 @@ public:
 
     void onPowerStateChange(int from, int to) final;
 
-    void onPresent(int64_t presentTimeNs, int flag) override;
+    void onPresentInternal(int64_t presentTimeNs, int flag) override;
 
     void reset() override;
 
     void setEnabled(bool isEnabled) final;
+
+    void setVrrConfigAttributes(int64_t vsyncPeriodNs, int64_t minFrameIntervalNs) final;
 
 private:
     int onReportRefreshRate(int);
 
     void setNewRefreshRate(int newRefreshRate);
 
-    std::unique_ptr<RefreshRateCalculator> mRefreshRateCalculator;
+    std::shared_ptr<RefreshRateCalculator> mRefreshRateCalculator;
 
     EventQueue* mEventQueue;
     VideoFrameRateCalculatorParameters mParams;

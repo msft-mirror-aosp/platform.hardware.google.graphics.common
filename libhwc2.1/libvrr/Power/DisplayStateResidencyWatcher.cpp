@@ -16,6 +16,7 @@
 
 #include "DisplayStateResidencyWatcher.h"
 
+#include <android-base/properties.h>
 #include <android/binder_ibinder.h>
 
 #include "ExynosHWCHelper.h"
@@ -26,7 +27,8 @@ using aidl::android::vendor::powerstats::IPixelStateResidencyProvider;
 
 namespace android::hardware::graphics::composer {
 
-static const std::string kEntityName = "Display";
+constexpr std::string_view kPowerStatsPropertyPrefix = "ro.vendor";
+constexpr std::string_view kPowerStatsPropertySuffix = "powerstats.entity_name";
 
 DisplayStateResidencyWatcher::DisplayStateResidencyWatcher(
         std::shared_ptr<CommonDisplayContextProvider> displayerInstance,
@@ -37,6 +39,11 @@ DisplayStateResidencyWatcher::DisplayStateResidencyWatcher(
             std::make_unique<DisplayStateResidencyProvider>(displayerInstance, statisticsProvider);
 
     registerWithPowerStats();
+
+    std::string displayEntityNameId = std::string(kPowerStatsPropertyPrefix) + "." +
+            "primarydisplay" + "." + std::string(kPowerStatsPropertySuffix);
+    // Retrieve the entity name from the property.
+    mEntityName = android::base::GetProperty(displayEntityNameId, "Display");
 }
 
 DisplayStateResidencyWatcher::~DisplayStateResidencyWatcher() {
@@ -74,14 +81,14 @@ void DisplayStateResidencyWatcher::registerWithPowerStats() {
         static const int64_t kMaxWaitServiceTimeMs =
                 100 * std::milli::den; // Default timeout is 100 seconds.
 
-        int64_t startMs = getNowMs();
+        int64_t startMs = getSteadyClockTimeMs();
         while (mRunning.load()) {
             ndk::SpAIBinder binder(AServiceManager_waitForService(kInstance.c_str()));
             mProvider = IPixelStateResidencyProvider::fromBinder(binder);
             if (mProvider) {
                 break;
             } else {
-                int64_t nowMs = getNowMs();
+                int64_t nowMs = getSteadyClockTimeMs();
                 if ((nowMs - startMs) > kMaxWaitServiceTimeMs) {
                     LOG(ERROR) << "Cannot get PowerStats service";
                     break;
@@ -95,7 +102,7 @@ void DisplayStateResidencyWatcher::registerWithPowerStats() {
         }
 
         if (auto status =
-                    mProvider->registerCallbackByStates(kEntityName,
+                    mProvider->registerCallbackByStates(mEntityName,
                                                         this->ref<IPixelStateResidencyCallback>(),
                                                         mDisplayPresentStatisticsProvider
                                                                 ->getStates());

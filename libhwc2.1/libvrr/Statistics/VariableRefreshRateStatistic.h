@@ -28,6 +28,8 @@
 #include "interface/DisplayContextProvider.h"
 #include "interface/VariableRefreshRateInterface.h"
 
+// #define DEBUG_VRR_STATISTICS 1
+
 namespace android::hardware::graphics::composer {
 
 // |DisplayStatus| is the intrinsic property of the key for statistics, representing the display
@@ -50,14 +52,12 @@ typedef struct DisplayStatus {
     }
 
     bool operator<(const DisplayStatus& rhs) const {
-        if (isOff() || rhs.isOff()) {
-            if (isOff() == rhs.isOff()) {
-                return false;
-            }
+        if (isOff() && rhs.isOff()) {
+            return false;
         }
 
         if (mPowerMode != rhs.mPowerMode) {
-            return mPowerMode < rhs.mPowerMode;
+            return (isOff() || (mPowerMode < rhs.mPowerMode));
         } else if (mActiveConfigId != rhs.mActiveConfigId) {
             return mActiveConfigId < rhs.mActiveConfigId;
         } else {
@@ -65,7 +65,7 @@ typedef struct DisplayStatus {
         }
     }
 
-    std::string toString() {
+    std::string toString() const {
         std::ostringstream os;
         os << "id = " << mActiveConfigId;
         os << ", power mode = " << mPowerMode;
@@ -96,6 +96,12 @@ typedef struct DisplayPresentProfile {
         }
     }
 
+    std::string toString() const {
+        std::string res = mCurrentDisplayConfig.toString();
+        res += ", mNumVsync = " + std::to_string(mNumVsync);
+        return res;
+    }
+
     DisplayStatus mCurrentDisplayConfig;
     // |mNumVsync| is the timing property of the key for statistics, representing the distribution
     // of presentations. It represents the interval between a present and the previous present in
@@ -108,12 +114,22 @@ typedef struct DisplayPresentRecord {
     DisplayPresentRecord() = default;
     DisplayPresentRecord& operator+=(const DisplayPresentRecord& other) {
         this->mCount += other.mCount;
-        this->mLastTimeStampNs = std::max(mLastTimeStampNs, other.mLastTimeStampNs);
+        this->mAccumulatedTimeNs += other.mAccumulatedTimeNs;
+        this->mLastTimeStampInBootClockNs =
+                std::max(mLastTimeStampInBootClockNs, other.mLastTimeStampInBootClockNs);
         mUpdated = true;
         return *this;
     }
+    std::string toString() const {
+        std::ostringstream os;
+        os << "Count = " << mCount;
+        os << ", AccumulatedTimeNs = " << mAccumulatedTimeNs / 1000000;
+        os << ", LastTimeStampInBootClockNs = " << mLastTimeStampInBootClockNs;
+        return os.str();
+    }
     uint64_t mCount = 0;
-    uint64_t mLastTimeStampNs = 0;
+    uint64_t mAccumulatedTimeNs = 0;
+    uint64_t mLastTimeStampInBootClockNs = 0;
     bool mUpdated = false;
 } DisplayPresentRecord;
 
@@ -125,30 +141,38 @@ class StatisticsProvider {
 public:
     virtual ~StatisticsProvider() = default;
 
-    virtual uint64_t getPowerOffDurationNs() const = 0;
+    virtual uint64_t getStartStatisticTimeNs() const = 0;
 
-    virtual DisplayPresentStatistics getStatistics() const = 0;
+    virtual DisplayPresentStatistics getStatistics() = 0;
 
     virtual DisplayPresentStatistics getUpdatedStatistics() = 0;
 };
 
-class VariableRefreshRateStatistic : public PowerModeListener, public StatisticsProvider {
+class VariableRefreshRateStatistic : public PowerModeListener,
+                                     public PresentListener,
+                                     public StatisticsProvider {
 public:
     VariableRefreshRateStatistic(CommonDisplayContextProvider* displayContextProvider,
                                  EventQueue* eventQueue, int maxFrameRate, int maxTeFrequency,
                                  int64_t updatePeriodNs);
 
-    uint64_t getPowerOffDurationNs() const override;
+    uint64_t getPowerOffDurationNs() const;
 
-    DisplayPresentStatistics getStatistics() const override;
+    uint64_t getStartStatisticTimeNs() const override;
+
+    DisplayPresentStatistics getStatistics() override;
 
     DisplayPresentStatistics getUpdatedStatistics() override;
 
     void onPowerStateChange(int from, int to) final;
 
-    void onPresent(int64_t presentTimeNs, int flag);
+    void onPresent(int64_t presentTimeNs, int flag) override;
 
     void setActiveVrrConfiguration(int activeConfigId, int teFrequency);
+
+    // If |minimumRefreshRate| is not equal to zero, enforce the minimum (fixed) refresh rate;
+    // otherwise, revert to a variable refresh rate.
+    void setFixedRefreshRate(uint32_t minimumRefreshRate);
 
     VariableRefreshRateStatistic(const VariableRefreshRateStatistic& other) = delete;
     VariableRefreshRateStatistic& operator=(const VariableRefreshRateStatistic& other) = delete;
@@ -157,13 +181,15 @@ private:
     static constexpr int64_t kMaxPresentIntervalNs = std::nano::den;
     static constexpr uint32_t kFrameRateWhenPresentAtLpMode = 30;
 
-    bool isPowerModeOffNowLocked() const REQUIRES(mMutex);
-
-    int onPresentTimeout();
+    bool isPowerModeOffNowLocked() const;
 
     void updateCurrentDisplayStatus();
 
+    void updateIdleStats(int64_t endTimeStampInBootClockNs = -1);
+
+#ifdef DEBUG_VRR_STATISTICS
     int updateStatistic();
+#endif
 
     CommonDisplayContextProvider* mDisplayContextProvider;
     EventQueue* mEventQueue;
@@ -177,15 +203,23 @@ private:
 
     const int64_t mUpdatePeriodNs;
 
-    int64_t mLastPresentTimeNs;
+    int64_t mLastPresentTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
 
     DisplayPresentStatistics mStatistics;
-    VrrControllerEvent mTimeoutEvent;
-    VrrControllerEvent mUpdateEvent;
-
     DisplayPresentProfile mDisplayPresentProfile;
 
     uint64_t mPowerOffDurationNs = 0;
+
+    uint32_t mMinimumRefreshRate = 1;
+    uint64_t mMaximumFrameIntervalNs = kMaxPresentIntervalNs; // 1 second.
+
+    uint64_t mStartStatisticTimeNs;
+
+    SystemClockTimeTranslator mSystemClockTimeTranslator;
+
+#ifdef DEBUG_VRR_STATISTICS
+    VrrControllerEvent mUpdateEvent;
+#endif
 
     mutable std::mutex mMutex;
 };

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
+
 #include "InstantRefreshRateCalculator.h"
 
 #include <algorithm>
@@ -26,7 +28,7 @@ InstantRefreshRateCalculator::InstantRefreshRateCalculator(EventQueue* eventQueu
 InstantRefreshRateCalculator::InstantRefreshRateCalculator(EventQueue* eventQueue,
                                                            int64_t maxValidTimeNs)
       : mEventQueue(eventQueue), mMaxValidTimeNs(maxValidTimeNs) {
-    mName = "InstantRefreshRateCalculator";
+    mName = "RefreshRateCalculator-Instant";
     mTimeoutEvent.mEventType = VrrControllerEventType::kInstantRefreshRateCalculatorUpdate;
     mTimeoutEvent.mFunctor =
             std::move(std::bind(&InstantRefreshRateCalculator::updateRefreshRate, this));
@@ -36,7 +38,7 @@ int InstantRefreshRateCalculator::getRefreshRate() const {
     return mLastRefreshRate;
 }
 
-void InstantRefreshRateCalculator::onPresent(int64_t presentTimeNs, int flag) {
+void InstantRefreshRateCalculator::onPresentInternal(int64_t presentTimeNs, int flag) {
     if (hasPresentFrameFlag(flag, PresentFrameFlag::kPresentingWhenDoze)) {
         return;
     }
@@ -49,8 +51,8 @@ void InstantRefreshRateCalculator::onPresent(int64_t presentTimeNs, int flag) {
             reset();
         } else {
             auto numVsync = durationToVsync((presentTimeNs - mLastPresentTimeNs));
-            numVsync = std::max(1, std::min(mMaxFrameRate, numVsync));
-            auto currentRefreshRate = roundDivide(mMaxFrameRate, numVsync);
+            numVsync = std::max(mMinVsyncNum, std::min(mVsyncRate, numVsync));
+            auto currentRefreshRate = roundDivide(mVsyncRate, numVsync);
             currentRefreshRate = std::max(1, currentRefreshRate);
             setNewRefreshRate(currentRefreshRate);
         }
@@ -71,7 +73,7 @@ void InstantRefreshRateCalculator::setEnabled(bool isEnabled) {
     if (!isEnabled) {
         mEventQueue->dropEvent(VrrControllerEventType::kInstantRefreshRateCalculatorUpdate);
     } else {
-        mTimeoutEvent.mWhenNs = getNowNs() + mMaxValidTimeNs;
+        mTimeoutEvent.mWhenNs = getSteadyClockTimeNs() + mMaxValidTimeNs;
         mEventQueue->mPriorityQueue.emplace(mTimeoutEvent);
     }
 }
@@ -84,6 +86,7 @@ bool InstantRefreshRateCalculator::isOutdated(int64_t timeNs) const {
 void InstantRefreshRateCalculator::setNewRefreshRate(int newRefreshRate) {
     if (newRefreshRate != mLastRefreshRate) {
         mLastRefreshRate = newRefreshRate;
+        ATRACE_INT(mName.c_str(), newRefreshRate);
         if (mRefreshRateChangeCallback) {
             mRefreshRateChangeCallback(newRefreshRate);
         }
@@ -91,7 +94,7 @@ void InstantRefreshRateCalculator::setNewRefreshRate(int newRefreshRate) {
 }
 
 int InstantRefreshRateCalculator::updateRefreshRate() {
-    if (isOutdated(getNowNs())) {
+    if (isOutdated(getSteadyClockTimeNs())) {
         reset();
     }
     return NO_ERROR;

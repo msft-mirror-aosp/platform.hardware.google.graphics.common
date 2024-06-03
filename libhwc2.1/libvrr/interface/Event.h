@@ -40,14 +40,16 @@ enum class VrrControllerEventType {
     kNotifyExpectedPresentConfig,
     kGeneralEventMax = 0x1FF,
     // General callback events.
+    kCallbackEventMask = 0x200,
     kRefreshRateCalculatorUpdateMask = 0x200,
     kInstantRefreshRateCalculatorUpdate,
     kPeriodRefreshRateCalculatorUpdate,
     kVideoFrameRateCalculatorUpdate,
     kCombinedRefreshRateCalculatorUpdate,
     kAodRefreshRateCalculatorUpdate,
-    kStatisticPresentTimeout,
+    kExitIdleRefreshRateCalculatorUpdate,
     kStaticticUpdate,
+    kMinLockTimeForPeakRefreshRate,
     kCallbackEventMax = 0x2FF,
     // Sensors, outer events...
 };
@@ -91,6 +93,10 @@ struct VrrControllerEvent {
                 return "kCombinedRefreshRateCalculatorUpdate";
             case VrrControllerEventType::kAodRefreshRateCalculatorUpdate:
                 return "kAodRefreshRateCalculatorUpdate";
+            case VrrControllerEventType::kStaticticUpdate:
+                return "kStaticticUpdate";
+            case VrrControllerEventType::kMinLockTimeForPeakRefreshRate:
+                return "kMinLockTimeForPeakRefreshRate";
             default:
                 return "Unknown";
         }
@@ -117,11 +123,6 @@ public:
     virtual std::vector<TimedEvent> getHandleEvents() = 0;
 
     virtual std::function<int()> getHandleFunction() = 0;
-
-    // TODO(315887105): We shouldn't ideally place this API here, but for the sake of quickly
-    // implementing the HW/SW present timeout handling switch solution, it's temporarily placed here
-    // for now,
-    virtual void enablePanelAutoFrameInsertionMode(bool enabled) = 0;
 };
 
 } // namespace android::hardware::graphics::composer
