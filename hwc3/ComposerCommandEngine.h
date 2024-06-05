@@ -38,7 +38,7 @@ class ComposerCommandEngine {
       template <typename InputType, typename Functor>
       void dispatchLayerCommand(int64_t display, int64_t layer, const std::string& funcName,
                                 const InputType input, const Functor func);
-
+      void dispatchBatchCreateDestroyLayerCommand(int64_t display, const LayerCommand& cmd);
       void reset() {
           mWriter->reset();
       }
@@ -52,9 +52,11 @@ class ComposerCommandEngine {
       void executeSetDisplayBrightness(uint64_t display, const DisplayBrightness& command);
       void executeSetOutputBuffer(uint64_t display, const Buffer& buffer);
       void executeValidateDisplay(int64_t display,
-                                  const std::optional<ClockMonotonicTimestamp> expectedPresentTime);
+                                  const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+                                  int frameIntervalNs);
       void executePresentOrValidateDisplay(
-              int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime);
+              int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+              int frameIntervalNs);
       void executeAcceptDisplayChanges(int64_t display);
       int executePresentDisplay(int64_t display);
 
@@ -91,10 +93,13 @@ class ComposerCommandEngine {
               const std::vector<std::optional<PerFrameMetadataBlob>>& perFrameMetadataBlob);
       void executeSetLayerBrightness(int64_t display, int64_t layer,
                                      const LayerBrightness& brightness);
+      void executeSetLayerBufferSlotsToClear(int64_t display, int64_t layer,
+                                             const std::vector<int32_t>& bufferSlotsToClear);
 
       int32_t executeValidateDisplayInternal(int64_t display);
       void executeSetExpectedPresentTimeInternal(
-              int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime);
+              int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+              int frameIntervalNs);
 
       IComposerHal* mHal;
       IResourceManager* mResources;

@@ -20,6 +20,7 @@
 
 #include <android-base/logging.h>
 #include <android/binder_ibinder_platform.h>
+#include <hardware/hwcomposer2.h>
 
 #include "Util.h"
 
@@ -73,6 +74,21 @@ ndk::ScopedAStatus ComposerClient::createVirtualDisplay(int32_t width, int32_t h
     if (!err) {
         err = mResources->addVirtualDisplay(display->display, outputBufferSlotCount);
     }
+    return TO_BINDER_STATUS(err);
+}
+
+ndk::ScopedAStatus ComposerClient::getDisplayConfigurations(
+        int64_t display, int32_t maxFrameIntervalNs, std::vector<DisplayConfiguration>* configs) {
+    DEBUG_DISPLAY_FUNC(display);
+    auto err = mHal->getDisplayConfigurations(display, maxFrameIntervalNs, configs);
+    return TO_BINDER_STATUS(err);
+}
+
+ndk::ScopedAStatus ComposerClient::notifyExpectedPresent(
+        int64_t display, const ClockMonotonicTimestamp& expectedPresentTime,
+        int32_t frameIntervalNs) {
+    DEBUG_DISPLAY_FUNC(display);
+    auto err = mHal->notifyExpectedPresent(display, expectedPresentTime, frameIntervalNs);
     return TO_BINDER_STATUS(err);
 }
 
@@ -169,6 +185,16 @@ ndk::ScopedAStatus ComposerClient::getDisplayCapabilities(int64_t display,
 
     if (support) {
         caps->push_back(DisplayCapability::DISPLAY_IDLE_TIMER);
+    }
+
+    err = mHal->getDisplayMultiThreadedPresentSupport(display, support);
+    if (err != ::android::OK) {
+        LOG(ERROR) << "failed to getDisplayMultiThreadedPresentSupport: " << err;
+        return TO_BINDER_STATUS(err);
+    }
+
+    if (support) {
+        caps->push_back(DisplayCapability::MULTI_THREADED_PRESENT);
     }
 
     return TO_BINDER_STATUS(err);
@@ -441,20 +467,7 @@ void ComposerClient::HalEventCallback::onRefreshRateChangedDebug(
 
 void ComposerClient::HalEventCallback::onHotplug(int64_t display, bool connected) {
     DEBUG_DISPLAY_FUNC(display);
-    if (connected) {
-        if (mResources->hasDisplay(display)) {
-            // This is a subsequent hotplug "connected" for a display. This signals a
-            // display change and thus the framework may want to reallocate buffers. We
-            // need to free all cached handles, since they are holding a strong reference
-            // to the underlying buffers.
-            cleanDisplayResources(display);
-            mResources->removeDisplay(display);
-        }
-        mResources->addPhysicalDisplay(display);
-    } else {
-        mResources->removeDisplay(display);
-    }
-
+    processDisplayResources(display, connected);
     auto ret = mCallback->onHotplug(display, connected);
     if (!ret.isOk()) {
         LOG(ERROR) << "failed to send onHotplug:" << ret.getDescription();
@@ -501,6 +514,32 @@ void ComposerClient::HalEventCallback::onSeamlessPossible(int64_t display) {
     auto ret = mCallback->onSeamlessPossible(display);
     if (!ret.isOk()) {
         LOG(ERROR) << "failed to send onSealmessPossible:" << ret.getDescription();
+    }
+}
+
+void ComposerClient::HalEventCallback::onHotplugEvent(int64_t display,
+                                                      common::DisplayHotplugEvent event) {
+    DEBUG_DISPLAY_FUNC(display);
+    processDisplayResources(display, event == common::DisplayHotplugEvent::CONNECTED);
+    auto ret = mCallback->onHotplugEvent(display, event);
+    if (!ret.isOk()) {
+        LOG(ERROR) << "failed to send onHotplugEvent:" << ret.getDescription();
+    }
+}
+
+void ComposerClient::HalEventCallback::processDisplayResources(int64_t display, bool connected) {
+    if (connected) {
+        if (mResources->hasDisplay(display)) {
+            // This is a subsequent hotplug "connected" for a display. This signals a
+            // display change and thus the framework may want to reallocate buffers. We
+            // need to free all cached handles, since they are holding a strong reference
+            // to the underlying buffers.
+            cleanDisplayResources(display);
+            mResources->removeDisplay(display);
+        }
+        mResources->addPhysicalDisplay(display);
+    } else {
+        mResources->removeDisplay(display);
     }
 }
 

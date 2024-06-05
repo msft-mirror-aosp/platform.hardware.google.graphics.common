@@ -68,16 +68,16 @@ uint32_t getDeviceInterfaceType()
         return INTERFACE_TYPE_FB;
 }
 
-ExynosDevice::ExynosDevice()
-    : mGeometryChanged(0),
-    mVsyncFd(-1),
-    mExtVsyncFd(-1),
-    mVsyncDisplayId(getDisplayId(HWC_DISPLAY_PRIMARY, 0)),
-    mTimestamp(0),
-    mDisplayMode(0),
-    mInterfaceType(INTERFACE_TYPE_FB),
-    mIsInTUI(false)
-{
+ExynosDevice::ExynosDevice(bool vrrApiSupported)
+      : mGeometryChanged(0),
+        mVsyncFd(-1),
+        mExtVsyncFd(-1),
+        mVsyncDisplayId(getDisplayId(HWC_DISPLAY_PRIMARY, 0)),
+        mTimestamp(0),
+        mDisplayMode(0),
+        mInterfaceType(INTERFACE_TYPE_FB),
+        mIsInTUI(false),
+        mVrrApiSupported(vrrApiSupported) {
     exynosHWCControl.forceGpu = false;
     exynosHWCControl.windowUpdate = true;
     exynosHWCControl.forcePanic = false;
@@ -150,8 +150,7 @@ ExynosDevice::ExynosDevice()
         mDisplayMap.insert(std::make_pair(exynos_display->mDisplayId, exynos_display));
 
 #ifndef FORCE_DISABLE_DR
-        if (exynos_display->mDREnable)
-            exynosHWCControl.useDynamicRecomp = true;
+        if (exynos_display->mDRDefault) exynosHWCControl.useDynamicRecomp = true;
 #endif
     }
 
@@ -168,32 +167,34 @@ ExynosDevice::ExynosDevice()
     }
 
     for (auto it : mDisplays) {
-        std::string displayName = std::string(it->mDisplayName.string());
+        std::string displayName = std::string(it->mDisplayName.c_str());
         it->mErrLogFileWriter.setPrefixName(displayName + "_hwc_error_log");
         it->mDebugDumpFileWriter.setPrefixName(displayName + "_hwc_debug");
         it->mFenceFileWriter.setPrefixName(displayName + "_hwc_fence_state");
         String8 saveString;
-        saveString.appendFormat("ExynosDisplay %s is initialized", it->mDisplayName.string());
+        saveString.appendFormat("ExynosDisplay %s is initialized", it->mDisplayName.c_str());
         saveErrorLog(saveString, it);
     }
-
-    initDeviceInterface(mInterfaceType);
-
-    // registerRestrictions();
-    mResourceManager->updateRestrictions();
-    mResourceManager->initDisplays(mDisplays, mDisplayMap);
-    mResourceManager->initDisplaysTDMInfo();
 
     if (mInterfaceType == INTERFACE_TYPE_DRM) {
         setVBlankOffDelay(1);
     }
 
+    mDisplayOffAsync = property_get_bool("vendor.display.async_off.supported", false);
+    initDeviceInterface(mInterfaceType);
+
+    // registerRestrictions();
+    mResourceManager->updateRestrictions();
+    mResourceManager->initDisplays(mDisplays, mDisplayMap);
+
     char value[PROPERTY_VALUE_MAX];
     property_get("vendor.display.lbe.supported", value, "0");
     const bool lbe_supported = atoi(value) ? true : false;
 
+    mNumPrimaryDisplays = 0;
     for (size_t i = 0; i < mDisplays.size(); i++) {
         if (mDisplays[i]->mType == HWC_DISPLAY_PRIMARY) {
+            ++mNumPrimaryDisplays;
             auto iter = pixelDisplayIntfName.find(getDisplayId(HWC_DISPLAY_PRIMARY, i));
             if (iter != pixelDisplayIntfName.end()) {
                 PixelDisplayInit(mDisplays[i], iter->second);
@@ -203,8 +204,6 @@ ExynosDevice::ExynosDevice()
             }
         }
     }
-
-    mDisplayOffAsync = property_get_bool("vendor.display.async_off.supported", false);
 }
 
 void ExynosDevice::initDeviceInterface(uint32_t interfaceType)
@@ -222,8 +221,7 @@ void ExynosDevice::initDeviceInterface(uint32_t interfaceType)
     for (uint32_t i = 0; i < mDisplays.size();) {
         ExynosDisplay* display = mDisplays[i];
         display->initDisplayInterface(interfaceType);
-        if (mDeviceInterface->initDisplayInterface(
-                    display->mDisplayInterface) != NO_ERROR) {
+        if (mDeviceInterface->initDisplayInterface(display->mDisplayInterface) != NO_ERROR) {
             ALOGD("Remove display[%d], Failed to initialize display interface", i);
             mDisplays.removeAt(i);
             mDisplayMap.erase(display->mDisplayId);
@@ -232,6 +230,12 @@ void ExynosDevice::initDeviceInterface(uint32_t interfaceType)
             i++;
         }
     }
+
+    // Call handleHotplug() to capture the initial coldplug state of each display.
+    // This is necessary because the hotplug uevent handler created in postInit()
+    // below does not get always triggered when HWC is restarting.
+    handleHotplug();
+    mDeviceInterface->postInit();
 }
 
 ExynosDevice::~ExynosDevice() {
@@ -310,6 +314,7 @@ void ExynosDevice::checkDynamicRecompositionThread()
             if (mDisplays[i]->mDREnable)
                 return;
         }
+        ALOGI("Destroying dynamic recomposition thread");
         mDRLoopStatus = false;
         mDRWakeUpCondition.notify_one();
         mDRThread.join();
@@ -319,6 +324,7 @@ void ExynosDevice::checkDynamicRecompositionThread()
 void ExynosDevice::dynamicRecompositionThreadCreate()
 {
     if (exynosHWCControl.useDynamicRecomp == true) {
+        ALOGI("Creating dynamic recomposition thread");
         mDRLoopStatus = true;
         mDRThread = std::thread(&dynamicRecompositionThreadLoop, this);
     }
@@ -407,7 +413,7 @@ void ExynosDevice::dump(uint32_t *outSize, char *outBuffer) {
         size_t copySize = min(static_cast<size_t>(*outSize), result.size());
         ALOGI("HWC dump:: resultSize(%zu), outSize(%d), copySize(%zu)", result.size(), *outSize,
               copySize);
-        strlcpy(outBuffer, result.string(), copySize);
+        strlcpy(outBuffer, result.c_str(), copySize);
     }
 }
 
@@ -518,10 +524,107 @@ bool ExynosDevice::isCallbackAvailable(int32_t descriptor) {
     return isCallbackRegisteredLocked(descriptor);
 }
 
-void ExynosDevice::onHotPlug(uint32_t displayId, bool status) {
+using DisplayHotplugEvent = aidl::android::hardware::graphics::common::DisplayHotplugEvent;
+DisplayHotplugEvent hotplug_event_to_aidl(bool connected, int hotplugErrorCode) {
+    switch (hotplugErrorCode) {
+        case 0:
+            return connected ? DisplayHotplugEvent::CONNECTED : DisplayHotplugEvent::DISCONNECTED;
+        case 1:
+            return DisplayHotplugEvent::ERROR_INCOMPATIBLE_CABLE;
+        default:
+            return DisplayHotplugEvent::ERROR_UNKNOWN;
+    }
+}
+
+ExynosDisplay* ExynosDevice::findPoweredOffPrimaryDisplay(ExynosDisplay* excludeDisplay) {
+    for (auto disp : mDisplays) {
+        if (disp != excludeDisplay && disp->mType == HWC_DISPLAY_PRIMARY &&
+            disp->mPowerModeState == HWC_POWER_MODE_OFF)
+            return disp;
+    }
+    return nullptr;
+}
+
+void ExynosDevice::onHotPlug(uint32_t displayId, bool status, int hotplugErrorCode) {
     Mutex::Autolock lock(mDeviceCallbackMutex);
 
+    // If we detect a hotplug of an external display on a foldable device, and we have a
+    // primary/built-in display in a powered off state, we need to use the powered off display's
+    // crtc/decon for the external display, to ensure color management is working properly
+    // (color management is supported only on decon0/decon1). See b/329034082.
+    ExynosDisplay* hotpluggedDisplay = getDisplay(displayId);
+    if (mNumPrimaryDisplays >= 2 && hotpluggedDisplay &&
+        hotpluggedDisplay->mType == HWC_DISPLAY_EXTERNAL) {
+        ALOGD("%s: display %s pluggedIn=%d hotplugErrorCode=%d", __func__,
+              hotpluggedDisplay->mDisplayTraceName.c_str(), status, hotplugErrorCode);
+        auto hotpluggedDisplayIntf = hotpluggedDisplay->mDisplayInterface.get();
+        ExynosDisplay* borrowedCrtcFrom = hotpluggedDisplayIntf->borrowedCrtcFrom();
+        if (status && hotplugErrorCode == 0) {
+            // The external display has been connected successfully, check if we can find an
+            // available decon for it, before we start initializing it.
+            if (borrowedCrtcFrom) {
+                ALOGW("%s: external display is already using decon of %s", __func__,
+                      borrowedCrtcFrom->mDisplayTraceName.c_str());
+                // Restore the original decon of the external display before proceeding.
+                hotpluggedDisplayIntf->swapCrtcs(borrowedCrtcFrom);
+            }
+            ExynosDisplay* poweredOffPrimaryDisplay = findPoweredOffPrimaryDisplay(nullptr);
+            if (poweredOffPrimaryDisplay) {
+                hotpluggedDisplayIntf->swapCrtcs(poweredOffPrimaryDisplay);
+            } else {
+                // There is no powered off primary display/available decon at the moment,
+                // this means hotplug of external display happened while the foldable device
+                // was in dual concurrent display mode. We will try to switch decon assignment
+                // for the external display later, when one of primary displays is turned off.
+                ALOGD("onHotPlug: No powered off primary displays found!");
+            }
+        } else {
+            // The external display has been unplugged, or plugged in, but ran into an error.
+            // Restore the original decon assigned to it, if we previously switched decons.
+            if (borrowedCrtcFrom) {
+                hotpluggedDisplayIntf->swapCrtcs(borrowedCrtcFrom);
+            }
+        }
+    }
+
+    // If the new HotplugEvent API is available, use it, otherwise fall back
+    // to the old V2 API with onVsync hack, if necessary.
+    const auto& hotplugEventCallback =
+            mHwc3CallbackInfos.find(IComposerCallback::TRANSACTION_onHotplugEvent);
+    if (hotplugEventCallback != mHwc3CallbackInfos.end()) {
+        const auto& callbackInfo = hotplugEventCallback->second;
+        if (callbackInfo.funcPointer != nullptr && callbackInfo.callbackData != nullptr) {
+            auto callbackFunc = reinterpret_cast<
+                    void (*)(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
+                             aidl::android::hardware::graphics::common::DisplayHotplugEvent)>(
+                    callbackInfo.funcPointer);
+            callbackFunc(callbackInfo.callbackData, displayId,
+                         hotplug_event_to_aidl(status, hotplugErrorCode));
+            return;
+        }
+    }
+
     if (!isCallbackRegisteredLocked(HWC2_CALLBACK_HOTPLUG)) return;
+
+    if (hotplugErrorCode) {
+        // We need to pass the error code to SurfaceFlinger, but we cannot modify the HWC
+        // HAL interface, so for now we'll send the hotplug error via a onVsync callback with
+        // a negative time value indicating the hotplug error.
+        if (isCallbackRegisteredLocked(HWC2_CALLBACK_VSYNC_2_4)) {
+            ALOGD("%s: hotplugErrorCode=%d sending to SF via onVsync_2_4", __func__,
+                  hotplugErrorCode);
+            hwc2_callback_data_t vsyncCallbackData =
+                    mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4].callbackData;
+            HWC2_PFN_VSYNC_2_4 vsyncCallbackFunc = reinterpret_cast<HWC2_PFN_VSYNC_2_4>(
+                    mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4].funcPointer);
+            vsyncCallbackFunc(vsyncCallbackData, displayId, -hotplugErrorCode, ~0);
+            return;
+        } else {
+            ALOGW("%s: onVsync_2_4 is not registered, ignoring hotplugErrorCode=%d", __func__,
+                  hotplugErrorCode);
+            return;
+        }
+    }
 
     hwc2_callback_data_t callbackData = mCallbackInfos[HWC2_CALLBACK_HOTPLUG].callbackData;
     HWC2_PFN_HOTPLUG callbackFunc =
@@ -529,6 +632,7 @@ void ExynosDevice::onHotPlug(uint32_t displayId, bool status) {
     callbackFunc(callbackData, displayId,
                  status ? HWC2_CONNECTION_CONNECTED : HWC2_CONNECTION_DISCONNECTED);
 }
+
 void ExynosDevice::onRefreshDisplays() {
     for (auto& display : mDisplays) {
          onRefresh(display->mDisplayId);
@@ -595,6 +699,26 @@ void ExynosDevice::onVsyncPeriodTimingChanged(uint32_t displayId,
             reinterpret_cast<HWC2_PFN_VSYNC_PERIOD_TIMING_CHANGED>(
                     mCallbackInfos[HWC2_CALLBACK_VSYNC_PERIOD_TIMING_CHANGED].funcPointer);
     callbackFunc(callbackData, displayId, timeline);
+}
+
+void ExynosDevice::onContentProtectionUpdated(uint32_t displayId, HdcpLevels hdcpLevels) {
+    Mutex::Autolock lock(mDeviceCallbackMutex);
+
+    // Workaround to pass content protection updates to SurfaceFlinger
+    // without changing HWC HAL interface.
+    if (isCallbackRegisteredLocked(HWC2_CALLBACK_VSYNC_2_4)) {
+        ALOGI("%s: displayId=%u hdcpLevels=%s sending to SF via onVsync_2_4", __func__, displayId,
+              hdcpLevels.toString().c_str());
+        hwc2_callback_data_t vsyncCallbackData =
+                mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4].callbackData;
+        HWC2_PFN_VSYNC_2_4 vsyncCallbackFunc = reinterpret_cast<HWC2_PFN_VSYNC_2_4>(
+                mCallbackInfos[HWC2_CALLBACK_VSYNC_2_4].funcPointer);
+        int32_t connectedLevel = static_cast<int32_t>(hdcpLevels.connectedLevel);
+        int32_t maxLevel = static_cast<int32_t>(hdcpLevels.maxLevel);
+        int32_t timestampValue = (connectedLevel & 0xFF) | ((maxLevel & 0xFF) << 8);
+        vsyncCallbackFunc(vsyncCallbackData, displayId, -timestampValue, ~1);
+    } else
+        ALOGW("%s: onVsync_2_4 is not registered, ignoring onContentProtectionUpdated", __func__);
 }
 
 void ExynosDevice::setHWCDebug(unsigned int debug)
@@ -882,7 +1006,8 @@ bool ExynosDevice::canSkipValidate()
          * All display's validateDisplay should be skipped or all display's validateDisplay
          * should not be skipped.
          */
-        if (mDisplays[i]->mPlugState) {
+        if (mDisplays[i]->mPlugState && mDisplays[i]->mPowerModeState.has_value() &&
+            mDisplays[i]->mPowerModeState.value() != HWC2_POWER_MODE_OFF) {
             /*
              * presentDisplay is called without validateDisplay.
              * Call functions that should be called in validateDiplay
@@ -891,9 +1016,11 @@ bool ExynosDevice::canSkipValidate()
             mDisplays[i]->checkLayerFps();
 
             if ((ret = mDisplays[i]->canSkipValidate()) != NO_ERROR) {
-                HDEBUGLOGD(eDebugSkipValidate, "Display[%d] can't skip validate (%d), renderingState(%d), geometryChanged(0x%" PRIx64 ")",
-                        mDisplays[i]->mDisplayId, ret,
-                        mDisplays[i]->mRenderingState, mGeometryChanged);
+                ALOGD_AND_ATRACE_NAME(eDebugSkipValidate,
+                                      "Display[%d] can't skip validate (%d), renderingState(%d), "
+                                      "geometryChanged(0x%" PRIx64 ")",
+                                      mDisplays[i]->mDisplayId, ret, mDisplays[i]->mRenderingState,
+                                      mGeometryChanged);
                 return false;
             } else {
                 HDEBUGLOGD(eDebugSkipValidate, "Display[%d] can skip validate (%d), renderingState(%d), geometryChanged(0x%" PRIx64 ")",
@@ -906,27 +1033,7 @@ bool ExynosDevice::canSkipValidate()
 }
 
 bool ExynosDevice::validateFences(ExynosDisplay *display) {
-    std::scoped_lock lock(display->mDevice->mFenceMutex);
-
-    if (!validateFencePerFrame(display)) {
-        ALOGE("You should doubt fence leak!");
-        saveFenceTrace(display);
-        return false;
-    }
-
-    if (fenceWarn(display, MAX_FENCE_THRESHOLD)) {
-        printLeakFds(display);
-        saveFenceTrace(display);
-        return false;
-    }
-
-    if (exynosHWCControl.doFenceFileDump) {
-        ALOGD("Fence file dump !");
-        saveFenceTrace(display);
-        exynosHWCControl.doFenceFileDump = false;
-    }
-
-    return true;
+    return mFenceTracker.validateFences(display);
 }
 
 void ExynosDevice::compareVsyncPeriod() {
@@ -1007,7 +1114,7 @@ void  ExynosDevice::captureReadbackClass::saveToFile(const String8 &fileName)
     VendorGraphicBufferMeta gmeta(mBuffer);
 
     snprintf(filePath, MAX_DEV_NAME,
-            "%s/%s", WRITEBACK_CAPTURE_PATH, fileName.string());
+            "%s/%s", WRITEBACK_CAPTURE_PATH, fileName.c_str());
     FILE *fp = fopen(filePath, "w");
     if (fp) {
         uint32_t writeSize =
@@ -1155,7 +1262,7 @@ void ExynosDevice::getLayerGenericMetadataKey(uint32_t __unused keyIndex,
     return;
 }
 
-void ExynosDevice::setVBlankOffDelay(int vblankOffDelay) {
+void ExynosDevice::setVBlankOffDelay(const int vblankOffDelay) {
     static constexpr const char *kVblankOffDelayPath = "/sys/module/drm/parameters/vblankoffdelay";
 
     writeIntToFile(kVblankOffDelayPath, vblankOffDelay);
@@ -1220,7 +1327,30 @@ void ExynosDevice::onVsyncIdle(hwc2_display_t displayId) {
     callbackFunc(callbackInfo.callbackData, displayId);
 }
 
-void ExynosDevice::onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t vsyncPeriod) {
+void ExynosDevice::handleHotplug() {
+    bool hpdStatus = false;
+
+    for (size_t i = 0; i < mDisplays.size(); i++) {
+        if (mDisplays[i] == nullptr) {
+            continue;
+        }
+
+        // Lock mDisplayMutex during hotplug processing.
+        // Must-have for unplug handling so that in-flight calls to
+        // validateDisplay() and presentDisplay() don't race with
+        // the display being removed.
+        Mutex::Autolock lock(mDisplays[i]->mDisplayMutex);
+
+        if (mDisplays[i]->checkHotplugEventUpdated(hpdStatus)) {
+            mDisplays[i]->handleHotplugEvent(hpdStatus);
+            mDisplays[i]->hotplug();
+            mDisplays[i]->invalidate();
+        }
+    }
+}
+
+void ExynosDevice::onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t vsyncPeriod,
+                                             uint32_t refreshPeriod) {
     Mutex::Autolock lock(mDeviceCallbackMutex);
     const auto &refreshRateCallback =
             mHwc3CallbackInfos.find(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug);
@@ -1230,8 +1360,11 @@ void ExynosDevice::onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t 
     const auto &callbackInfo = refreshRateCallback->second;
     if (callbackInfo.funcPointer == nullptr || callbackInfo.callbackData == nullptr) return;
 
+    ATRACE_INT("Refresh rate indicator callback",
+               static_cast<int>(std::nano::den / (refreshPeriod ?: vsyncPeriod)));
+
     auto callbackFunc =
             reinterpret_cast<void (*)(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
-                                      hwc2_vsync_period_t)>(callbackInfo.funcPointer);
-    callbackFunc(callbackInfo.callbackData, displayId, vsyncPeriod);
+                                      hwc2_vsync_period_t, int32_t)>(callbackInfo.funcPointer);
+    callbackFunc(callbackInfo.callbackData, displayId, vsyncPeriod, refreshPeriod ?: vsyncPeriod);
 }

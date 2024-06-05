@@ -51,6 +51,28 @@ class ExynosDevice;
 template <typename T>
 using DrmArray = std::array<T, HWC_DRM_BO_MAX_PLANES>;
 
+class DisplayConfigGroupIdGenerator {
+public:
+    DisplayConfigGroupIdGenerator() = default;
+    ~DisplayConfigGroupIdGenerator() = default;
+
+    // Vrr will utilize the last two parameters. In the case of non-vrr, they are automatically set
+    // to 0. Avoid using this class with a mix of Vrr and non-Vrr settings, as doing so may yield
+    // unexpected results.
+    int getGroupId(int width, int height, int minFrameInterval = 0, int vsyncPeriod = 0) {
+        const auto &key = std::make_tuple(width, height, minFrameInterval, vsyncPeriod);
+        if (groups_.count(key) > 0) {
+            return groups_[key];
+        }
+        size_t last_id = groups_.size();
+        groups_[key] = last_id;
+        return last_id;
+    }
+
+private:
+    std::map<std::tuple<int, int, int, int>, int> groups_;
+};
+
 class FramebufferManager {
     public:
         FramebufferManager(){};
@@ -66,12 +88,15 @@ class FramebufferManager {
         void checkShrink();
 
         void cleanup(const ExynosLayer *layer);
+        void destroyAllSecureBuffers();
+        int32_t uncacheLayerBuffers(const ExynosLayer* layer,
+                                    const std::vector<buffer_handle_t>& buffers);
 
         // The flip function is to help clean up the cached fbIds of destroyed
         // layers after the previous fdIds were update successfully on the
         // screen.
         // This should be called after the frame update.
-        void flip(const bool hasSecureFrameBuffer, const bool hasM2mSecureLayerBuffer);
+        void flip(const bool hasSecureBuffer);
 
         // release all currently tracked buffers, this can be called for example when display is turned
         // off
@@ -87,6 +112,15 @@ class FramebufferManager {
                 bool operator==(const Framebuffer::BufferDesc &rhs) const {
                     return (bufferId == rhs.bufferId && drmFormat == rhs.drmFormat &&
                             isSecure == rhs.isSecure);
+                }
+                bool operator<(const Framebuffer::BufferDesc& rhs) const {
+                    if (bufferId != rhs.bufferId) {
+                        return bufferId < rhs.bufferId;
+                    }
+                    if (drmFormat != rhs.drmFormat) {
+                        return drmFormat < rhs.drmFormat;
+                    }
+                    return isSecure < rhs.isSecure;
                 }
             };
             struct SolidColorDesc {
@@ -112,7 +146,7 @@ class FramebufferManager {
         using FBList = std::list<std::unique_ptr<Framebuffer>>;
 
         template <class UnaryPredicate>
-        uint32_t findCachedFbId(const ExynosLayer *layer, const bool isM2mSecureLayer,
+        uint32_t findCachedFbId(const ExynosLayer* layer, const bool isSecureBuffer,
                                 UnaryPredicate predicate);
         int addFB2WithModifiers(uint32_t state, uint32_t width, uint32_t height, uint32_t drmFormat,
                                 const DrmArray<uint32_t> &handles,
@@ -127,19 +161,18 @@ class FramebufferManager {
         void freeBufHandle(uint32_t handle);
         void removeFBsThreadRoutine();
 
-        void markInuseLayerLocked(const ExynosLayer *layer, const bool isM2mSecureLayer)
+        void markInuseLayerLocked(const ExynosLayer* layer, const bool isSecureBuffer)
                 REQUIRES(mMutex);
         void destroyUnusedLayersLocked() REQUIRES(mMutex);
-        void destroySecureFramebufferLocked() REQUIRES(mMutex);
-        void destroyM2mSecureLayerBufferLocked() REQUIRES(mMutex);
+        void destroyAllSecureBuffersLocked() REQUIRES(mMutex);
 
         int mDrmFd = -1;
 
         // mCachedLayerBuffers map keep the relationship between Layer and FBList.
-        // mCachedM2mSecureLayerBuffers map keep the relationship between M2M secure
+        // mCachedSecureLayerBuffers map keep the relationship between secure
         // Layer and FBList. The map entry will be deleted once the layer is destroyed.
         std::map<const ExynosLayer *, FBList> mCachedLayerBuffers;
-        std::map<const ExynosLayer *, FBList> mCachedM2mSecureLayerBuffers;
+        std::map<const ExynosLayer*, FBList> mCachedSecureLayerBuffers;
 
         // mCleanBuffers list keeps fbIds of destroyed layers. Those fbIds will
         // be destroyed in mRmFBThread thread.
@@ -148,15 +181,13 @@ class FramebufferManager {
         // mCacheShrinkPending is set when we want to clean up unused layers
         // in mCachedLayerBuffers. When the flag is set, mCachedLayersInuse will
         // keep in-use layers in this frame update. Those unused layers will be
-        // freed at the end of the update. mCacheM2mSecureShrinkPending is same to
-        // mCacheShrinkPending but for mCachedM2mSecureLayerBuffers.
+        // freed at the end of the update. mCacheSecureShrinkPending is same to
+        // mCacheShrinkPending but for mCachedSecureLayerBuffers.
         // TODO: have a better way to maintain inuse layers
         bool mCacheShrinkPending = false;
-        bool mCacheM2mSecureShrinkPending = false;
-        bool mHasSecureFramebuffer = false;
-        bool mHasM2mSecureLayerBuffer = false;
+        bool mCacheSecureShrinkPending = false;
         std::set<const ExynosLayer *> mCachedLayersInuse;
-        std::set<const ExynosLayer *> mCachedM2mSecureLayersInuse;
+        std::set<const ExynosLayer*> mCachedSecureLayersInuse;
 
         std::thread mRmFBThread;
         bool mRmFBThreadRunning = false;
@@ -164,22 +195,18 @@ class FramebufferManager {
         Mutex mMutex;
 
         static constexpr size_t MAX_CACHED_LAYERS = 16;
-        static constexpr size_t MAX_CACHED_M2M_SECURE_LAYERS = 1;
+        static constexpr size_t MAX_CACHED_SECURE_LAYERS = 1;
         static constexpr size_t MAX_CACHED_BUFFERS_PER_LAYER = 32;
-        static constexpr size_t MAX_CACHED_M2M_SECURE_BUFFERS_PER_LAYER = 3;
+        static constexpr size_t MAX_CACHED_SECURE_BUFFERS_PER_LAYER = 3;
 };
 
-inline bool isFramebuffer(const ExynosLayer *layer) {
-    return layer == nullptr;
-}
-
 template <class UnaryPredicate>
-uint32_t FramebufferManager::findCachedFbId(const ExynosLayer *layer, const bool isM2mSecureLayer,
+uint32_t FramebufferManager::findCachedFbId(const ExynosLayer* layer, const bool isSecureBuffer,
                                             UnaryPredicate predicate) {
     Mutex::Autolock lock(mMutex);
-    markInuseLayerLocked(layer, isM2mSecureLayer);
-    const auto &cachedBuffers =
-            (!isM2mSecureLayer) ? mCachedLayerBuffers[layer] : mCachedM2mSecureLayerBuffers[layer];
+    markInuseLayerLocked(layer, isSecureBuffer);
+    const auto& cachedBuffers =
+            (!isSecureBuffer) ? mCachedLayerBuffers[layer] : mCachedSecureLayerBuffers[layer];
     const auto it = std::find_if(cachedBuffers.begin(), cachedBuffers.end(), predicate);
     return (it != cachedBuffers.end()) ? (*it)->fbId : 0;
 }
@@ -234,6 +261,12 @@ class ExynosDisplayDrmInterface :
                     mOldBlobs.clear();
                     return NO_ERROR;
                 };
+                void dumpDrmAtomicCommitMessage(int err);
+
+                void setAckCallback(std::function<void()> callback) {
+                    mAckCallback = std::move(callback);
+                };
+
             private:
                 drmModeAtomicReqPtr mPset;
                 drmModeAtomicReqPtr mSavedPset;
@@ -242,6 +275,15 @@ class ExynosDisplayDrmInterface :
                 /* Destroy old blobs after commit */
                 std::vector<uint32_t> mOldBlobs;
                 int drmFd() const { return mDrmDisplayInterface->mDrmDevice->fd(); }
+
+                std::function<void()> mAckCallback;
+
+                static constexpr uint32_t kAllowDumpDrmAtomicMessageTimeMs = 5000U;
+                static constexpr const char* kDrmModuleParametersDebugNode =
+                        "/sys/module/drm/parameters/debug";
+                static constexpr const int kEnableDrmAtomicMessage = 16;
+                static constexpr const int kDisableDrmDebugMessage = 0;
+
         };
         class ExynosVsyncCallback {
             public:
@@ -293,12 +335,13 @@ class ExynosDisplayDrmInterface :
         virtual int32_t setForcePanic();
         virtual int getDisplayFd() { return mDrmDevice->fd(); };
         virtual int32_t initDrmDevice(DrmDevice *drmDevice);
-        virtual uint32_t getDrmDisplayId(uint32_t type, uint32_t index);
+        virtual int getDrmDisplayId(uint32_t type, uint32_t index);
         virtual uint32_t getMaxWindowNum() { return mMaxWindowNum; };
         virtual int32_t getReadbackBufferAttributes(int32_t* /*android_pixel_format_t*/ outFormat,
                 int32_t* /*android_dataspace_t*/ outDataspace);
         virtual int32_t getDisplayIdentificationData(uint8_t* outPort,
                 uint32_t* outDataSize, uint8_t* outData);
+        virtual bool needRefreshOnLP();
 
         /* For HWC 2.4 APIs */
         virtual int32_t getDisplayVsyncPeriod(
@@ -327,12 +370,41 @@ class ExynosDisplayDrmInterface :
 
         virtual int32_t waitVBlank();
         float getDesiredRefreshRate() { return mDesiredModeState.mode.v_refresh(); }
+        int32_t getOperationRate() {
+            if (mExynosDisplay->mOperationRateManager) {
+                    return mExynosDisplay->mOperationRateManager->getTargetOperationRate();
+            }
+            return 0;
+        }
 
         /* For Histogram */
         virtual int32_t setDisplayHistogramSetting(
                 ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq) {
             return NO_ERROR;
         }
+
+        /* For Histogram Multi Channel support */
+        int32_t setHistogramChannelConfigBlob(ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq,
+                                              uint8_t channelId, uint32_t blobId);
+        int32_t clearHistogramChannelConfigBlob(ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq,
+                                                uint8_t channelId);
+        enum class HistogramChannelIoctl_t {
+            /* send the histogram data request by calling histogram_channel_request_ioctl */
+            REQUEST = 0,
+
+            /* cancel the histogram data request by calling histogram_channel_cancel_ioctl */
+            CANCEL,
+        };
+        int32_t sendHistogramChannelIoctl(HistogramChannelIoctl_t control, uint32_t blobId) const;
+
+        enum class ContextHistogramIoctl_t {
+            /* send the histogram event request by calling histogram_event_request_ioctl */
+            REQUEST = 0,
+            /* send the histogram event request by calling histogram_event_cancel_ioctl */
+            CANCEL,
+        };
+        int32_t sendContextHistogramIoctl(ContextHistogramIoctl_t control, uint32_t blobId) const;
+
         int32_t getFrameCount() { return mFrameCounter; }
         virtual void registerHistogramInfo(const std::shared_ptr<IDLHistogram> &info) { return; }
         virtual int32_t setHistogramControl(hidl_histogram_control_t enabled) { return NO_ERROR; }
@@ -340,11 +412,43 @@ class ExynosDisplayDrmInterface :
         int32_t getActiveModeHDisplay() { return mActiveModeState.mode.h_display(); }
         int32_t getActiveModeVDisplay() { return mActiveModeState.mode.v_display(); }
         uint32_t getActiveModeId() { return mActiveModeState.mode.id(); }
-        int32_t panelHsize() { return mPanelResolutionHsize; }
-        int32_t panelVsize() { return mPanelResolutionVsize; }
-        int32_t getPanelResolution();
+        int32_t getPanelFullResolutionHSize() { return mPanelFullResolutionHSize; }
+        int32_t getPanelFullResolutionVSize() { return mPanelFullResolutionVSize; }
         uint32_t getCrtcId() { return mDrmCrtc->id(); }
         int32_t triggerClearDisplayPlanes();
+
+        virtual void setXrrSettings(const XrrSettings_t& settings) override;
+        bool isVrrSupported() const { return mXrrSettings.versionInfo.isVrr(); }
+        bool isMrrV2() const {
+            return (!mXrrSettings.versionInfo.isVrr()) &&
+                    (mXrrSettings.versionInfo.minorVersion == 2);
+        }
+
+        void handleDrmPropertyUpdate(uint32_t connector_id, uint32_t prop_id);
+
+        /* store the manufacturer info and product id from EDID
+         * - Manufacturer ID is stored in EDID byte 8 and 9.
+         * - Manufacturer product ID is stored in EDID byte 10 and 11.
+         */
+        virtual void setManufacturerInfo(uint8_t edid8, uint8_t edid9) override;
+        virtual uint32_t getManufacturerInfo() override { return mManufacturerInfo; }
+        virtual void setProductId(uint8_t edid10, uint8_t edid11) override;
+        virtual uint32_t getProductId() override { return mProductId; }
+
+        // This function will swap crtc/decon assigned to this display, with the crtc/decon of
+        // the provided |anotherDisplay|. It is used on foldable devices, where decon0/1 support
+        // color management, but decon2 doesn't, to re-assign the decon0/1 of a powered off primary
+        // display for the external display. When the external display is disconnected, this
+        // function is called again with the same |anotherDisplay| parameter to restore the
+        // original crtc/decon assignment of the external and primary display.
+        // See b/329034082 for details.
+        virtual int32_t swapCrtcs(ExynosDisplay* anotherDisplay) override;
+        // After swapCrtcs has been successfully done, this function will return the display, whose
+        // crtc/decon this display is currently using.
+        virtual ExynosDisplay* borrowedCrtcFrom() override;
+
+        virtual int32_t uncacheLayerBuffers(const ExynosLayer* __unused layer,
+                                            const std::vector<buffer_handle_t>& buffers) override;
 
     protected:
         enum class HalMipiSyncType : uint32_t {
@@ -352,6 +456,7 @@ class ExynosDisplayDrmInterface :
             HAL_MIPI_CMD_SYNC_LHBM,
             HAL_MIPI_CMD_SYNC_GHBM,
             HAL_MIPI_CMD_SYNC_BL,
+            HAL_MIPI_CMD_SYNC_OP_RATE,
         };
 
         struct ModeState {
@@ -400,10 +505,11 @@ class ExynosDisplayDrmInterface :
             }
         };
         int32_t createModeBlob(const DrmMode &mode, uint32_t &modeBlob);
-        int32_t setDisplayMode(DrmModeAtomicReq &drmReq, const uint32_t modeBlob);
+        int32_t setDisplayMode(DrmModeAtomicReq& drmReq, const uint32_t& modeBlob,
+                               const uint32_t& modeId);
         int32_t clearDisplayMode(DrmModeAtomicReq &drmReq);
         int32_t clearDisplayPlanes(DrmModeAtomicReq &drmReq);
-        int32_t chosePreferredConfig();
+        int32_t choosePreferredConfig();
         int getDeconChannel(ExynosMPP *otfMPP);
         /*
          * This function adds FB and gets new fb id if fbId is 0,
@@ -500,6 +606,8 @@ class ExynosDisplayDrmInterface :
         /* Mapping plane id to ExynosMPP, key is plane id */
         std::unordered_map<uint32_t, ExynosMPP*> mExynosMPPsForPlane;
 
+        ExynosDisplay* mBorrowedCrtcFrom = nullptr;
+
         DrmEnumParser::MapHal2DrmEnum mBlendEnums;
         DrmEnumParser::MapHal2DrmEnum mStandardEnums;
         DrmEnumParser::MapHal2DrmEnum mTransferEnums;
@@ -510,6 +618,8 @@ class ExynosDisplayDrmInterface :
         DrmReadbackInfo mReadbackInfo;
         FramebufferManager mFBManager;
         std::array<uint8_t, MONITOR_DESCRIPTOR_DATA_LENGTH> mMonitorDescription;
+        nsecs_t mLastDumpDrmAtomicMessageTime;
+        bool mIsResolutionSwitchInProgress = false;
 
     private:
         int32_t getDisplayFakeEdid(uint8_t &outPort, uint32_t &outDataSize, uint8_t *outData);
@@ -518,8 +628,34 @@ class ExynosDisplayDrmInterface :
         DrmMode mDozeDrmMode;
         uint32_t mMaxWindowNum = 0;
         int32_t mFrameCounter = 0;
-        int32_t mPanelResolutionHsize = 0;
-        int32_t mPanelResolutionVsize = 0;
+        int32_t mPanelFullResolutionHSize = 0;
+        int32_t mPanelFullResolutionVSize = 0;
+
+        // Vrr related settings.
+        XrrSettings_t mXrrSettings;
+
+        /**
+         * retrievePanelFullResolution
+         *
+         * Retrieve the panel full resolution by looking into the modes of the mDrmConnector
+         * and store the full resolution info in mPanelFullResolutionHSize (x component) and
+         * mPanelFullResolutionVSize (y component).
+         *
+         * Note: this function will be called only once in initDrmDevice()
+         */
+        void retrievePanelFullResolution();
+
+        const uint8_t kEDIDManufacturerIDByte1 = 8;
+        const uint8_t kEDIDManufacturerIDByte2 = 9;
+        const uint8_t kEDIDProductIDByte1 = 10;
+        const uint8_t kEDIDProductIDByte2 = 11;
+        uint32_t mManufacturerInfo;
+        uint32_t mProductId;
+
+    public:
+        virtual bool readHotplugStatus();
+        virtual int readHotplugErrorCode();
+        virtual void resetHotplugErrorCode();
 };
 
 #endif

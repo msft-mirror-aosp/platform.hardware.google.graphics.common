@@ -45,7 +45,7 @@ public:
     virtual int sendWFDCommand(int32_t cmd, int32_t ext1, int32_t ext2);
     virtual int setSecureVDSMode(unsigned int mode);
     virtual int setWFDOutputResolution(unsigned int width, unsigned int height);
-    virtual void getWFDOutputResolution(unsigned int *width, unsigned int *height);
+    virtual int getWFDOutputResolution(unsigned int* width, unsigned int* height);
     virtual void setPresentationMode(bool use);
     virtual int getPresentationMode(void);
     virtual int setVDSGlesFormat(int format);
@@ -70,6 +70,9 @@ public:
     virtual int32_t setDisplayDeviceMode(int32_t display_id, int32_t mode);
     virtual int32_t setPanelGammaTableSource(int32_t display_id, int32_t type, int32_t source);
     virtual int32_t setDisplayBrightness(int32_t display_id, float brightness);
+    virtual int32_t ignoreDisplayBrightnessUpdateRequests(int32_t displayId, bool ignore);
+    virtual int32_t setDisplayBrightnessNits(const int32_t display_id, const float nits);
+    virtual int32_t setDisplayBrightnessDbv(const int32_t display_id, const uint32_t dbv);
     virtual int32_t setDisplayLhbm(int32_t display_id, uint32_t on);
 
     virtual int32_t setMinIdleRefreshRate(uint32_t display_id, int32_t fps);
@@ -83,6 +86,14 @@ public:
                                                    const bool& enable) override;
     virtual int32_t triggerRefreshRateIndicatorUpdate(uint32_t displayId,
                                                       uint32_t refreshRate) override;
+    virtual int32_t dumpBuffers(uint32_t displayId, int32_t count) override;
+
+    int32_t setPresentTimeoutController(uint32_t displayId, uint32_t controllerType) override;
+
+    int32_t setPresentTimeoutParameters(uint32_t displayId, int __unused timeoutNs,
+                                        const std::vector<std::pair<uint32_t, uint32_t>>& __unused
+                                                settings) override;
+    virtual int32_t setFixedTe2Rate(uint32_t displayId, int32_t rateHz);
 
 private:
     friend class Singleton<ExynosHWCService>;

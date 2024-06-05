@@ -30,15 +30,23 @@
 
 using namespace SOC_VERSION;
 
+namespace {
+
+static constexpr int32_t kMinComposerInterfaceVersionForVrrApi = 3;
+static constexpr int32_t kMinComposerInterfaceVersionForHwcBatching = 3;
+};
+
 namespace aidl::android::hardware::graphics::composer3::impl {
 
-std::unique_ptr<IComposerHal> IComposerHal::create() {
-    auto device = std::make_unique<ExynosDeviceModule>();
+std::unique_ptr<IComposerHal> IComposerHal::create(int32_t composerInterfaceVersion) {
+    bool vrrApiSupported = composerInterfaceVersion >= kMinComposerInterfaceVersionForVrrApi;
+    bool batchingSupported = composerInterfaceVersion >= kMinComposerInterfaceVersionForHwcBatching;
+    auto device = std::make_unique<ExynosDeviceModule>(vrrApiSupported);
     if (!device) {
         return nullptr;
     }
-
-    return std::make_unique<HalImpl>(std::move(device));
+    auto halImp = std::make_unique<HalImpl>(std::move(device), batchingSupported);
+    return halImp;
 }
 
 namespace hook {
@@ -100,23 +108,36 @@ void seamlessPossible(hwc2_callback_data_t callbackData, hwc2_display_t hwcDispl
 }
 
 void refreshRateChangedDebug(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
-                             hwc2_vsync_period_t hwcVsyncPeriodNanos) {
+                             hwc2_vsync_period_t hwcVsyncPeriodNanos,
+                             int32_t hwcRefreshPeriodNanos) {
     auto hal = static_cast<HalImpl*>(callbackData);
     int64_t display;
     int32_t vsyncPeriodNanos;
 
     h2a::translate(hwcDisplay, display);
     h2a::translate(hwcVsyncPeriodNanos, vsyncPeriodNanos);
+    // TODO (b/314527560) Update refreshPeriodNanos for VRR display
     hal->getEventCallback()->onRefreshRateChangedDebug(RefreshRateChangedDebugData{
             .display = display,
             .vsyncPeriodNanos = vsyncPeriodNanos,
+            .refreshPeriodNanos = hwcRefreshPeriodNanos,
     });
+}
+
+void hotplugEvent(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
+                  common::DisplayHotplugEvent hotplugEvent) {
+    auto hal = static_cast<HalImpl*>(callbackData);
+    int64_t display;
+
+    h2a::translate(hwcDisplay, display);
+    hal->getEventCallback()->onHotplugEvent(display, hotplugEvent);
 }
 
 } // nampesapce hook
 
-HalImpl::HalImpl(std::unique_ptr<ExynosDevice> device) : mDevice(std::move(device)) {
-    initCaps();
+HalImpl::HalImpl(std::unique_ptr<ExynosDevice> device, bool batchingSupported)
+      : mDevice(std::move(device)) {
+    initCaps(batchingSupported);
 #ifdef USES_HWC_SERVICES
     LOG(DEBUG) << "Start HWCService";
     mHwcCtx = std::make_unique<ExynosHWCCtx>();
@@ -130,7 +151,7 @@ HalImpl::HalImpl(std::unique_ptr<ExynosDevice> device) : mDevice(std::move(devic
 #endif
 }
 
-void HalImpl::initCaps() {
+void HalImpl::initCaps(bool batchingSupported) {
     uint32_t count = 0;
     mDevice->getCapabilities(&count, nullptr);
 
@@ -145,6 +166,9 @@ void HalImpl::initCaps() {
 
     mCaps.insert(Capability::BOOT_DISPLAY_CONFIG);
     mCaps.insert(Capability::REFRESH_RATE_CHANGED_CALLBACK_DEBUG);
+    if (batchingSupported) {
+        mCaps.insert(Capability::LAYER_LIFECYCLE_BATCH_COMMAND);
+    }
 }
 
 int32_t HalImpl::getHalDisplay(int64_t display, ExynosDisplay*& halDisplay) {
@@ -162,13 +186,24 @@ int32_t HalImpl::getHalLayer(int64_t display, int64_t layer, ExynosLayer*& halLa
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
-    hwc2_layer_t hwcLayer;
-    a2h::translate(layer, hwcLayer);
-    halLayer = halDisplay->checkLayer(hwcLayer);
+    hwc2_layer_t mapped_layer;
+    RET_IF_ERR(layerSf2Hwc(display, layer, mapped_layer));
+    halLayer = halDisplay->checkLayer(mapped_layer);
     if (!halLayer) { [[unlikely]]
         return HWC2_ERROR_BAD_LAYER;
     }
 
+    return HWC2_ERROR_NONE;
+}
+
+int32_t HalImpl::layerSf2Hwc(int64_t display, int64_t layer, hwc2_layer_t& outMappedLayer) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+    auto iter = mSfLayerToHalLayerMap.find(layer);
+    if (iter == mSfLayerToHalLayerMap.end()) {
+        return HWC2_ERROR_BAD_LAYER;
+    }
+    outMappedLayer = iter->second;
     return HWC2_ERROR_NONE;
 }
 
@@ -211,6 +246,9 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
                                   reinterpret_cast<hwc2_function_pointer_t>(
                                           hook::refreshRateChangedDebug));
+    // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this,
+    //                             reinterpret_cast<hwc2_function_pointer_t>(hook::hotplugEvent));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -224,6 +262,8 @@ void HalImpl::unregisterEventCallback() {
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this, nullptr);
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
                                   nullptr);
+    // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this, nullptr);
 
     mEventCallback = nullptr;
 }
@@ -243,17 +283,71 @@ int32_t HalImpl::createLayer(int64_t display, int64_t* outLayer) {
     RET_IF_ERR(halDisplay->createLayer(&hwcLayer));
 
     h2a::translate(hwcLayer, *outLayer);
+    // Adding this to stay backward compatible with new batching command,
+    // if HWC supports batching, and create does not.
+    mSfLayerToHalLayerMap[*outLayer] = hwcLayer;
+    mHalLayerToSfLayerMap[hwcLayer] = *outLayer;
     return HWC2_ERROR_NONE;
 }
 
+int32_t HalImpl::batchedCreateDestroyLayer(int64_t display, int64_t layer,
+                                           LayerLifecycleBatchCommandType cmd) {
+    int32_t err = HWC2_ERROR_NONE;
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+    if (cmd == LayerLifecycleBatchCommandType::CREATE) {
+        if (mSfLayerToHalLayerMap.find(layer) != mSfLayerToHalLayerMap.end()) {
+            return HWC2_ERROR_BAD_LAYER;
+        }
+        hwc2_layer_t hwcLayer = 0;
+        RET_IF_ERR(halDisplay->createLayer(&hwcLayer));
+        int64_t hwclayerAidl;
+        h2a::translate(hwcLayer, hwclayerAidl);
+        mSfLayerToHalLayerMap[layer] = hwclayerAidl;
+
+        mHalLayerToSfLayerMap[hwcLayer] = layer;
+    } else if (cmd == LayerLifecycleBatchCommandType::DESTROY) {
+        int64_t HalLayerAidl;
+        ExynosLayer* halLayer;
+        auto iter = mSfLayerToHalLayerMap.find(layer);
+        if (iter == mSfLayerToHalLayerMap.end()) {
+            return HWC2_ERROR_BAD_LAYER;
+        }
+        HalLayerAidl = iter->second;
+
+        RET_IF_ERR(getHalLayer(display, layer, halLayer));
+        err = halDisplay->destroyLayer(reinterpret_cast<hwc2_layer_t>(halLayer));
+        if (err != HWC2_ERROR_NONE) {
+            ALOGW("HalImpl: destroyLayer failed with error: %u", err);
+        }
+        mSfLayerToHalLayerMap.erase(iter);
+        auto iterator = mHalLayerToSfLayerMap.find(reinterpret_cast<hwc2_layer_t>(halLayer));
+        if (iterator == mHalLayerToSfLayerMap.end()) {
+            return HWC2_ERROR_BAD_LAYER;
+        }
+
+        mHalLayerToSfLayerMap.erase(iterator);
+    }
+    return err;
+}
+
 int32_t HalImpl::destroyLayer(int64_t display, int64_t layer) {
+    int32_t err = HWC2_ERROR_NONE;
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
     ExynosLayer *halLayer;
     RET_IF_ERR(getHalLayer(display, layer, halLayer));
-
-    return halDisplay->destroyLayer(reinterpret_cast<hwc2_layer_t>(halLayer));
+    err = halDisplay->destroyLayer(reinterpret_cast<hwc2_layer_t>(halLayer));
+    auto iter = mSfLayerToHalLayerMap.find(layer);
+    if (iter != mSfLayerToHalLayerMap.end()) {
+        mSfLayerToHalLayerMap.erase(iter);
+    }
+    auto iterator = mHalLayerToSfLayerMap.find(reinterpret_cast<hwc2_layer_t>(halLayer));
+    if (iterator != mHalLayerToSfLayerMap.end()) {
+        mHalLayerToSfLayerMap.erase(iterator);
+    }
+    return err;
 }
 
 int32_t HalImpl::createVirtualDisplay(uint32_t width, uint32_t height, AidlPixelFormat format,
@@ -370,6 +464,69 @@ int32_t HalImpl::getDisplayConfigs(int64_t display, std::vector<int32_t>* config
     RET_IF_ERR(halDisplay->getDisplayConfigs(&count, hwcConfigs.data()));
 
     h2a::translate(hwcConfigs, *configs);
+    return HWC2_ERROR_NONE;
+}
+
+int32_t HalImpl::getDisplayConfigurations(int64_t display, int32_t,
+                                          std::vector<DisplayConfiguration>* outConfigs) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    std::vector<int32_t> configIds;
+    RET_IF_ERR(getDisplayConfigs(display, &configIds));
+
+    for (const auto configId : configIds) {
+        DisplayConfiguration config;
+        config.configId = configId;
+        // Get required display attributes
+        RET_IF_ERR(getDisplayAttribute(display, configId, DisplayAttribute::WIDTH, &config.width));
+        RET_IF_ERR(
+                getDisplayAttribute(display, configId, DisplayAttribute::HEIGHT, &config.height));
+        RET_IF_ERR(getDisplayAttribute(display, configId, DisplayAttribute::VSYNC_PERIOD,
+                                       &config.vsyncPeriod));
+        RET_IF_ERR(getDisplayAttribute(display, configId, DisplayAttribute::CONFIG_GROUP,
+                                       &config.configGroup));
+        // Get optional display attributes
+        int32_t dpiX, dpiY;
+        auto statusDpiX = getDisplayAttribute(display, configId, DisplayAttribute::DPI_X, &dpiX);
+        auto statusDpiY = getDisplayAttribute(display, configId, DisplayAttribute::DPI_Y, &dpiY);
+        // TODO(b/294120341): getDisplayAttribute for DPI should return dots per inch
+        if (statusDpiX == HWC2_ERROR_NONE && statusDpiY == HWC2_ERROR_NONE) {
+            config.dpi = {dpiX / 1000.0f, dpiY / 1000.0f};
+        }
+        // Determine whether there is a need to configure VRR.
+        hwc2_config_t hwcConfigId;
+        a2h::translate(configId, hwcConfigId);
+        std::optional<VrrConfig_t> vrrConfig = halDisplay->getVrrConfigs(hwcConfigId);
+        if (vrrConfig.has_value() && vrrConfig->isFullySupported) {
+            // TODO(b/290843234): complete the remaining values within vrrConfig.
+            VrrConfig hwc3VrrConfig;
+            VrrConfig::NotifyExpectedPresentConfig notifyExpectedPresentConfig;
+            hwc3VrrConfig.minFrameIntervalNs = vrrConfig->minFrameIntervalNs;
+            if (vrrConfig->notifyExpectedPresentConfig.has_value()) {
+                notifyExpectedPresentConfig.headsUpNs =
+                        vrrConfig->notifyExpectedPresentConfig->HeadsUpNs;
+                notifyExpectedPresentConfig.timeoutNs =
+                        vrrConfig->notifyExpectedPresentConfig->TimeoutNs;
+                hwc3VrrConfig.notifyExpectedPresentConfig =
+                        std::make_optional(notifyExpectedPresentConfig);
+            }
+            config.vrrConfig = std::make_optional(hwc3VrrConfig);
+        }
+        outConfigs->push_back(config);
+    }
+
+    return HWC2_ERROR_NONE;
+}
+
+int32_t HalImpl::notifyExpectedPresent(int64_t display,
+                                       const ClockMonotonicTimestamp& expectedPresentTime,
+                                       int32_t frameIntervalNs) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    RET_IF_ERR(
+            halDisplay->notifyExpectedPresent(expectedPresentTime.timestampNanos, frameIntervalNs));
     return HWC2_ERROR_NONE;
 }
 
@@ -582,10 +739,10 @@ int32_t HalImpl::presentDisplay(int64_t display, ndk::ScopedFileDescriptor& fenc
 
    // TODO: not expect acceptDisplayChanges if there are no changes to accept
     if (halDisplay->mRenderingState == RENDERING_STATE_VALIDATED) {
-        LOG(INFO) << halDisplay->mDisplayName.string()
+        LOG(INFO) << halDisplay->mDisplayName.c_str()
                    << ": acceptDisplayChanges was not called";
         if (halDisplay->acceptDisplayChanges() != HWC2_ERROR_NONE) {
-            LOG(ERROR) << halDisplay->mDisplayName.string()
+            LOG(ERROR) << halDisplay->mDisplayName.c_str()
             << ": acceptDisplayChanges is failed";
         }
     }
@@ -600,8 +757,17 @@ int32_t HalImpl::presentDisplay(int64_t display, ndk::ScopedFileDescriptor& fenc
     std::vector<hwc2_layer_t> hwcLayers(count);
     std::vector<int32_t> hwcFences(count);
     RET_IF_ERR(halDisplay->getReleaseFences(&count, hwcLayers.data(), hwcFences.data()));
+    std::vector<int64_t> sfLayers(count);
 
-    h2a::translate(hwcLayers, *outLayers);
+    for (int i = 0; i < count; i++) {
+        auto iter = mHalLayerToSfLayerMap.find(hwcLayers[i]);
+        if (iter != mHalLayerToSfLayerMap.end()) {
+            sfLayers[i] = iter->second;
+        } else {
+            LOG(ERROR) << "HalImpl::presentDisplay incorrect hal mapping. ";
+        }
+    }
+    h2a::translate(sfLayers, *outLayers);
     h2a::translate(hwcFences, *outReleaseFences);
 
     return HWC2_ERROR_NONE;
@@ -691,6 +857,15 @@ int32_t HalImpl::setClientTarget(int64_t display, buffer_handle_t target,
     return halDisplay->setClientTarget(target, hwcFence, hwcDataspace);
 }
 
+int32_t HalImpl::getHasClientComposition(int64_t display, bool& outHasClientComp) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    outHasClientComp = halDisplay->hasClientComposition();
+
+    return HWC2_ERROR_NONE;
+}
+
 int32_t HalImpl::setColorMode(int64_t display, ColorMode mode, RenderIntent intent) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
@@ -766,6 +941,18 @@ int32_t HalImpl::setLayerBuffer(int64_t display, int64_t layer, buffer_handle_t 
     a2h::translate(acquireFence, hwcFd);
 
     return halLayer->setLayerBuffer(buffer, hwcFd);
+}
+
+int32_t HalImpl::uncacheLayerBuffers(int64_t display, int64_t layer,
+                                     const std::vector<buffer_handle_t>& buffers,
+                                     std::vector<buffer_handle_t>& outClearableBuffers) {
+    ExynosDisplay* halDisplay;
+    RET_IF_ERR(getHalDisplay(display, halDisplay));
+
+    ExynosLayer* halLayer;
+    RET_IF_ERR(getHalLayer(display, layer, halLayer));
+
+    return halDisplay->uncacheLayerBuffers(halLayer, buffers, outClearableBuffers);
 }
 
 int32_t HalImpl::setLayerColor(int64_t display, int64_t layer, Color color) {
@@ -1019,12 +1206,30 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
     outRequestMasks->resize(reqsCount);
     RET_IF_ERR(halDisplay->getDisplayRequests(&displayReqs, &reqsCount,
                                               hwcRequestedLayers.data(), outRequestMasks->data()));
+    std::vector<int64_t> sfChangedLayers(typesCount);
 
-    h2a::translate(hwcChangedLayers, *outChangedLayers);
+    for (int i = 0; i < typesCount; i++) {
+        auto iter = mHalLayerToSfLayerMap.find(hwcChangedLayers[i]);
+        if (iter != mHalLayerToSfLayerMap.end()) {
+            sfChangedLayers[i] = iter->second;
+        } else {
+            LOG(ERROR) << "HalImpl::validateDisplay incorrect hal mapping. ";
+        }
+    }
+    h2a::translate(sfChangedLayers, *outChangedLayers);
     h2a::translate(hwcCompositionTypes, *outCompositionTypes);
     *outDisplayRequestMask = displayReqs;
-    h2a::translate(hwcRequestedLayers, *outRequestedLayers);
+    std::vector<int64_t> sfRequestedLayers(reqsCount);
 
+    for (int i = 0; i < reqsCount; i++) {
+        auto iter = mHalLayerToSfLayerMap.find(hwcRequestedLayers[i]);
+        if (iter != mHalLayerToSfLayerMap.end()) {
+            sfRequestedLayers[i] = iter->second;
+        } else {
+            LOG(ERROR) << "HalImpl::validateDisplay incorrect hal mapping. ";
+        }
+    }
+    h2a::translate(sfRequestedLayers, *outRequestedLayers);
     hwc_client_target_property hwcProperty;
     HwcDimmingStage hwcDimmingStage;
     if (!halDisplay->getClientTargetProperty(&hwcProperty, &hwcDimmingStage)) {
@@ -1032,11 +1237,12 @@ int32_t HalImpl::validateDisplay(int64_t display, std::vector<int64_t>* outChang
         h2a::translate(hwcProperty, *outClientTargetProperty);
     } // else ignore this error
 
-    return HWC2_ERROR_NONE;
+    return err;
 }
 
 int HalImpl::setExpectedPresentTime(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
     ExynosDisplay* halDisplay;
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
@@ -1046,7 +1252,7 @@ int HalImpl::setExpectedPresentTime(
         ALOGW("HalImpl: set expected present time multiple times in one frame");
     }
 
-    halDisplay->setExpectedPresentTime(expectedPresentTime->timestampNanos);
+    halDisplay->setExpectedPresentTime(expectedPresentTime->timestampNanos, frameIntervalNs);
 
     return HWC2_ERROR_NONE;
 }

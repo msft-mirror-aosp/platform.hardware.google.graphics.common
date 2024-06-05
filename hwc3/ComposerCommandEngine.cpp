@@ -14,9 +14,13 @@
  * limitations under the License.
  */
 
+#include "ComposerCommandEngine.h"
+
+#include <hardware/hwcomposer2.h>
+
+#include <map>
 #include <set>
 
-#include "ComposerCommandEngine.h"
 #include "Util.h"
 
 namespace aidl::android::hardware::graphics::composer3::impl {
@@ -48,11 +52,11 @@ namespace aidl::android::hardware::graphics::composer3::impl {
         }                                                                    \
     } while (0)
 
-#define DISPATCH_DISPLAY_BOOL_COMMAND_AND_DATA(displayCmd, field, data, funcName) \
-    do {                                                                          \
-        if (displayCmd.field) {                                                   \
-            execute##funcName(displayCmd.display, displayCmd.data);               \
-        }                                                                         \
+#define DISPATCH_DISPLAY_COMMAND_AND_TWO_DATA(displayCmd, field, data_1, data_2, funcName) \
+    do {                                                                                   \
+        if (displayCmd.field) {                                                            \
+            execute##funcName(displayCmd.display, displayCmd.data_1, displayCmd.data_2);   \
+        }                                                                                  \
     } while (0)
 
 int32_t ComposerCommandEngine::init() {
@@ -90,23 +94,58 @@ int32_t ComposerCommandEngine::execute(const std::vector<DisplayCommand>& comman
     return ::android::NO_ERROR;
 }
 
+void ComposerCommandEngine::dispatchBatchCreateDestroyLayerCommand(int64_t display,
+                                                                   const LayerCommand& layerCmd) {
+    auto cmdType = layerCmd.layerLifecycleBatchCommandType;
+    if ((cmdType != LayerLifecycleBatchCommandType::CREATE) &&
+        (cmdType != LayerLifecycleBatchCommandType::DESTROY)) {
+        return;
+    }
+    auto err = mHal->batchedCreateDestroyLayer(display, layerCmd.layer, cmdType);
+    if (err) {
+        mWriter->setError(mCommandIndex, err);
+        return;
+    }
+
+    if (cmdType == LayerLifecycleBatchCommandType::CREATE) {
+        err = mResources->addLayer(display, layerCmd.layer, layerCmd.newBufferSlotCount);
+    } else {
+        err = mResources->removeLayer(display, layerCmd.layer);
+    }
+
+    if (err) {
+        mWriter->setError(mCommandIndex, err);
+    }
+}
+
 void ComposerCommandEngine::dispatchDisplayCommand(const DisplayCommand& command) {
+    // place batched createLayer and destroyLayer commands before any other commands, so layers are
+    // properly created to operate on.
+    for (const auto& layerCmd : command.layers) {
+        if (layerCmd.layerLifecycleBatchCommandType == LayerLifecycleBatchCommandType::CREATE ||
+            layerCmd.layerLifecycleBatchCommandType == LayerLifecycleBatchCommandType::DESTROY) {
+            dispatchBatchCreateDestroyLayerCommand(command.display, layerCmd);
+        }
+    }
     //  place SetDisplayBrightness before SetLayerWhitePointNits since current
     //  display brightness is used to validate the layer white point nits.
     DISPATCH_DISPLAY_COMMAND(command, brightness, SetDisplayBrightness);
     for (const auto& layerCmd : command.layers) {
-        dispatchLayerCommand(command.display, layerCmd);
+        // ignore layer data update if command is DESTROY
+        if (layerCmd.layerLifecycleBatchCommandType != LayerLifecycleBatchCommandType::DESTROY) {
+            dispatchLayerCommand(command.display, layerCmd);
+        }
     }
 
     DISPATCH_DISPLAY_COMMAND(command, colorTransformMatrix, SetColorTransform);
     DISPATCH_DISPLAY_COMMAND(command, clientTarget, SetClientTarget);
     DISPATCH_DISPLAY_COMMAND(command, virtualDisplayOutputBuffer, SetOutputBuffer);
-    DISPATCH_DISPLAY_BOOL_COMMAND_AND_DATA(command, validateDisplay, expectedPresentTime,
-                                           ValidateDisplay);
+    DISPATCH_DISPLAY_COMMAND_AND_TWO_DATA(command, validateDisplay, expectedPresentTime,
+                                          frameIntervalNs, ValidateDisplay);
     DISPATCH_DISPLAY_BOOL_COMMAND(command, acceptDisplayChanges, AcceptDisplayChanges);
     DISPATCH_DISPLAY_BOOL_COMMAND(command, presentDisplay, PresentDisplay);
-    DISPATCH_DISPLAY_BOOL_COMMAND_AND_DATA(command, presentOrValidateDisplay, expectedPresentTime,
-                                           PresentOrValidateDisplay);
+    DISPATCH_DISPLAY_COMMAND_AND_TWO_DATA(command, presentOrValidateDisplay, expectedPresentTime,
+                                          frameIntervalNs, PresentOrValidateDisplay);
 }
 
 void ComposerCommandEngine::dispatchLayerCommand(int64_t display, const LayerCommand& command) {
@@ -129,6 +168,7 @@ void ComposerCommandEngine::dispatchLayerCommand(int64_t display, const LayerCom
     DISPATCH_LAYER_COMMAND(display, command, perFrameMetadata, PerFrameMetadata);
     DISPATCH_LAYER_COMMAND(display, command, perFrameMetadataBlob, PerFrameMetadataBlobs);
     DISPATCH_LAYER_COMMAND_SIMPLE(display, command, blockingRegion, BlockingRegion);
+    DISPATCH_LAYER_COMMAND(display, command, bufferSlotsToClear, BufferSlotsToClear);
 }
 
 int32_t ComposerCommandEngine::executeValidateDisplayInternal(int64_t display) {
@@ -145,7 +185,7 @@ int32_t ComposerCommandEngine::executeValidateDisplayInternal(int64_t display) {
                                   &requestedLayers, &requestMasks, &clientTargetProperty,
                                   &dimmingStage);
     mResources->setDisplayMustValidateState(display, false);
-    if (!err) {
+    if (err == HWC2_ERROR_NONE || err == HWC2_ERROR_HAS_CHANGES) {
         mWriter->setChangedCompositionTypes(display, changedLayers, compositionTypes);
         mWriter->setDisplayRequests(display, displayRequestMask, requestedLayers, requestMasks);
         static constexpr float kBrightness = 1.f;
@@ -210,13 +250,15 @@ void ComposerCommandEngine::executeSetOutputBuffer(uint64_t display, const Buffe
 }
 
 void ComposerCommandEngine::executeSetExpectedPresentTimeInternal(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
-    mHal->setExpectedPresentTime(display, expectedPresentTime);
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
+    mHal->setExpectedPresentTime(display, expectedPresentTime, frameIntervalNs);
 }
 
 void ComposerCommandEngine::executeValidateDisplay(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
-    executeSetExpectedPresentTimeInternal(display, expectedPresentTime);
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
+    executeSetExpectedPresentTimeInternal(display, expectedPresentTime, frameIntervalNs);
     executeValidateDisplayInternal(display);
 }
 
@@ -230,20 +272,35 @@ void ComposerCommandEngine::executeSetDisplayBrightness(uint64_t display,
 }
 
 void ComposerCommandEngine::executePresentOrValidateDisplay(
-        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime) {
-    executeSetExpectedPresentTimeInternal(display, expectedPresentTime);
+        int64_t display, const std::optional<ClockMonotonicTimestamp> expectedPresentTime,
+        int frameIntervalNs) {
+    executeSetExpectedPresentTimeInternal(display, expectedPresentTime, frameIntervalNs);
     // First try to Present as is.
-    auto err = mResources->mustValidateDisplay(display) ? IComposerClient::EX_NOT_VALIDATED
-                                                        : executePresentDisplay(display);
-    if (!err) {
+    auto presentErr = mResources->mustValidateDisplay(display) ? IComposerClient::EX_NOT_VALIDATED
+                                                               : executePresentDisplay(display);
+    if (!presentErr) {
         mWriter->setPresentOrValidateResult(display, PresentOrValidate::Result::Presented);
         return;
     }
 
     // Fallback to validate
-    err = executeValidateDisplayInternal(display);
-    if (!err) {
+    auto validateErr = executeValidateDisplayInternal(display);
+    if (validateErr != HWC2_ERROR_NONE && validateErr != HWC2_ERROR_HAS_CHANGES) return;
+
+    bool hasClientComp = false;
+    bool cannotPresentDirectly = (validateErr == HWC2_ERROR_HAS_CHANGES) ||
+            (mHal->getHasClientComposition(display, hasClientComp) == HWC2_ERROR_NONE &&
+             hasClientComp);
+    if (cannotPresentDirectly) {
         mWriter->setPresentOrValidateResult(display, PresentOrValidate::Result::Validated);
+        return;
+    }
+
+    // Try to call present again
+    executeAcceptDisplayChanges(display);
+    presentErr = executePresentDisplay(display);
+    if (!presentErr) {
+        mWriter->setPresentOrValidateResult(display, PresentOrValidate::Result::Presented);
     }
 }
 
@@ -448,6 +505,47 @@ void ComposerCommandEngine::executeSetLayerPerFrameMetadataBlobs(int64_t display
     if (err) {
         LOG(ERROR) << __func__ << ": err " << err;
         mWriter->setError(mCommandIndex, err);
+    }
+}
+
+void ComposerCommandEngine::executeSetLayerBufferSlotsToClear(
+        int64_t display, int64_t layer, const std::vector<int32_t>& bufferSlotsToClear) {
+    buffer_handle_t cachedBuffer = nullptr;
+    std::unique_ptr<IBufferReleaser> bufferReleaser = mResources->createReleaser(true);
+
+    // get all cached buffers
+    std::vector<buffer_handle_t> cachedBuffers;
+    std::map<buffer_handle_t, int32_t> handle2Slots;
+    for (int32_t slot : bufferSlotsToClear) {
+        auto err = mResources->getLayerBuffer(display, layer, slot, /*fromCache=*/true, nullptr,
+                                              cachedBuffer, bufferReleaser.get());
+        if (cachedBuffer) {
+            cachedBuffers.push_back(cachedBuffer);
+            handle2Slots[cachedBuffer] = slot;
+        } else {
+            LOG(ERROR) << __func__ << ": Buffer slot " << slot << " is null";
+        }
+        if (err) {
+            LOG(ERROR) << __func__ << ": failed to getLayerBuffer err " << err;
+            mWriter->setError(mCommandIndex, err);
+            return;
+        }
+    }
+
+    // clear any other cache in composer
+    std::vector<buffer_handle_t> clearableBuffers;
+    mHal->uncacheLayerBuffers(display, layer, cachedBuffers, clearableBuffers);
+
+    for (auto buffer : clearableBuffers) {
+        auto slot = handle2Slots[buffer];
+        // replace the slot with nullptr and release the buffer by bufferReleaser
+        auto err = mResources->getLayerBuffer(display, layer, slot, /*fromCache=*/false, nullptr,
+                                              cachedBuffer, bufferReleaser.get());
+        if (err) {
+            LOG(ERROR) << __func__ << ": failed to clear buffer cache err " << err;
+            mWriter->setError(mCommandIndex, err);
+            return;
+        }
     }
 }
 

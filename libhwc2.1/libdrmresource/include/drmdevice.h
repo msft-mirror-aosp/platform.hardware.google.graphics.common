@@ -78,11 +78,19 @@ class DrmDevice {
   int CreatePropertyBlob(const void *data, size_t length, uint32_t *blob_id);
   int DestroyPropertyBlob(uint32_t blob_id);
   bool HandlesDisplay(int display) const;
-  void RegisterHotplugHandler(DrmEventHandler *handler) {
+  void RegisterHotplugHandler(const std::shared_ptr<DrmEventHandler> &handler) {
     event_listener_.RegisterHotplugHandler(handler);
   }
-  void RegisterHistogramHandler(DrmHistogramEventHandler *handler) {
-      event_listener_.RegisterHistogramHandler(handler);
+  void RegisterHistogramHandler(const std::shared_ptr<DrmHistogramEventHandler> &handler) {
+    event_listener_.RegisterHistogramHandler(handler);
+  }
+  void RegisterHistogramChannelHandler(
+      const std::shared_ptr<DrmHistogramChannelEventHandler> &handler) {
+    event_listener_.RegisterHistogramChannelHandler(handler);
+  }
+  void RegisterContextHistogramHandler(
+      const std::shared_ptr<DrmContextHistogramEventHandler> &handler) {
+    event_listener_.RegisterContextHistogramHandler(handler);
   }
 
   int CallVendorIoctl(unsigned long request, void *arg);

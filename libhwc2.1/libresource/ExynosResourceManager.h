@@ -156,7 +156,7 @@ class ExynosResourceManager {
                 ExynosLayer *layer, std::vector<exynos_image> &image_lists);
         int32_t setResourcePriority(ExynosDisplay *display);
         int32_t deliverPerformanceInfo();
-        int32_t prepareResources();
+        int32_t prepareResources(const int32_t willOnDispId = -1);
         int32_t finishAssignResourceWork();
         int32_t initResourcesState(ExynosDisplay *display);
 
@@ -183,12 +183,14 @@ class ExynosResourceManager {
 
         void dump(String8 &result) const;
         void setM2MCapa(uint32_t physicalType, uint32_t capa);
-        bool isAssignable(ExynosMPP *candidateMPP, ExynosDisplay *display, struct exynos_image &src,
-                          struct exynos_image &dst, ExynosMPPSource *mppSrc);
+        virtual bool isAssignable(ExynosMPP* candidateMPP, ExynosDisplay* display,
+                                  struct exynos_image& src, struct exynos_image& dst,
+                                  ExynosMPPSource* mppSrc);
 
     private:
-        int32_t changeLayerFromClientToDevice(ExynosDisplay *display, ExynosLayer *layer,
-                uint32_t layer_index, exynos_image m2m_out_img, ExynosMPP *m2mMPP, ExynosMPP *otfMPP);
+        int32_t changeLayerFromClientToDevice(ExynosDisplay* display, ExynosLayer* layer,
+                                              uint32_t layer_index, const exynos_image& m2m_out_img,
+                                              ExynosMPP* m2mMPP, ExynosMPP* otfMPP);
         void dump(const restriction_classification_t, String8 &result) const;
 
         sp<DstBufMgrThread> mDstBufMgrThread;
@@ -237,12 +239,19 @@ class ExynosResourceManager {
                                            ExynosMPPSource __unused *mppSrc) {
             return true;
         }
-        virtual uint32_t setDisplaysTDMInfo() { return 0; }
-        virtual uint32_t initDisplaysTDMInfo() { return 0; }
+        virtual uint32_t setDisplaysTDMInfo(__unused ExynosDisplay* mainDisp,
+                                            __unused ExynosDisplay* minorDisp) {
+            return 0;
+        }
         virtual uint32_t calculateHWResourceAmount(ExynosDisplay __unused *display,
                                                    ExynosMPPSource __unused *mppSrc) {
             return 0;
         }
+
+        std::pair<ExynosDisplay*, ExynosDisplay*> decideMainAndMinorDisplay(
+                const int32_t willOnDispId) const;
+        void updatePreAssignDisplayList(const ExynosDisplay* mainDisp,
+                                        const ExynosDisplay* minorDisp);
 };
 
 #endif //_EXYNOSRESOURCEMANAGER_H

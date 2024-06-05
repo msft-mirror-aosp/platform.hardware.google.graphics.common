@@ -19,7 +19,11 @@
 #include <map>
 
 #include "../libdevice/ExynosDisplay.h"
+#include "../libvrr/VariableRefreshRateController.h"
 
+using android::hardware::graphics::composer::PresentListener;
+using android::hardware::graphics::composer::VariableRefreshRateController;
+using android::hardware::graphics::composer::VsyncListener;
 using namespace displaycolor;
 
 class ExynosPrimaryDisplay : public ExynosDisplay {
@@ -40,8 +44,9 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
 
         virtual bool getLhbmState();
         virtual void setEarlyWakeupDisplay();
-        virtual void setExpectedPresentTime(uint64_t timestamp);
-        virtual uint64_t getPendingExpectedPresentTime();
+        virtual void setExpectedPresentTime(uint64_t timestamp, int frameIntervalNs) override;
+        virtual uint64_t getPendingExpectedPresentTime() override;
+        virtual int getPendingFrameInterval() override;
         virtual void applyExpectedPresentTime();
         virtual int32_t setDisplayIdleTimer(const int32_t timeoutMs) override;
         virtual void handleDisplayIdleEnter(const uint32_t idleTeRefreshRate) override;
@@ -49,23 +54,46 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual void initDisplayInterface(uint32_t interfaceType);
         virtual int32_t doDisplayConfigInternal(hwc2_config_t config) override;
 
-        virtual int setMinIdleRefreshRate(const int fps) override;
-        virtual int setRefreshRateThrottleNanos(const int64_t delayNs,
-                                                const VrrThrottleRequester requester) override;
+        virtual int32_t setMinIdleRefreshRate(const int fps,
+                                              const RrThrottleRequester requester) override;
+        virtual int32_t setRefreshRateThrottleNanos(const int64_t delayNs,
+                                                    const RrThrottleRequester requester) override;
         virtual bool isDbmSupported() override;
         virtual int32_t setDbmState(bool enabled) override;
 
         virtual void dump(String8& result) override;
         virtual void updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                const int64_t ts) override;
-        virtual void checkBtsReassignResource(const uint32_t vsyncPeriod,
-                                              const uint32_t btsVsyncPeriod) override;
+        virtual void checkBtsReassignResource(const int32_t vsyncPeriod,
+                                              const int32_t btsVsyncPeriod) override;
 
         virtual int32_t setBootDisplayConfig(int32_t config) override;
         virtual int32_t clearBootDisplayConfig() override;
         virtual int32_t getPreferredDisplayConfigInternal(int32_t* outConfig) override;
         virtual bool isConfigSettingEnabled() override;
         virtual void enableConfigSetting(bool en) override;
+
+        virtual int32_t getDisplayConfigs(uint32_t* outNumConfigs,
+                                          hwc2_config_t* outConfigs) override;
+        virtual int32_t presentDisplay(int32_t* outRetireFence) override;
+
+        virtual void onVsync(int64_t timestamp) override;
+
+        virtual int32_t setFixedTe2Rate(const int rateHz) override;
+
+        const std::string& getPanelName() final;
+
+        int32_t notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) override;
+
+        int32_t setPresentTimeoutParameters(
+                int timeoutNs, const std::vector<std::pair<uint32_t, uint32_t>>& settings) override;
+
+        int32_t setPresentTimeoutController(uint32_t controllerType) override;
+
+        int32_t registerRefreshRateChangeListener(
+                std::shared_ptr<RefreshRateChangeListener> listener) override;
+
+        virtual int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled) final;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -80,15 +108,16 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual bool getHDRException(ExynosLayer* __unused layer);
         virtual int32_t setActiveConfigInternal(hwc2_config_t config, bool force) override;
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig) override;
-        DisplayType getDisplayTypeFromIndex(uint32_t index) {
-            return (index >= DisplayType::DISPLAY_MAX) ? DisplayType::DISPLAY_PRIMARY
-                                                       : DisplayType(mIndex);
-        };
 
     public:
         // Prepare multi resolution
         ResolutionInfo mResolutionInfo;
-        std::string getPanelSysfsPath(const displaycolor::DisplayType& type);
+        std::string getPanelSysfsPath() const override {
+            return getPanelSysfsPath(getDcDisplayType());
+        }
+        std::string getPanelSysfsPath(const displaycolor::DisplayType& type) const;
+
+        virtual bool isVrrSupported() const override { return mXrrSettings.versionInfo.isVrr(); }
 
         uint32_t mRcdId = -1;
 
@@ -119,6 +148,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         int32_t setLhbmDisplayConfigLocked(uint32_t peakRate);
         void restoreLhbmDisplayConfigLocked();
 
+        void onConfigChange(int configId);
+
         // LHBM
         FILE* mLhbmFd;
         std::atomic<bool> mLhbmOn;
@@ -140,16 +171,27 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         static constexpr const char* kWakeupDispFilePath =
                 "/sys/devices/platform/1c300000.drmdecon/early_wakeup";
 
-        CtrlValue<uint64_t> mExpectedPresentTime;
+        CtrlValue<std::tuple<int64_t, int>> mExpectedPresentTimeAndInterval;
 
-        void calculateTimeline(hwc2_config_t config,
-                               hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
-                               hwc_vsync_period_change_timeline_t* outTimeline) override;
-        std::mutex mIdleRefreshRateThrottleMutex;
+        virtual void calculateTimelineLocked(
+                hwc2_config_t config,
+                hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
+                hwc_vsync_period_change_timeline_t* outTimeline) override;
+        void recalculateTimelineLocked(int64_t refreshRateDelayNanos);
+
+        std::map<int, int> mBrightnessBlockingZonesLookupTable;
+
         int mMinIdleRefreshRate;
-        int64_t mVrrThrottleNanos[toUnderlying(VrrThrottleRequester::MAX)];
+        const int kMinIdleRefreshRateForDozeMode = 1;
+        int mRrThrottleFps[toUnderlying(RrThrottleRequester::MAX)];
+        std::mutex mMinIdleRefreshRateMutex;
+
+        std::mutex mIdleRefreshRateThrottleMutex;
+        int64_t mRrThrottleNanos[toUnderlying(RrThrottleRequester::MAX)];
         int64_t mRefreshRateDelayNanos;
+        int64_t mRrUseDelayNanos;
         int64_t mLastRefreshRateAppliedNanos;
+        bool mIsRrNeedCheckDelay;
         hwc2_config_t mAppliedActiveConfig;
 
         std::mutex mDisplayIdleDelayMutex;
@@ -158,6 +200,13 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         std::ofstream mDisplayNeedHandleIdleExitOfs;
         int64_t mDisplayIdleDelayNanos;
         bool mDisplayNeedHandleIdleExit;
+
+        // Function and variables related to Vrr.
+        PresentListener* getPresentListener();
+        VsyncListener* getVsyncListener();
+
+        XrrSettings_t mXrrSettings;
+        std::shared_ptr<VariableRefreshRateController> mVariableRefreshRateController;
 };
 
 #endif

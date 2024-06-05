@@ -50,8 +50,10 @@ public:
           void onVsyncIdle(int64_t display) override;
           void onSeamlessPossible(int64_t display) override;
           void onRefreshRateChangedDebug(const RefreshRateChangedDebugData& data) override;
+          void onHotplugEvent(int64_t display, common::DisplayHotplugEvent event) override;
 
       private:
+        void processDisplayResources(int64_t display, bool connected);
         void cleanDisplayResources(int64_t display);
 
         IComposerHal* mHal;
@@ -134,6 +136,12 @@ public:
     ndk::ScopedAStatus setIdleTimerEnabled(int64_t display, int32_t timeout) override;
     ndk::ScopedAStatus setRefreshRateChangedCallbackDebugEnabled(int64_t /* display */,
                                                                  bool /* enabled */) override;
+    ndk::ScopedAStatus getDisplayConfigurations(
+            int64_t display, int32_t maxFrameIntervalNs,
+            std::vector<DisplayConfiguration>* configs) override;
+    ndk::ScopedAStatus notifyExpectedPresent(int64_t display,
+                                             const ClockMonotonicTimestamp& expectedPresentTime,
+                                             int32_t frameIntervalNs) override;
 
 protected:
     ::ndk::SpAIBinder createBinder() override;
