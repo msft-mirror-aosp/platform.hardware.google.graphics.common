@@ -54,6 +54,33 @@ T roundDivide(T divident, T divisor) {
 }
 
 template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
+struct Fraction {
+    T mNum;
+    T mDen;
+
+    Fraction(T num = 0, T denom = 1) : mNum(num), mDen(denom) {
+        if (mDen < 0) {
+            mNum = -mNum;
+            mDen = -mDen;
+        }
+    }
+
+    T round() { return roundDivide(mNum, mDen); }
+
+    bool operator<(const Fraction<T>& other) const { return mNum * other.mDen < other.mNum * mDen; }
+
+    bool operator==(const Fraction<T>& other) const {
+        return mNum * other.mDen == other.mNum * mDen;
+    }
+};
+
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
+int64_t freqToDurationNs(Fraction<T> freq) {
+    return roundDivide(std::nano::den * static_cast<int64_t>(freq.mDen),
+                       static_cast<int64_t>(freq.mNum));
+}
+
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
 T durationNsToFreq(T durationNs) {
     auto res = roundDivide(std::nano::den, static_cast<int64_t>(durationNs));
     return static_cast<T>(res);
@@ -71,35 +98,12 @@ int64_t getSteadyClockTimeNs();
 int64_t getBootClockTimeMs();
 int64_t getBootClockTimeNs();
 
+int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs);
+
 bool hasPresentFrameFlag(int flag, PresentFrameFlag target);
 
 bool isPowerModeOff(int powerMode);
 
 void setTimedEventWithAbsoluteTime(TimedEvent& event);
-
-class SystemClockTimeTranslator {
-public:
-    SystemClockTimeTranslator() { synchronize(); }
-
-    ~SystemClockTimeTranslator() = default;
-
-    int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs) const {
-        return steadyClockTimeNs + mDiff;
-    }
-    int64_t bootClockTimeToSteadyClockTimeNs(int64_t bootClockTimeNs) const {
-        return bootClockTimeNs - mDiff;
-    }
-
-    void synchronize() {
-        mBootClockTimeNs = getBootClockTimeNs();
-        mSteadyClockTimeNs = getSteadyClockTimeNs();
-        mDiff = mBootClockTimeNs - mSteadyClockTimeNs;
-    }
-
-private:
-    int64_t mBootClockTimeNs;
-    int64_t mSteadyClockTimeNs;
-    int64_t mDiff;
-};
 
 } // namespace android::hardware::graphics::composer
