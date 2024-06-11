@@ -71,6 +71,7 @@ public:
     using HistogramRoiRect = aidl::android::hardware::graphics::common::Rect;
     using HistogramSamplePos = aidl::com::google::hardware::pixel::display::HistogramSamplePos;
     using HistogramWeights = aidl::com::google::hardware::pixel::display::Weight;
+    using ContextHistogramIoctl_t = ExynosDisplayDrmInterface::ContextHistogramIoctl_t;
     using HistogramChannelIoctl_t = ExynosDisplayDrmInterface::HistogramChannelIoctl_t;
 
     class PropertyBlob;
@@ -82,6 +83,9 @@ public:
     static constexpr size_t WEIGHT_SUM = 1024;
 
     static constexpr size_t HISTOGRAM_BINS_SIZE = 256;
+
+    /* OPR_R, OPR_G, OPR_B */
+    static constexpr int kOPRConfigsCount = 3;
 
     struct BlobInfo {
         const int mDisplayActiveH, mDisplayActiveV;
@@ -145,7 +149,7 @@ public:
         std::weak_ptr<ConfigInfo> mConfigInfo;
 
         ChannelInfo() : mStatus(ChannelStatus_t::DISABLED) {}
-        ChannelInfo(const ChannelInfo& other) {}
+        ChannelInfo(const ChannelInfo& other) = default;
     };
 
     struct TokenInfo {
@@ -306,7 +310,7 @@ public:
      *
      * @oprVals will store the [OPR_R, OPR_G, OPR_B], 0 <= OPR_R, OPR_G, OPR_B <= 1
      */
-    virtual ndk::ScopedAStatus queryOPR(std::vector<double>& oprVals)
+    virtual ndk::ScopedAStatus queryOPR(std::array<double, kOPRConfigsCount>& oprVals)
             EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex) {
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
@@ -320,6 +324,17 @@ public:
      * @event histogram blob drm event pointer (struct exynos_drm_histogram_channel_event *)
      */
     void handleDrmEvent(void* event) EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
+
+    /**
+     * handleContextDrmEvent
+     *
+     * Handle the histogram blob drm event (EXYNOS_DRM_CONTEXT_HISTOGRAM_EVENT) and copy the
+     * histogram data from event struct to blobIdData.
+     *
+     * @event context histogram event pointer (struct exynos_drm_context_histogram_event *)
+     */
+    void handleContextDrmEvent(void* event)
+            EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
 
     /**
      * prepareAtomicCommit
@@ -381,7 +396,7 @@ protected:
 
     mutable std::mutex mInitDrmDoneMutex;
     bool mInitDrmDone GUARDED_BY(mInitDrmDoneMutex) = false;
-    std::condition_variable mInitDrmDone_cv GUARDED_BY(mInitDrmDoneMutex);
+    mutable std::condition_variable mInitDrmDone_cv GUARDED_BY(mInitDrmDoneMutex);
 
     /* Death recipient for the binderdied callback, would be deleted in the destructor */
     AIBinder_DeathRecipient* mDeathRecipient = nullptr;
@@ -422,7 +437,7 @@ protected:
      *
      * @return true if initDrm is finished, or false when the timeout expires.
      */
-    bool waitInitDrmDone() EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
+    bool waitInitDrmDone() const EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
 
     /**
      * replaceConfigInfo
@@ -600,9 +615,36 @@ protected:
             EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
 
     /**
+     * _handleDrmEvent
+     *
+     * Internal function to handle the drm event, notify all the threads that wait on the specific
+     * drm event with blob id.
+     *
+     * @event histogram event get from kernel
+     * @blobId blob id of the histogram event
+     * @buffer buffer that contains histogram data
+     */
+    void _handleDrmEvent(void* event, uint32_t blobId, char16_t* buffer)
+            EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
+
+    /**
      * parseDrmEvent
      *
-     * Parse the histogram drm event. This function should get the histogram blob id
+     * Parse the histogram drm event. This function should get the histogram channel id
+     * and the histogram buffer address from the event struct.
+     *
+     * @event histogram drm event struct.
+     * @channelId stores the extracted channel id from the event.
+     * @buffer stores the extracted buffer address from the event.
+     * @return NO_ERROR on success, else otherwise.
+     */
+    int parseDrmEvent(const void* const event, uint32_t& channelId, char16_t*& buffer) const
+            EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
+
+    /**
+     * parseContextDrmEvent
+     *
+     * Parse the context histogram drm event. This function should get the histogram blob id
      * and the histogram buffer address from the event struct.
      *
      * @event histogram drm event struct.
@@ -610,7 +652,7 @@ protected:
      * @buffer stores the extracted buffer address from the event.
      * @return NO_ERROR on success, else otherwise.
      */
-    int parseDrmEvent(const void* const event, uint32_t& blobId, char16_t*& buffer) const
+    int parseContextDrmEvent(const void* const event, uint32_t& blobId, char16_t*& buffer) const
             EXCLUDES(mInitDrmDoneMutex, mHistogramMutex, mBlobIdDataMutex);
 
     /**
