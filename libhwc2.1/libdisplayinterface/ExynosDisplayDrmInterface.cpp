@@ -436,6 +436,50 @@ void FramebufferManager::destroyAllSecureBuffers() {
     }
 }
 
+int32_t FramebufferManager::uncacheLayerBuffers(const ExynosLayer* layer,
+                                                const std::vector<buffer_handle_t>& buffers) {
+    std::set<Framebuffer::BufferDesc> removedBufferDescs;
+    for (auto buffer : buffers) {
+        VendorGraphicBufferMeta gmeta(buffer);
+        removedBufferDescs.insert(
+                Framebuffer::BufferDesc{.bufferId = gmeta.unique_id,
+                                        .drmFormat =
+                                                halFormatToDrmFormat(gmeta.format,
+                                                                     getCompressionType(buffer)),
+                                        .isSecure =
+                                                (getDrmMode(gmeta.producer_usage) == SECURE_DRM)});
+    }
+    bool needCleanup = false;
+    {
+        Mutex::Autolock lock(mMutex);
+        auto destroyCachedBuffersLocked =
+                [&](std::map<const ExynosLayer*, FBList>& cachedLayerBuffers) REQUIRES(mMutex) {
+                    if (auto layerIter = cachedLayerBuffers.find(layer);
+                        layerIter != cachedLayerBuffers.end()) {
+                        auto& fbList = layerIter->second;
+                        for (auto it = fbList.begin(); it != fbList.end();) {
+                            auto bufferIter = it++;
+                            if (removedBufferDescs.count((*bufferIter)->bufferDesc)) {
+                                mCleanBuffers.splice(mCleanBuffers.end(), fbList, bufferIter);
+                                needCleanup = true;
+                            }
+                        }
+                    }
+                };
+        destroyCachedBuffersLocked(mCachedLayerBuffers);
+        destroyCachedBuffersLocked(mCachedSecureLayerBuffers);
+    }
+    if (needCleanup) {
+        mFlipDone.signal();
+    }
+    return NO_ERROR;
+}
+
+int32_t ExynosDisplayDrmInterface::uncacheLayerBuffers(
+        const ExynosLayer* layer, const std::vector<buffer_handle_t>& buffers) {
+    return mFBManager.uncacheLayerBuffers(layer, buffers);
+}
+
 void ExynosDisplayDrmInterface::destroyLayer(ExynosLayer *layer) {
     mFBManager.cleanup(layer);
 }
@@ -2911,18 +2955,18 @@ int32_t ExynosDisplayDrmInterface::clearHistogramChannelConfigBlob(
 // TODO: b/295990513 - Remove the if defined after kernel prebuilts are merged.
 #if defined(EXYNOS_HISTOGRAM_CHANNEL_REQUEST)
 int32_t ExynosDisplayDrmInterface::sendHistogramChannelIoctl(HistogramChannelIoctl_t control,
-                                                             uint32_t blobId) const {
+                                                             uint32_t chanId) const {
     struct exynos_drm_histogram_channel_request histogramRequest;
 
     histogramRequest.crtc_id = mDrmCrtc->id();
-    histogramRequest.hist_id = blobId;
+    histogramRequest.hist_id = chanId;
 
     if (control == HistogramChannelIoctl_t::REQUEST) {
-        ATRACE_NAME(String8::format("requestIoctl(blob#%u)", blobId).c_str());
+        ATRACE_NAME(String8::format("requestIoctl(chan#%u)", chanId).c_str());
         return mDrmDevice->CallVendorIoctl(DRM_IOCTL_EXYNOS_HISTOGRAM_CHANNEL_REQUEST,
                                            (void*)&histogramRequest);
     } else if (control == HistogramChannelIoctl_t::CANCEL) {
-        ATRACE_NAME(String8::format("cancelIoctl(blob#%u)", blobId).c_str());
+        ATRACE_NAME(String8::format("cancelIoctl(chan#%u)", chanId).c_str());
         return mDrmDevice->CallVendorIoctl(DRM_IOCTL_EXYNOS_HISTOGRAM_CHANNEL_CANCEL,
                                            (void*)&histogramRequest);
     } else {
@@ -2934,6 +2978,36 @@ int32_t ExynosDisplayDrmInterface::sendHistogramChannelIoctl(HistogramChannelIoc
 int32_t ExynosDisplayDrmInterface::sendHistogramChannelIoctl(HistogramChannelIoctl_t control,
                                                              uint32_t blobId) const {
     ALOGE("%s: kernel doesn't support multi channel histogram ioctl", __func__);
+    return INVALID_OPERATION;
+}
+#endif
+
+#if defined(EXYNOS_CONTEXT_HISTOGRAM_EVENT_REQUEST)
+int32_t ExynosDisplayDrmInterface::sendContextHistogramIoctl(ContextHistogramIoctl_t control,
+                                                             uint32_t blobId) const {
+    struct exynos_drm_context_histogram_arg histogramRequest;
+
+    histogramRequest.crtc_id = mDrmCrtc->id();
+    histogramRequest.user_handle = blobId;
+    histogramRequest.flags = 0;
+
+    if (control == ContextHistogramIoctl_t::REQUEST) {
+        ATRACE_NAME(String8::format("requestIoctl(blob#%u)", blobId).c_str());
+        return mDrmDevice->CallVendorIoctl(DRM_IOCTL_EXYNOS_CONTEXT_HISTOGRAM_EVENT_REQUEST,
+                                           (void*)&histogramRequest);
+    } else if (control == ContextHistogramIoctl_t::CANCEL) {
+        ATRACE_NAME(String8::format("cancelIoctl(blob#%u)", blobId).c_str());
+        return mDrmDevice->CallVendorIoctl(DRM_IOCTL_EXYNOS_CONTEXT_HISTOGRAM_EVENT_CANCEL,
+                                           (void*)&histogramRequest);
+    } else {
+        ALOGE("%s: unknown control %d", __func__, (int)control);
+        return BAD_VALUE;
+    }
+}
+#else
+int32_t ExynosDisplayDrmInterface::sendContextHistogramIoctl(ContextHistogramIoctl_t control,
+                                                             uint32_t blobId) const {
+    ALOGE("%s: kernel doesn't support context histogram ioctl", __func__);
     return INVALID_OPERATION;
 }
 #endif
