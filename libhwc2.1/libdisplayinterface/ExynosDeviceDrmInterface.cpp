@@ -14,15 +14,18 @@
  * limitations under the License.
  */
 
-#include <drm/drm_mode.h>
 #include "ExynosDeviceDrmInterface.h"
-#include "ExynosDisplayDrmInterface.h"
-#include "ExynosHWCDebug.h"
+
+#include <drm/drm_mode.h>
+#include <drm/samsung_drm.h>
+#include <hardware/hwcomposer_defs.h>
+
 #include "ExynosDevice.h"
 #include "ExynosDisplay.h"
+#include "ExynosDisplayDrmInterface.h"
 #include "ExynosExternalDisplayModule.h"
-#include <hardware/hwcomposer_defs.h>
-#include <drm/samsung_drm.h>
+#include "ExynosHWCDebug.h"
+#include "HistogramController.h"
 
 void set_hwc_dpp_size_range(hwc_dpp_size_range &hwc_dpp_range, dpp_size_range &dpp_range) {
     hwc_dpp_range.min = dpp_range.min;
@@ -63,19 +66,27 @@ static void set_dpp_ch_restriction(struct hwc_dpp_ch_restriction &hwc_dpp_restri
 
 using namespace SOC_VERSION;
 
-ExynosDeviceDrmInterface::ExynosDeviceDrmInterface(ExynosDevice *exynosDevice) {
+ExynosDeviceDrmInterface::ExynosDeviceDrmInterface(ExynosDevice* exynosDevice)
+      : mExynosDrmEventHandler(std::make_shared<ExynosDrmEventHandler>()) {
+    if (!mExynosDrmEventHandler) ALOGE("mExynosDrmEventHandler failed to create!");
     mType = INTERFACE_TYPE_DRM;
 }
 
 ExynosDeviceDrmInterface::~ExynosDeviceDrmInterface() {
+    mDrmDevice->event_listener()->UnRegisterPropertyUpdateHandler(
+            std::static_pointer_cast<DrmPropertyUpdateHandler>(mExynosDrmEventHandler));
     mDrmDevice->event_listener()->UnRegisterHotplugHandler(
-            static_cast<DrmEventHandler *>(&mExynosDrmEventHandler));
+            std::static_pointer_cast<DrmEventHandler>(mExynosDrmEventHandler));
     mDrmDevice->event_listener()->UnRegisterHistogramHandler(
-            static_cast<DrmHistogramEventHandler *>(&mExynosDrmEventHandler));
+            std::static_pointer_cast<DrmHistogramEventHandler>(mExynosDrmEventHandler));
+    mDrmDevice->event_listener()->UnRegisterHistogramChannelHandler(
+            std::static_pointer_cast<DrmHistogramChannelEventHandler>(mExynosDrmEventHandler));
+    mDrmDevice->event_listener()->UnRegisterContextHistogramHandler(
+            std::static_pointer_cast<DrmContextHistogramEventHandler>(mExynosDrmEventHandler));
     mDrmDevice->event_listener()->UnRegisterTUIHandler(
-            static_cast<DrmTUIEventHandler *>(&mExynosDrmEventHandler));
+            std::static_pointer_cast<DrmTUIEventHandler>(mExynosDrmEventHandler));
     mDrmDevice->event_listener()->UnRegisterPanelIdleHandler(
-            static_cast<DrmPanelIdleEventHandler *>(&mExynosDrmEventHandler));
+            std::static_pointer_cast<DrmPanelIdleEventHandler>(mExynosDrmEventHandler));
 }
 
 void ExynosDeviceDrmInterface::init(ExynosDevice *exynosDevice) {
@@ -87,20 +98,34 @@ void ExynosDeviceDrmInterface::init(ExynosDevice *exynosDevice) {
 
     updateRestrictions();
 
-    mExynosDrmEventHandler.init(mExynosDevice, mDrmDevice);
-    mDrmDevice->event_listener()->RegisterHotplugHandler(
-            static_cast<DrmEventHandler *>(&mExynosDrmEventHandler));
-    mDrmDevice->event_listener()->RegisterHistogramHandler(
-            static_cast<DrmHistogramEventHandler *>(&mExynosDrmEventHandler));
-    mDrmDevice->event_listener()->RegisterTUIHandler(
-            static_cast<DrmTUIEventHandler *>(&mExynosDrmEventHandler));
-    mDrmDevice->event_listener()->RegisterPanelIdleHandler(
-            static_cast<DrmPanelIdleEventHandler *>(&mExynosDrmEventHandler));
+    if (mExynosDrmEventHandler) {
+        mExynosDrmEventHandler->init(mExynosDevice, mDrmDevice);
+        mDrmDevice->event_listener()->RegisterHotplugHandler(
+                std::static_pointer_cast<DrmEventHandler>(mExynosDrmEventHandler));
+        mDrmDevice->event_listener()->RegisterHistogramHandler(
+                std::static_pointer_cast<DrmHistogramEventHandler>(mExynosDrmEventHandler));
+        mDrmDevice->event_listener()->RegisterHistogramChannelHandler(
+                std::static_pointer_cast<DrmHistogramChannelEventHandler>(mExynosDrmEventHandler));
+        mDrmDevice->event_listener()->RegisterContextHistogramHandler(
+                std::static_pointer_cast<DrmContextHistogramEventHandler>(mExynosDrmEventHandler));
+        mDrmDevice->event_listener()->RegisterTUIHandler(
+                std::static_pointer_cast<DrmTUIEventHandler>(mExynosDrmEventHandler));
+        mDrmDevice->event_listener()->RegisterPanelIdleHandler(
+                std::static_pointer_cast<DrmPanelIdleEventHandler>(mExynosDrmEventHandler));
+        mDrmDevice->event_listener()->RegisterPropertyUpdateHandler(
+                std::static_pointer_cast<DrmPropertyUpdateHandler>(mExynosDrmEventHandler));
+    } else {
+        ALOGE("mExynosDrmEventHandler is not available!");
+    }
 
     if (mDrmDevice->event_listener()->IsDrmInTUI()) {
         mExynosDevice->enterToTUI();
         ALOGD("%s:: device is already in TUI", __func__);
     }
+}
+
+void ExynosDeviceDrmInterface::postInit() {
+    mDrmDevice->event_listener()->InitWorker();
 }
 
 int32_t ExynosDeviceDrmInterface::initDisplayInterface(
@@ -217,23 +242,7 @@ void ExynosDeviceDrmInterface::ExynosDrmEventHandler::init(ExynosDevice *exynosD
 }
 
 void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleEvent(uint64_t timestamp_us) {
-    if (!mExynosDevice->isCallbackAvailable(HWC2_CALLBACK_HOTPLUG)) {
-        return;
-    }
-
-    for (auto it : mExynosDevice->mDisplays) {
-        /* Call UpdateModes to get plug status */
-        uint32_t numConfigs;
-
-        it->getDisplayConfigs(&numConfigs, NULL);
-        mExynosDevice->onHotPlug(getDisplayId(it->mType, it->mIndex), it->mPlugState);
-    }
-
-    /* TODO: Check plug status hear or ExynosExternalDisplay::handleHotplugEvent() */
-    ExynosExternalDisplayModule *display =
-        static_cast<ExynosExternalDisplayModule*>(mExynosDevice->getDisplay(getDisplayId(HWC_DISPLAY_EXTERNAL, 0)));
-    if (display != NULL)
-        display->handleHotplugEvent();
+    mExynosDevice->handleHotplug();
 }
 
 void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleHistogramEvent(uint32_t crtc_id,
@@ -251,6 +260,58 @@ void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleHistogramEvent(uint3
         }
     }
 }
+
+#if defined(EXYNOS_DRM_HISTOGRAM_CHANNEL_EVENT)
+void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleHistogramChannelEvent(void *event) {
+    struct exynos_drm_histogram_channel_event *histogram_channel_event =
+            (struct exynos_drm_histogram_channel_event *)event;
+
+    for (auto display : mExynosDevice->mDisplays) {
+        ExynosDisplayDrmInterface *displayInterface =
+                static_cast<ExynosDisplayDrmInterface *>(display->mDisplayInterface.get());
+        if (histogram_channel_event->crtc_id == displayInterface->getCrtcId()) {
+            if (display->mHistogramController) {
+                display->mHistogramController->handleDrmEvent(histogram_channel_event);
+            } else {
+                ALOGE("%s: no valid mHistogramController for crtc_id (%u)", __func__,
+                      histogram_channel_event->crtc_id);
+            }
+
+            return;
+        }
+    }
+
+    ALOGE("%s: no display with crtc_id (%u)", __func__, histogram_channel_event->crtc_id);
+}
+#else
+void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleHistogramChannelEvent(void *event) {}
+#endif
+
+#if defined(EXYNOS_DRM_CONTEXT_HISTOGRAM_EVENT)
+void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleContextHistogramEvent(void* event) {
+    struct exynos_drm_context_histogram_event* context_histogram_event =
+            (struct exynos_drm_context_histogram_event*)event;
+
+    for (auto display : mExynosDevice->mDisplays) {
+        ExynosDisplayDrmInterface* displayInterface =
+                static_cast<ExynosDisplayDrmInterface*>(display->mDisplayInterface.get());
+        if (context_histogram_event->crtc_id == displayInterface->getCrtcId()) {
+            if (display->mHistogramController) {
+                display->mHistogramController->handleContextDrmEvent(context_histogram_event);
+            } else {
+                ALOGE("%s: no valid mHistogramController for crtc_id (%u)", __func__,
+                      context_histogram_event->crtc_id);
+            }
+
+            return;
+        }
+    }
+
+    ALOGE("%s: no display with crtc_id (%u)", __func__, context_histogram_event->crtc_id);
+}
+#else
+void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleContextHistogramEvent(void* event) {}
+#endif
 
 void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleTUIEvent() {
     if (mDrmDevice->event_listener()->IsDrmInTUI()) {
@@ -310,6 +371,16 @@ void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleIdleEnterEvent(char 
         }
 
         primaryDisplay->handleDisplayIdleEnter(idleTeVrefresh);
+    }
+}
+
+void ExynosDeviceDrmInterface::ExynosDrmEventHandler::handleDrmPropertyUpdate(unsigned connector_id,
+                                                                              unsigned prop_id) {
+    ALOGD("%s: connector_id=%u prop_id=%u", __func__, connector_id, prop_id);
+    for (auto display : mExynosDevice->mDisplays) {
+        ExynosDisplayDrmInterface* displayInterface =
+                static_cast<ExynosDisplayDrmInterface*>(display->mDisplayInterface.get());
+        if (displayInterface) displayInterface->handleDrmPropertyUpdate(connector_id, prop_id);
     }
 }
 

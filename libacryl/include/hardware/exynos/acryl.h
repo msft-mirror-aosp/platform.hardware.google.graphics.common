@@ -17,11 +17,13 @@
 #ifndef __HARDWARE_EXYNOS_ACRYLIC_H__
 #define __HARDWARE_EXYNOS_ACRYLIC_H__
 
-#include <vector>
-#include <cstdint>
-#include <unistd.h>
-#include <system/graphics.h>
 #include <hardware/hwcomposer.h>
+#include <log/log.h>
+#include <system/graphics.h>
+#include <unistd.h>
+#include <cstdint>
+#include <vector>
+#include "android-base/macros.h"
 
 /* basic primitives */
 
@@ -379,6 +381,12 @@ public:
 private:
     bool supportedResampling(int16_t from, int16_t to, int16_t upfactor, int16_t downfactor) const
     {
+        if (UNLIKELY(from < 0 || to == 0 || upfactor == 0)) {
+            ALOGW("%s: unsupported args: (from=%d), (to=%d), (upfactor=%d)", __func__, from, to,
+                  upfactor);
+            return false;
+        }
+
         int64_t factor = static_cast<int64_t>(from);
 
         factor <<= RESAMPLING_FRACTION_BITS;
@@ -442,13 +450,14 @@ public:
      * - ATTR_SOLIDCOLOR : The image buffer is empty and should be filled with one RGBA value by H/W.
      */
     enum layer_attr_t {
-        ATTR_NONE       = 0,
-        ATTR_PROTECTED  = 1,
+        ATTR_NONE = 0,
+        ATTR_PROTECTED = 1,
         ATTR_COMPRESSED = 2,
-        ATTR_UORDER     = 4,
-        ATTR_OTF        = 8,
+        ATTR_UORDER = 4,
+        ATTR_OTF = 8,
         ATTR_SOLIDCOLOR = 16,
-        ATTR_ALL_MASK   = 0x1F
+        ATTR_COMPRESSED_WIDEBLK = 32,
+        ATTR_ALL_MASK = 0x3F
     };
     /*
      * Describes how the buffer of the image is identified.
@@ -569,6 +578,10 @@ public:
      * Determine if the image in the buffer is or should be in a compressed form.
      */
     bool isCompressed() { return !!(mAttributes & ATTR_COMPRESSED); }
+
+    /*Check if the AFBC 32x8 format size is being used*/
+    bool isCompressedWideblk() { return !!(mAttributes & ATTR_COMPRESSED_WIDEBLK); }
+
     /*
      * Study if the image is or should be written in U-Order for accelerated
      * graphic processing instead of raster-scan order.
@@ -828,6 +841,8 @@ public:
         mLayerDataLen = data_len;
     }
 
+    void setLayerHDR(bool hdr_en) { mLayerHDR = hdr_en; }
+
     /*
      * Clears the configured layer data.
      */
@@ -900,6 +915,9 @@ public:
      */
     void *getLayerData() { return mLayerData; }
     size_t getLayerDataLength() { return mLayerDataLen; }
+
+    bool getLayerHDR() { return mLayerHDR; }
+
 private:
     AcrylicLayer(Acrylic *compositor);
 
@@ -915,6 +933,7 @@ private:
     uint16_t mMaxLuminance; // in nit
     uint16_t mMinLuminance; // in 0.0001 nit
     uint8_t mPlaneAlpha;
+    bool mLayerHDR;
 };
 
 class AcrylicPerformanceRequest;

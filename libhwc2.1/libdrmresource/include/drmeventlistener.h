@@ -26,6 +26,9 @@
 
 namespace android {
 
+constexpr uint32_t kDefaultVsyncPeriodNanoSecond = 16666666;
+constexpr int32_t kDefaultRefreshRateFrequency = 60;
+
 class DrmDevice;
 
 class DrmEventHandler {
@@ -44,6 +47,22 @@ public:
     virtual ~DrmHistogramEventHandler() {}
 
     virtual void handleHistogramEvent(uint32_t crtc_id, void *) = 0;
+};
+
+class DrmHistogramChannelEventHandler {
+   public:
+    DrmHistogramChannelEventHandler() {}
+    virtual ~DrmHistogramChannelEventHandler() {}
+
+    virtual void handleHistogramChannelEvent(void *) = 0;
+};
+
+class DrmContextHistogramEventHandler {
+ public:
+  DrmContextHistogramEventHandler() {}
+  virtual ~DrmContextHistogramEventHandler() {}
+
+  virtual void handleContextHistogramEvent(void *) = 0;
 };
 
 class DrmTUIEventHandler {
@@ -73,6 +92,14 @@ class DrmSysfsEventHandler {
   virtual int getFd() = 0;
 };
 
+class DrmPropertyUpdateHandler {
+ public:
+  DrmPropertyUpdateHandler() {}
+  virtual ~DrmPropertyUpdateHandler() {}
+
+  virtual void handleDrmPropertyUpdate(unsigned connector_id, unsigned prop_id) = 0;
+};
+
 class DrmEventListener : public Worker {
   static constexpr const char kTUIStatusPath[] = "/sys/devices/platform/exynos-drm/tui_status";
   static const uint32_t maxFds = 4;
@@ -83,16 +110,26 @@ class DrmEventListener : public Worker {
 
   int Init();
 
-  void RegisterHotplugHandler(DrmEventHandler *handler);
-  void UnRegisterHotplugHandler(DrmEventHandler *handler);
-  void RegisterHistogramHandler(DrmHistogramEventHandler *handler);
-  void UnRegisterHistogramHandler(DrmHistogramEventHandler *handler);
-  void RegisterTUIHandler(DrmTUIEventHandler *handler);
-  void UnRegisterTUIHandler(DrmTUIEventHandler *handler);
-  void RegisterPanelIdleHandler(DrmPanelIdleEventHandler *handler);
-  void UnRegisterPanelIdleHandler(DrmPanelIdleEventHandler *handler);
+  void RegisterHotplugHandler(const std::shared_ptr<DrmEventHandler> &handler);
+  void UnRegisterHotplugHandler(const std::shared_ptr<DrmEventHandler> &handler);
+  void RegisterHistogramHandler(const std::shared_ptr<DrmHistogramEventHandler> &handler);
+  void UnRegisterHistogramHandler(const std::shared_ptr<DrmHistogramEventHandler> &handler);
+  void RegisterHistogramChannelHandler(
+      const std::shared_ptr<DrmHistogramChannelEventHandler> &handler);
+  void UnRegisterHistogramChannelHandler(
+      const std::shared_ptr<DrmHistogramChannelEventHandler> &handler);
+  void RegisterContextHistogramHandler(
+      const std::shared_ptr<DrmContextHistogramEventHandler> &handler);
+  void UnRegisterContextHistogramHandler(
+      const std::shared_ptr<DrmContextHistogramEventHandler> &handler);
+  void RegisterTUIHandler(const std::shared_ptr<DrmTUIEventHandler> &handler);
+  void UnRegisterTUIHandler(const std::shared_ptr<DrmTUIEventHandler> &handler);
+  void RegisterPanelIdleHandler(const std::shared_ptr<DrmPanelIdleEventHandler> &handler);
+  void UnRegisterPanelIdleHandler(const std::shared_ptr<DrmPanelIdleEventHandler> &handler);
   int RegisterSysfsHandler(std::shared_ptr<DrmSysfsEventHandler> handler);
   int UnRegisterSysfsHandler(int sysfs_fd);
+  void RegisterPropertyUpdateHandler(const std::shared_ptr<DrmPropertyUpdateHandler> &handler);
+  void UnRegisterPropertyUpdateHandler(const std::shared_ptr<DrmPropertyUpdateHandler> &handler);
 
   bool IsDrmInTUI();
 
@@ -113,10 +150,13 @@ class DrmEventListener : public Worker {
   UniqueFd tuievent_fd_;
 
   DrmDevice *drm_;
-  std::unique_ptr<DrmEventHandler> hotplug_handler_;
-  std::unique_ptr<DrmHistogramEventHandler> histogram_handler_;
-  std::unique_ptr<DrmTUIEventHandler> tui_handler_;
-  std::unique_ptr<DrmPanelIdleEventHandler> panel_idle_handler_;
+  std::shared_ptr<DrmEventHandler> hotplug_handler_;
+  std::shared_ptr<DrmHistogramEventHandler> histogram_handler_;
+  std::shared_ptr<DrmHistogramChannelEventHandler> histogram_channel_handler_;
+  std::shared_ptr<DrmContextHistogramEventHandler> context_histogram_handler_;
+  std::shared_ptr<DrmTUIEventHandler> tui_handler_;
+  std::shared_ptr<DrmPanelIdleEventHandler> panel_idle_handler_;
+  std::shared_ptr<DrmPropertyUpdateHandler> drm_prop_update_handler_;
   std::mutex mutex_;
   std::map<int, std::shared_ptr<DrmSysfsEventHandler>> sysfs_handlers_;
 };

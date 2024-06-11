@@ -16,6 +16,7 @@
 #include "ExynosHWCHelper.h"
 
 #include <android-base/properties.h>
+#include <cutils/properties.h>
 #include <linux/videodev2.h>
 #include <linux/videodev2_exynos_media.h>
 #include <png.h>
@@ -134,16 +135,9 @@ unsigned int isNarrowRgb(int format, android_dataspace data_space)
 const format_description_t* halFormatToExynosFormat(int inHalFormat, uint32_t inCompressType) {
     for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++) {
         const int descHalFormat = exynos_format_desc[i].halFormat;
-        uint32_t descCompressType = exynos_format_desc[i].getCompression();
-
-        // TODO: b/175381083, Skip checking SBWC compression type
-        if (descCompressType == SBWC || descCompressType == SBWC_LOSSY) {
-            descCompressType = COMP_ANY;
-        }
 
         if ((inHalFormat == descHalFormat) &&
-            ((inCompressType == COMP_ANY) || (descCompressType == COMP_ANY) ||
-             (inCompressType == descCompressType))) {
+            exynos_format_desc[i].isCompressionSupported(inCompressType)) {
             return &exynos_format_desc[i];
         }
     }
@@ -195,8 +189,7 @@ bool isFormatSBWC(int format)
 {
     for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
         if (exynos_format_desc[i].halFormat == format) {
-            if ((exynos_format_desc[i].type & SBWC) ||
-                    (exynos_format_desc[i].type & SBWC_LOSSY))
+            if (exynos_format_desc[i].type & COMP_TYPE_SBWC)
                 return true;
             else
                 return false;
@@ -303,9 +296,10 @@ bool isFormatYCrCb(int format)
 
 bool isFormatLossy(int format)
 {
-    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++) {
         if (exynos_format_desc[i].halFormat == format) {
-            if (exynos_format_desc[i].type & SBWC_LOSSY)
+            uint32_t sbwcType = exynos_format_desc[i].type & FORMAT_SBWC_MASK;
+            if (sbwcType && sbwcType != SBWC_LOSSLESS)
                 return true;
             else
                 return false;
@@ -316,7 +310,7 @@ bool isFormatLossy(int format)
 
 bool formatHasAlphaChannel(int format)
 {
-    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++){
+    for (unsigned int i = 0; i < FORMAT_MAX_CNT; i++) {
         if (exynos_format_desc[i].halFormat == format) {
             return exynos_format_desc[i].hasAlpha;
         }
@@ -332,13 +326,82 @@ bool isAFBCCompressed(const buffer_handle_t handle) {
     return false;
 }
 
-uint32_t getCompressionType(const buffer_handle_t handle) {
-    if (isAFBCCompressed(handle)) {
-        return AFBC;
+bool isSBWCCompressed(const buffer_handle_t handle) {
+    if (handle != NULL) {
+        return VendorGraphicBufferMeta::is_sbwc(handle);
     }
 
-    // TODO: b/175381083, Add SBWC check here or make a function in gralloc
+    return false;
+}
+
+uint32_t getFormat(const buffer_handle_t handle) {
+    if (handle != NULL) {
+        return VendorGraphicBufferMeta::get_format(handle);
+    }
+
     return 0;
+}
+
+uint64_t getFormatModifier(const buffer_handle_t handle) {
+    if (handle != NULL) {
+        return VendorGraphicBufferMeta::get_format_modifier(handle);
+    }
+
+    return 0;
+}
+
+uint32_t getCompressionType(const buffer_handle_t handle) {
+    if (handle == NULL) return COMP_TYPE_NONE;
+
+    if (isAFBCCompressed(handle)) {
+        return COMP_TYPE_AFBC;
+    } else if (isSBWCCompressed(handle)) {
+        return COMP_TYPE_SBWC;
+    }
+
+    return COMP_TYPE_NONE;
+}
+
+CompressionInfo getCompressionInfo(buffer_handle_t handle) {
+    CompressionInfo compressionInfo = {COMP_TYPE_NONE, 0};
+
+    if (handle == NULL) return compressionInfo;
+
+    if (isAFBCCompressed(handle)) {
+        compressionInfo.type = COMP_TYPE_AFBC;
+        compressionInfo.modifier = getFormatModifier(handle);
+    } else if (isSBWCCompressed(handle)) {
+        compressionInfo.type = COMP_TYPE_SBWC;
+
+        uint32_t format = getFormat(handle);
+        if (isFormat10BitYUV420(format))
+            compressionInfo.modifier = SBWC_FORMAT_MOD_BLOCK_SIZE_32x5;
+        else
+            compressionInfo.modifier = SBWC_FORMAT_MOD_BLOCK_SIZE_32x4;
+    } else {
+        compressionInfo.type = COMP_TYPE_NONE;
+    }
+
+    return compressionInfo;
+}
+
+String8 getCompressionStr(CompressionInfo compression) {
+    String8 result;
+    if (compression.type == COMP_TYPE_NONE)
+        result.append("None");
+    else if (compression.type == COMP_TYPE_AFBC)
+        result.appendFormat("AFBC(mod:0x%" PRIx64 ")", compression.modifier);
+    else if (compression.type == COMP_TYPE_SBWC)
+        result.appendFormat("SBWC(mod:0x%" PRIx64 ")", compression.modifier);
+    else
+        result.append("Unknown");
+    return result;
+}
+
+bool isAFBC32x8(CompressionInfo compression) {
+    return (compression.type == COMP_TYPE_AFBC) &&
+            ((compression.modifier & AFBC_FORMAT_MOD_BLOCK_SIZE_MASK) ==
+             AFBC_FORMAT_MOD_BLOCK_SIZE_32x8);
 }
 
 uint32_t halDataSpaceToV4L2ColorSpace(android_dataspace data_space)
@@ -489,19 +552,19 @@ void dumpExynosImage(uint32_t type, exynos_image &img)
     String8 result;
     dumpExynosImage(result, img);
 
-    ALOGD("%s", result.string());
+    ALOGD("%s", result.c_str());
 }
 
-void dumpExynosImage(String8& result, exynos_image &img)
-{
+void dumpExynosImage(String8& result, const exynos_image& img) {
     result.appendFormat("\tbufferHandle: %p, fullWidth: %d, fullHeight: %d, x: %d, y: %d, w: %d, "
                         "h: %d, format: %s\n",
                         img.bufferHandle, img.fullWidth, img.fullHeight, img.x, img.y, img.w, img.h,
-                        getFormatStr(img.format, img.compressed ? AFBC : 0).string());
+                        getFormatStr(img.format, img.compressionInfo.type).c_str());
     result.appendFormat("\tusageFlags: 0x%" PRIx64 ", layerFlags: 0x%8x, acquireFenceFd: %d, releaseFenceFd: %d\n",
             img.usageFlags, img.layerFlags, img.acquireFenceFd, img.releaseFenceFd);
-    result.appendFormat("\tdataSpace(%d), blending(%d), transform(0x%2x), afbc(%d)\n",
-                        img.dataSpace, img.blending, img.transform, img.compressed);
+    result.appendFormat("\tdataSpace(%d), blending(%d), transform(0x%2x), compression: %s\n",
+                        img.dataSpace, img.blending, img.transform,
+                        getCompressionStr(img.compressionInfo).c_str());
     if (img.bufferHandle != NULL) {
         VendorGraphicBufferMeta gmeta(img.bufferHandle);
         result.appendFormat("\tbuffer's stride: %d, %d\n", gmeta.stride, gmeta.vstride);
@@ -650,6 +713,7 @@ void setFenceName(int fenceFd, HwcFenceType fenceType) {
     }
 }
 
+// TODO(b/273890355): remove this function and get buffer size from gralloc
 uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
 {
     switch (format) {
@@ -671,6 +735,8 @@ uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
     case HAL_PIXEL_FORMAT_YCBCR_P010:
         HDEBUGLOGD(eDebugMPP, "size(Y) : %d", P010_Y_SIZE(width, height));
         return P010_Y_SIZE(width, height);
+    case MALI_GRALLOC_FORMAT_INTERNAL_P010:
+        return 2 * __ALIGN_UP(width, 32) * __ALIGN_UP(height, 2);
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN:
         return NV12N_Y_SIZE(width, height);
     case HAL_PIXEL_FORMAT_EXYNOS_YCbCr_P010_SPN:
@@ -706,6 +772,7 @@ uint32_t getExynosBufferYLength(uint32_t width, uint32_t height, int format)
     return NV12M_Y_SIZE(width, height) + ((width % 128) == 0 ? 0 : 256);
 }
 
+// TODO(b/273890355): no one is using this function. It can be removed.
 uint32_t getExynosBufferCbCrLength(uint32_t width, uint32_t height, int format)
 {
     switch (format) {
@@ -851,14 +918,22 @@ String8 getLocalTimeStr(struct timeval tv) {
                            ((tv.tv_sec * 1000) + (tv.tv_usec / 1000)));
 }
 
-void setFenceInfo(uint32_t fd, ExynosDisplay* display, HwcFdebugFenceType type, HwcFdebugIpType ip,
-                  HwcFenceDirection direction, bool pendingAllowed, int32_t dupFrom) {
+void setFenceInfo(uint32_t fd, const ExynosDisplay *display, HwcFdebugFenceType type,
+                  HwcFdebugIpType ip, HwcFenceDirection direction, bool pendingAllowed,
+                  int32_t dupFrom) {
     if (!fence_valid(fd) || display == NULL) return;
 
     ExynosDevice* device = display->mDevice;
+    device->mFenceTracker.updateFenceInfo(fd, display, type, ip, direction, pendingAllowed,
+                                          dupFrom);
+}
 
-    std::scoped_lock lock(device->mFenceMutex);
-    HwcFenceInfo& info = device->mFenceInfos[fd];
+void FenceTracker::updateFenceInfo(uint32_t fd, const ExynosDisplay *display,
+                                   HwcFdebugFenceType type, HwcFdebugIpType ip,
+                                   HwcFenceDirection direction, bool pendingAllowed,
+                                   int32_t dupFrom) {
+    std::scoped_lock lock(mFenceMutex);
+    HwcFenceInfo &info = mFenceInfos[fd];
     info.displayId = display->mDisplayId;
 
     if (info.leaking) {
@@ -888,11 +963,11 @@ void setFenceInfo(uint32_t fd, ExynosDisplay* display, HwcFdebugFenceType type, 
     }
 
     if (info.usage == 0) {
-        device->mFenceInfos.erase(fd);
+        mFenceInfos.erase(fd);
         return;
     } else if (info.usage < 0) {
         ALOGE("%s : Invalid negative usage (%d) for Fence FD:%d", __func__, info.usage, fd);
-        printLastFenceInfo(fd, display);
+        printLastFenceInfoLocked(fd);
     }
 
     HwcFenceTrace trace = {.direction = direction, .type = type, .ip = ip, .time = {0, 0}};
@@ -908,45 +983,39 @@ void setFenceInfo(uint32_t fd, ExynosDisplay* display, HwcFdebugFenceType type, 
     info.pendingAllowed = pendingAllowed;
 }
 
-void printLastFenceInfo(uint32_t fd, ExynosDisplay* display) {
+void FenceTracker::printLastFenceInfoLocked(uint32_t fd) {
     if (!fence_valid(fd)) return;
 
-    ExynosDevice* device = display->mDevice;
-
-    auto it = device->mFenceInfos.find(fd);
-    if (it == device->mFenceInfos.end()) return;
-    HwcFenceInfo& info = it->second;
+    auto it = mFenceInfos.find(fd);
+    if (it == mFenceInfos.end()) return;
+    HwcFenceInfo &info = it->second;
     FT_LOGD("---- Fence FD : %d, Display(%d) ----", fd, info.displayId);
     FT_LOGD("usage: %d, dupFrom: %d, pendingAllowed: %d, leaking: %d", info.usage, info.dupFrom,
             info.pendingAllowed, info.leaking);
 
-    for (const auto& trace : info.traces) {
+    for (const auto &trace : info.traces) {
         FT_LOGD("> dir: %d, type: %d, ip: %d, time:%s", trace.direction, trace.type, trace.ip,
-                getLocalTimeStr(trace.time).string());
+                getLocalTimeStr(trace.time).c_str());
     }
 }
 
-void dumpFenceInfo(ExynosDisplay* display, int32_t count) {
-    ExynosDevice* device = display->mDevice;
-
+void FenceTracker::dumpFenceInfoLocked(int32_t count) {
     FT_LOGD("Dump fence (up to %d fences) ++", count);
-    for (const auto& [fd, info] : device->mFenceInfos) {
+    for (const auto &[fd, info] : mFenceInfos) {
         if (info.pendingAllowed) continue;
         if (count-- <= 0) break;
-        printLastFenceInfo(fd, display);
+        printLastFenceInfoLocked(fd);
     }
     FT_LOGD("Dump fence --");
 }
 
-void printLeakFds(ExynosDisplay* display) {
-    ExynosDevice* device = display->mDevice;
-
-    auto reportLeakFds = [&fenceInfos = device->mFenceInfos](int sign) {
+void FenceTracker::printLeakFdsLocked() {
+    auto reportLeakFdsLocked = [&fenceInfos = mFenceInfos](int sign) REQUIRES(mFenceMutex) {
         String8 errString;
         errString.appendFormat("Leak Fds (%d) :\n", sign);
 
         int cnt = 0;
-        for (const auto& [fd, info] : fenceInfos) {
+        for (const auto &[fd, info] : fenceInfos) {
             if (!info.leaking) continue;
             if (info.usage * sign > 0) {
                 errString.appendFormat("%d,", fd);
@@ -956,55 +1025,51 @@ void printLeakFds(ExynosDisplay* display) {
             }
         }
 
-        FT_LOGW("%s", errString.string());
+        FT_LOGW("%s", errString.c_str());
     };
 
-    reportLeakFds(+1);
-    reportLeakFds(-1);
+    reportLeakFdsLocked(+1);
+    reportLeakFdsLocked(-1);
 }
 
-void dumpNCheckLeak(ExynosDisplay* display, int32_t __unused depth) {
-    ExynosDevice* device = display->mDevice;
-
+void FenceTracker::dumpNCheckLeakLocked() {
     FT_LOGD("Dump leaking fence ++");
-    for (auto& [fd, info] : device->mFenceInfos) {
+    for (auto &[fd, info] : mFenceInfos) {
         if (!info.pendingAllowed) {
-            // leak is occured in this frame first
+            // leak is occurred in this frame first
             if (!info.leaking) {
                 info.leaking = true;
-                printLastFenceInfo(fd, display);
+                printLastFenceInfoLocked(fd);
             }
         }
     }
 
     int priv = exynosHWCControl.fenceTracer;
     exynosHWCControl.fenceTracer = 3;
-    printLeakFds(display);
+    printLeakFdsLocked();
     exynosHWCControl.fenceTracer = priv;
 
     FT_LOGD("Dump leaking fence --");
 }
 
-bool fenceWarn(ExynosDisplay* display, uint32_t threshold) {
-    ExynosDevice* device = display->mDevice;
-    uint32_t cnt = device->mFenceInfos.size();
+bool FenceTracker::fenceWarnLocked(uint32_t threshold) {
+    uint32_t cnt = mFenceInfos.size();
 
     if (cnt > threshold) {
         ALOGE("Fence leak! -- the number of fences(%d) exceeds threshold(%d)", cnt, threshold);
         int priv = exynosHWCControl.fenceTracer;
         exynosHWCControl.fenceTracer = 3;
-        dumpFenceInfo(display, 10);
+        dumpFenceInfoLocked(10);
         exynosHWCControl.fenceTracer = priv;
     }
 
     return (cnt > threshold);
 }
 
-bool validateFencePerFrame(ExynosDisplay* display) {
-    ExynosDevice* device = display->mDevice;
+bool FenceTracker::validateFencePerFrameLocked(const ExynosDisplay *display) {
     bool ret = true;
 
-    for (const auto& [fd, info] : device->mFenceInfos) {
+    for (const auto &[fd, info] : mFenceInfos) {
         if (info.displayId != display->mDisplayId) continue;
         if ((!info.pendingAllowed) && (!info.leaking)) {
             ret = false;
@@ -1015,10 +1080,64 @@ bool validateFencePerFrame(ExynosDisplay* display) {
     if (!ret) {
         int priv = exynosHWCControl.fenceTracer;
         exynosHWCControl.fenceTracer = 3;
-        dumpNCheckLeak(display, 0);
+        dumpNCheckLeakLocked();
         exynosHWCControl.fenceTracer = priv;
     }
 
+    return ret;
+}
+
+bool FenceTracker::validateFences(ExynosDisplay *display) {
+    std::scoped_lock lock(mFenceMutex);
+
+    if (!validateFencePerFrameLocked(display)) {
+        ALOGE("You should doubt fence leak!");
+        saveFenceTraceLocked(display);
+        return false;
+    }
+
+    if (fenceWarnLocked(MAX_FENCE_THRESHOLD)) {
+        printLeakFdsLocked();
+        saveFenceTraceLocked(display);
+        return false;
+    }
+
+    if (exynosHWCControl.doFenceFileDump) {
+        ALOGD("Fence file dump !");
+        saveFenceTraceLocked(display);
+        exynosHWCControl.doFenceFileDump = false;
+    }
+
+    return true;
+}
+
+int32_t FenceTracker::saveFenceTraceLocked(ExynosDisplay *display) {
+    int32_t ret = NO_ERROR;
+    auto &fileWriter = display->mFenceFileWriter;
+
+    if (!fileWriter.chooseOpenedFile()) {
+        return -1;
+    }
+
+    String8 saveString;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    saveString.appendFormat("\n====== Fences at time:%s ======\n", getLocalTimeStr(tv).c_str());
+
+    for (const auto &[fd, info] : mFenceInfos) {
+        saveString.appendFormat("---- Fence FD : %d, Display(%d) ----\n", fd, info.displayId);
+        saveString.appendFormat("usage: %d, dupFrom: %d, pendingAllowed: %d, leaking: %d\n",
+                                info.usage, info.dupFrom, info.pendingAllowed, info.leaking);
+
+        for (const auto &trace : info.traces) {
+            saveString.appendFormat("> dir: %d, type: %d, ip: %d, time:%s\n", trace.direction,
+                                    trace.type, trace.ip, getLocalTimeStr(trace.time).c_str());
+        }
+    }
+
+    fileWriter.write(saveString);
+    fileWriter.flush();
     return ret;
 }
 
@@ -1150,18 +1269,21 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
 
     png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0);
     if (png_ptr == NULL) {
+        ALOGE("%s png_ptr create failed", filepath);
         fclose(fp);
         return -ENOMEM;
     }
 
     info_ptr = png_create_info_struct(png_ptr);
     if (info_ptr == NULL) {
+        ALOGE("%s info_ptr create failed", filepath);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, NULL, NULL);
         return -ENOMEM;
     }
 
     if (setjmp(png_jmpbuf(png_ptr))) {
+        ALOGE("%s setjmp failed", filepath);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EIO;
@@ -1175,6 +1297,8 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     width = png_get_image_width(png_ptr, info_ptr);
     height = png_get_image_height(png_ptr, info_ptr);
     if (width != gmeta.width || height != gmeta.height) {
+        ALOGE("%s source width/height (%dx%d) doesn't match with buffer (%dx%d)", filepath, width,
+              height, gmeta.width, gmeta.height);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EINVAL;
@@ -1183,6 +1307,9 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     bpp = png_get_bit_depth(png_ptr, info_ptr) * png_get_channels(png_ptr, info_ptr);
     color_type = png_get_color_type(png_ptr, info_ptr);
     if (color_type != PNG_COLOR_TYPE_RGB_ALPHA || bpp != formatToBpp(gmeta.format)) {
+        ALOGE("%s color_type (%d) isn't rgb alpha (%d), or source bpp (%d) doesn't match with "
+              "buffer (%d)",
+              filepath, color_type, PNG_COLOR_TYPE_RGB_ALPHA, bpp, formatToBpp(gmeta.format));
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EINVAL;
@@ -1191,6 +1318,8 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     size_t bufferHandleSize = gmeta.stride * gmeta.vstride * formatToBpp(gmeta.format) / 8;
     size_t png_size = png_get_rowbytes(png_ptr, info_ptr) * height;
     if (bufferHandleSize > gmeta.size || (bufferHandleSize < png_size)) {
+        ALOGE("%s buffer handle size isn't within [png_size, gmeta.size]: %d vs [%d, %d]", filepath,
+              (int)bufferHandleSize, (int)png_size, gmeta.size);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EINVAL;
@@ -1201,10 +1330,23 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     if (bufferHandleData != MAP_FAILED && bufferHandleData != NULL) {
         int strideBytes = gmeta.stride * (formatToBpp(gmeta.format) / 8);
         png_bytep row_ptr = (png_bytep)bufferHandleData;
+
         for (int y = 0; y < height; ++y) {
-            png_read_row(png_ptr, row_ptr, NULL);
-            row_ptr += strideBytes;
+            png_read_row(png_ptr, row_ptr + strideBytes * y, NULL);
         }
+
+        const bool premultiplied =
+                static_cast<bool>(property_get_bool("vendor.display.png.premultiplied", 0));
+        ALOGD("premultiplied=%s", premultiplied ? "true" : "false");
+        if (premultiplied) {
+            const auto& premul = [](int a, int v) { return (unsigned char)(v * a / 255.0 + 0.5); };
+            for (int i = 0; i + 3 < height * strideBytes; i += 4) {
+                row_ptr[i + 0] = premul(row_ptr[i + 3], row_ptr[i + 0]);
+                row_ptr[i + 1] = premul(row_ptr[i + 3], row_ptr[i + 1]);
+                row_ptr[i + 2] = premul(row_ptr[i + 3], row_ptr[i + 2]);
+            }
+        }
+
         munmap(bufferHandleData, bufferHandleSize);
     }
 
@@ -1255,3 +1397,9 @@ void assign(decon_win_rect& win_rect, uint32_t left, uint32_t right, uint32_t wi
     win_rect.w = std::max(0U, width);
     win_rect.h = std::max(0U, height);
 }
+
+uint32_t nanoSec2Hz(uint64_t ns) {
+    if (ns == 0) return 0;
+    constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
+    return round(static_cast<float>(nsecsPerSec) / ns);
+};

@@ -67,3 +67,5 @@ bool ExynosDisplayInterface::isPrimary()
     return ((mExynosDisplay != nullptr) &&
             (mExynosDisplay->mType == HWC_DISPLAY_PRIMARY));
 }
+
+void ExynosDisplayInterface::setXrrSettings(const XrrSettings_t& __unused settings) {}

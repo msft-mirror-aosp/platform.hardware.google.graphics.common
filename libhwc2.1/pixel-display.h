@@ -64,6 +64,21 @@ public:
     ndk::ScopedAStatus setPeakRefreshRate(int rate) override;
     ndk::ScopedAStatus setLowPowerMode(bool enabled) override;
     ndk::ScopedAStatus isOperationRateSupported(bool *_aidl_return) override;
+    ndk::ScopedAStatus getHistogramCapability(HistogramCapability *_aidl_return) override;
+    ndk::ScopedAStatus registerHistogram(const ndk::SpAIBinder &token,
+                                         const HistogramConfig &histogramConfig,
+                                         HistogramErrorCode *_aidl_return) override;
+    ndk::ScopedAStatus queryHistogram(const ndk::SpAIBinder &token,
+                                      std::vector<char16_t> *histogramBuffer,
+                                      HistogramErrorCode *_aidl_return) override;
+    ndk::ScopedAStatus reconfigHistogram(const ndk::SpAIBinder &token,
+                                         const HistogramConfig &histogramConfig,
+                                         HistogramErrorCode *_aidl_return) override;
+    ndk::ScopedAStatus unregisterHistogram(const ndk::SpAIBinder &token,
+                                           HistogramErrorCode *_aidl_return) override;
+    ndk::ScopedAStatus setFixedTe2Rate(int rateHz, int* _aidl_return) override;
+    ndk::ScopedAStatus queryStats(DisplayStats::Tag tag,
+                                  std::optional<DisplayStats>* _aidl_return) override;
 
 private:
     bool runMediator(const RoiRect &roi, const Weight &weight, const HistogramPos &pos,

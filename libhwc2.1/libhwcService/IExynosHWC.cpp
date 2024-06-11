@@ -26,6 +26,15 @@
 
 #include "IExynosHWC.h"
 
+#include <vector>
+
+#define RET_IF_ERR(expr)      \
+    do {                      \
+        auto err = (expr);    \
+        if (err) [[unlikely]] \
+            return err;       \
+    } while (0)
+
 namespace android {
 
 enum {
@@ -66,6 +75,13 @@ enum {
     SET_DISPLAY_DBM = 1009,
     SET_DISPLAY_MULTI_THREADED_PRESENT = 1010,
     TRIGGER_REFRESH_RATE_INDICATOR_UPDATE = 1011,
+    IGNORE_DISPLAY_BRIGHTNESS_UPDATE_REQUESTS = 1012,
+    SET_DISPLAY_BRIGHTNESS_NITS = 1013,
+    SET_DISPLAY_BRIGHTNESS_DBV = 1014,
+    DUMP_BUFFERS = 1015,
+    SET_PRESENT_TIMEOUT_PARAMETERS = 1016,
+    SET_PRESENT_TIMEOUT_CONTROLLER = 1017,
+    SET_FIXED_TE2_RATE = 1018,
 };
 
 class BpExynosHWCService : public BpInterface<IExynosHWCService> {
@@ -166,16 +182,17 @@ public:
         return result;
     }
 
-    virtual void getWFDOutputResolution(unsigned int *width, unsigned int *height)
-    {
+    virtual int getWFDOutputResolution(unsigned int* width, unsigned int* height) {
         Parcel data, reply;
         data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
         int result = remote()->transact(GET_WFD_OUTPUT_RESOLUTION, data, &reply);
         if (result == NO_ERROR) {
             *width  = reply.readInt32();
             *height = reply.readInt32();
+            result = reply.readInt32();
         } else
             ALOGE("GET_WFD_OUTPUT_RESOLUTION transact error(%d)", result);
+        return result;
     }
 
     virtual void setPresentationMode(bool use)
@@ -400,6 +417,38 @@ public:
         return result;
     }
 
+    virtual int32_t ignoreDisplayBrightnessUpdateRequests(int32_t displayId, bool ignore) {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeInt32(displayId);
+        data.writeBool(ignore);
+        int result = remote()->transact(IGNORE_DISPLAY_BRIGHTNESS_UPDATE_REQUESTS, data, &reply);
+        if (result) ALOGE("IGNORE_DISPLAY_BRIGHTNESS_UPDATE_REQUESTS transact error(%d)", result);
+        return result;
+    }
+
+    virtual int32_t setDisplayBrightnessNits(int32_t displayId, float nits) {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeInt32(displayId);
+        data.writeFloat(nits);
+        int result = remote()->transact(SET_DISPLAY_BRIGHTNESS_NITS, data, &reply);
+        if (result) ALOGE("SET_DISPLAY_BRIGHTNESS_NITS transact error(%d)", result);
+        return result;
+    }
+
+    virtual int32_t setDisplayBrightnessDbv(int32_t displayId, uint32_t dbv) {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeInt32(displayId);
+        data.writeUint32(dbv);
+        int result = remote()->transact(SET_DISPLAY_BRIGHTNESS_DBV, data, &reply);
+        if (result) {
+            ALOGE("SET_DISPLAY_BRIGHTNESS_DBV transact error(%d)", result);
+        }
+        return result;
+    }
+
     virtual int32_t setDisplayLhbm(int32_t display_id, uint32_t on) {
         Parcel data, reply;
         data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
@@ -485,6 +534,56 @@ public:
                  result);
         return result;
     }
+
+    virtual int32_t dumpBuffers(uint32_t displayId, int32_t count) override {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeUint32(displayId);
+        data.writeInt32(count);
+
+        auto result = remote()->transact(DUMP_BUFFERS, data, &reply);
+        ALOGE_IF(result != NO_ERROR, "DUMP_BUFFERS transact error(%d)", result);
+        return result;
+    }
+
+    int32_t setPresentTimeoutController(uint32_t displayId, uint32_t controllerType) override {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeInt32(displayId);
+        data.writeUint32(controllerType);
+        int result = remote()->transact(SET_PRESENT_TIMEOUT_CONTROLLER, data, &reply);
+        ALOGE_IF(result != NO_ERROR, "SET_PRESENT_TIMEOUT_CONTROLLER transact error(%d)", result);
+        return result;
+    }
+
+    int32_t setPresentTimeoutParameters(
+            uint32_t displayId, int timeoutNs,
+            const std::vector<std::pair<uint32_t, uint32_t>>& settings) override {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeInt32(displayId);
+        // The format is timeout, [ i32 <frames> i32 <intervalNs> ]+.
+        // E.g. if [2, 8333333], [1, 16666667] ..., the pattern is:
+        // last present <timeout> 1st task <8.3 ms> 2nd task <8.3 ms> 3rd task <16.67ms> ...
+        data.writeInt32(timeoutNs);
+        for (const auto& it : settings) {
+            data.writeUint32(it.first);  // frames
+            data.writeUint32(it.second); // intervalNs
+        }
+        int result = remote()->transact(SET_PRESENT_TIMEOUT_PARAMETERS, data, &reply);
+        ALOGE_IF(result != NO_ERROR, "SET_PRESENT_TIMEOUT_PARAMETERS transact error(%d)", result);
+        return result;
+    }
+
+    virtual int32_t setFixedTe2Rate(uint32_t displayId, int32_t rateHz) {
+        Parcel data, reply;
+        data.writeInterfaceToken(IExynosHWCService::getInterfaceDescriptor());
+        data.writeUint32(displayId);
+        data.writeInt32(rateHz);
+        int result = remote()->transact(SET_FIXED_TE2_RATE, data, &reply);
+        if (result) ALOGE("SET_FIXED_TE2_RATE transact error(%d)", result);
+        return result;
+    }
 };
 
 IMPLEMENT_META_INTERFACE(ExynosHWCService, "android.hal.ExynosHWCService");
@@ -544,10 +643,11 @@ status_t BnExynosHWCService::onTransact(
         } break;
         case GET_WFD_OUTPUT_RESOLUTION: {
             CHECK_INTERFACE(IExynosHWCService, data, reply);
-            uint32_t width, height;
-            getWFDOutputResolution(&width, &height);
+            uint32_t width = 0, height = 0;
+            int res = getWFDOutputResolution(&width, &height);
             reply->writeInt32(width);
             reply->writeInt32(height);
+            reply->writeInt32(res);
             return NO_ERROR;
         } break;
         case SET_PRESENTATION_MODE: {
@@ -753,6 +853,76 @@ status_t BnExynosHWCService::onTransact(
             uint32_t displayId = data.readUint32();
             uint32_t refreshRate = data.readUint32();
             return triggerRefreshRateIndicatorUpdate(displayId, refreshRate);
+        } break;
+
+        case IGNORE_DISPLAY_BRIGHTNESS_UPDATE_REQUESTS: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            int32_t displayId = data.readInt32();
+            bool ignore = data.readBool();
+            int32_t error = ignoreDisplayBrightnessUpdateRequests(displayId, ignore);
+            reply->writeInt32(error);
+            return NO_ERROR;
+        } break;
+
+        case SET_DISPLAY_BRIGHTNESS_NITS: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            int32_t displayId = data.readInt32();
+            float nits = data.readFloat();
+            int32_t error = setDisplayBrightnessNits(displayId, nits);
+            reply->writeInt32(error);
+            return NO_ERROR;
+        } break;
+
+        case SET_DISPLAY_BRIGHTNESS_DBV: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            int32_t displayId = data.readInt32();
+            uint32_t dbv = data.readUint32();
+            int32_t error = setDisplayBrightnessDbv(displayId, dbv);
+            reply->writeInt32(error);
+            return NO_ERROR;
+        } break;
+
+        case DUMP_BUFFERS: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            uint32_t displayId = data.readUint32();
+            int32_t count = data.readInt32();
+            return dumpBuffers(displayId, count);
+        } break;
+
+        case SET_PRESENT_TIMEOUT_CONTROLLER: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            int32_t displayId = data.readInt32();
+            uint32_t controllerType = data.readUint32();
+            int32_t error = setPresentTimeoutController(displayId, controllerType);
+            reply->writeInt32(error);
+            return NO_ERROR;
+        } break;
+
+        case SET_PRESENT_TIMEOUT_PARAMETERS: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            int32_t displayId;
+            uint32_t timeoutNs;
+            RET_IF_ERR(data.readInt32(&displayId));
+            RET_IF_ERR(data.readUint32(&timeoutNs));
+            std::vector<std::pair<uint32_t, uint32_t>> settings;
+            while (true) {
+                uint32_t numOfWorks, intervalNs;
+                if (data.readUint32(&numOfWorks)) {
+                    break;
+                }
+                RET_IF_ERR(data.readUint32(&intervalNs));
+                settings.emplace_back(std::make_pair(numOfWorks, intervalNs));
+            }
+            int32_t error = setPresentTimeoutParameters(displayId, timeoutNs, settings);
+            reply->writeInt32(error);
+            return NO_ERROR;
+        } break;
+
+        case SET_FIXED_TE2_RATE: {
+            CHECK_INTERFACE(IExynosHWCService, data, reply);
+            uint32_t displayId = data.readUint32();
+            int32_t rateHz = data.readInt32();
+            return setFixedTe2Rate(displayId, rateHz);
         } break;
 
         default:

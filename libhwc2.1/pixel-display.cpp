@@ -22,9 +22,12 @@
 #include <android/binder_process.h>
 #include <sys/types.h>
 #include <utils/Errors.h>
+#include <cstdint>
 
+#include "BrightnessController.h"
 #include "ExynosDisplay.h"
 #include "ExynosPrimaryDisplay.h"
+#include "HistogramController.h"
 
 extern int32_t load_png_image(const char *filepath, buffer_handle_t buffer);
 
@@ -164,7 +167,7 @@ ndk::ScopedAStatus Display::isOperationRateSupported(bool *_aidl_return) {
 ndk::ScopedAStatus Display::setCompensationImageHandle(const NativeHandle &native_handle,
                                                        const std::string &imageName,
                                                        int *_aidl_return) {
-    if (mDisplay && mDisplay->isColorCalibratedByDevice()) {
+    if (mDisplay && mDisplay->getPanelCalibrationStatus() == PanelCalibrationStatus::ORIGINAL) {
         *_aidl_return = readCompensationImage(native_handle, imageName);
     } else {
         *_aidl_return = -1;
@@ -174,7 +177,7 @@ ndk::ScopedAStatus Display::setCompensationImageHandle(const NativeHandle &nativ
 
 ndk::ScopedAStatus Display::setMinIdleRefreshRate(int fps, int *_aidl_return) {
     if (mDisplay) {
-        *_aidl_return = mDisplay->setMinIdleRefreshRate(fps);
+        *_aidl_return = mDisplay->setMinIdleRefreshRate(fps, RrThrottleRequester::PIXEL_DISP);
         return ndk::ScopedAStatus::ok();
     }
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
@@ -193,7 +196,7 @@ ndk::ScopedAStatus Display::setRefreshRateThrottle(int delayMs, int *_aidl_retur
                                                               std::chrono::nanoseconds>(
                                                               std::chrono::milliseconds(delayMs))
                                                               .count(),
-                                                      VrrThrottleRequester::PIXEL_DISP);
+                                                      RrThrottleRequester::PIXEL_DISP);
         return ndk::ScopedAStatus::ok();
     }
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
@@ -205,16 +208,16 @@ bool Display::runMediator(const RoiRect &roi, const Weight &weight, const Histog
     histogram::HistogramMediator::HistogramConfig pendingConfig(roi, weight, pos);
 
     {
-        std::unique_lock<std::mutex> lk(mMediator.mConfigMutex);
+        std::scoped_lock lock(mMediator.mConfigMutex);
         isConfigChanged = mMediator.mConfig != pendingConfig;
 
-        if (isConfigChanged &&
-            mMediator.setRoiWeightThreshold(roi, weight, pos) != HistogramErrorCode::NONE) {
-            ALOGE("histogram error, SET_ROI_WEIGHT_THRESHOLD ERROR\n");
-            return false;
+        if (isConfigChanged) {
+            if (mMediator.setRoiWeightThreshold(roi, weight, pos) != HistogramErrorCode::NONE) {
+                ALOGE("histogram error, SET_ROI_WEIGHT_THRESHOLD ERROR\n");
+                return false;
+            }
+            mMediator.mConfig = pendingConfig;
         }
-
-        mMediator.mConfig = pendingConfig;
     }
 
     if (!mMediator.histRequested() &&
@@ -251,11 +254,11 @@ ndk::ScopedAStatus Display::histogramSample(const RoiRect &roi, const Weight &we
         *_aidl_return = HistogramErrorCode::BAD_HIST_DATA;
         return ndk::ScopedAStatus::ok();
     }
-    if (mMediator.isDisplayPowerOff() == true) {
+    if (mDisplay->isPowerModeOff() == true) {
         *_aidl_return = HistogramErrorCode::DISPLAY_POWEROFF; // panel is off
         return ndk::ScopedAStatus::ok();
     }
-    if (mMediator.isSecureContentPresenting() == true) {
+    if (mDisplay->isSecureContentPresenting() == true) {
         *_aidl_return = HistogramErrorCode::DRM_PLAYING; // panel is playing DRM content
         return ndk::ScopedAStatus::ok();
     }
@@ -284,7 +287,7 @@ ndk::ScopedAStatus Display::histogramSample(const RoiRect &roi, const Weight &we
     }
     RoiRect roiCaled = mMediator.calRoi(roi); // fit roi coordinates to RRS
     runMediator(roiCaled, weight, pos, histogrambuffer);
-    if (mMediator.isSecureContentPresenting() == true) {
+    if (mDisplay->isSecureContentPresenting() == true) {
         /* clear data to avoid leakage */
         std::fill(histogrambuffer->begin(), histogrambuffer->end(), 0);
         histogrambuffer->clear();
@@ -317,6 +320,120 @@ ndk::ScopedAStatus Display::setDbmState(bool enabled) {
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
     mDisplay->setDbmState(enabled);
+    return ndk::ScopedAStatus::ok();
+}
+
+ndk::ScopedAStatus Display::getHistogramCapability(HistogramCapability *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->getHistogramCapability(_aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::registerHistogram(const ndk::SpAIBinder &token,
+                                              const HistogramConfig &histogramConfig,
+                                              HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->registerHistogram(token, histogramConfig,
+                                                                 _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::queryHistogram(const ndk::SpAIBinder &token,
+                                           std::vector<char16_t> *histogramBuffer,
+                                           HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->queryHistogram(token, histogramBuffer, _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::reconfigHistogram(const ndk::SpAIBinder &token,
+                                              const HistogramConfig &histogramConfig,
+                                              HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->reconfigHistogram(token, histogramConfig,
+                                                                 _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::unregisterHistogram(const ndk::SpAIBinder &token,
+                                                HistogramErrorCode *_aidl_return) {
+    if (mDisplay && mDisplay->mHistogramController) {
+        return mDisplay->mHistogramController->unregisterHistogram(token, _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::setFixedTe2Rate(int rateHz, int* _aidl_return) {
+    if (mDisplay) {
+        *_aidl_return = mDisplay->setFixedTe2Rate(rateHz);
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::queryStats(DisplayStats::Tag tag,
+                                       std::optional<DisplayStats>* _aidl_return) {
+    ATRACE_NAME(
+            String8::format("%s(%s)", __func__,
+                            aidl::com::google::hardware::pixel::display::toString(tag).c_str()));
+    if (!mDisplay) {
+        ALOGW("%s: mDisplay is NULL", __func__);
+        return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+    }
+    switch (tag) {
+        case DisplayStats::brightnessNits:
+            if (mDisplay->mBrightnessController != nullptr) {
+                auto res = mDisplay->mBrightnessController->getBrightnessNitsAndMode();
+                if (res != std::nullopt) {
+                    double nits = std::get<float>(res.value());
+                    (*_aidl_return) = DisplayStats::make<DisplayStats::brightnessNits>(nits);
+                } else {
+                    ALOGW("%s: getBrightnessNitsAndMode returned nullopt!", __func__);
+                    return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
+                }
+            } else {
+                ALOGW("%s: mBrightnessController is null!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        case DisplayStats::brightnessDbv:
+            if (mDisplay->mBrightnessController != nullptr) {
+                int dbv = mDisplay->mBrightnessController->getBrightnessLevel();
+                (*_aidl_return) = DisplayStats::make<DisplayStats::brightnessDbv>(dbv);
+            } else {
+                ALOGW("%s: mBrightnessController is null!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        case DisplayStats::operationRate:
+            if (mDisplay->isOperationRateSupported()) {
+                int op_hz = mDisplay->mOperationRateManager->getTargetOperationRate();
+                (*_aidl_return) = DisplayStats::make<DisplayStats::operationRate>(op_hz);
+            } else {
+                ALOGW("%s: operation rate not supported!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        case DisplayStats::opr:
+            if (mDisplay->mHistogramController) {
+                std::array<double, HistogramController::kOPRConfigsCount> oprVals;
+                ndk::ScopedAStatus status = mDisplay->mHistogramController->queryOPR(oprVals);
+                if (!status.isOk()) return status;
+                (*_aidl_return) = DisplayStats::make<DisplayStats::opr>(oprVals);
+            } else {
+                ALOGW("%s: mHistogramController is null!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        default:
+            ALOGW("%s: invalid stats tag: %u", __func__, (uint32_t)tag);
+            *_aidl_return = std::nullopt;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+    };
     return ndk::ScopedAStatus::ok();
 }
 

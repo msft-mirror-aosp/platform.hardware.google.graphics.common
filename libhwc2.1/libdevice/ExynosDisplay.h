@@ -17,6 +17,7 @@
 #ifndef _EXYNOSDISPLAY_H
 #define _EXYNOSDISPLAY_H
 
+#include <aidl/android/hardware/drm/HdcpLevels.h>
 #include <android/hardware/graphics/composer/2.4/types.h>
 #include <hardware/hwcomposer2.h>
 #include <system/graphics.h>
@@ -38,11 +39,15 @@
 #include "drmeventlistener.h"
 #include "worker.h"
 
+#include "../libvrr/interface/VariableRefreshRateInterface.h"
+
 #define HWC_CLEARDISPLAY_WITH_COLORMAP
 #define HWC_PRINT_FRAME_NUM     10
 
 #define LOW_FPS_THRESHOLD     5
 
+using ::aidl::android::hardware::drm::HdcpLevels;
+using ::android::hardware::graphics::composer::RefreshRateChangeListener;
 using ::android::hardware::graphics::composer::V2_4::VsyncPeriodNanos;
 using namespace std::chrono_literals;
 
@@ -57,6 +62,8 @@ class ExynosLayer;
 class ExynosDevice;
 class ExynosMPP;
 class ExynosMPPSource;
+class HistogramController;
+class DisplayTe2Manager;
 
 namespace aidl {
 namespace google {
@@ -148,16 +155,17 @@ enum class hwc_request_state_t {
     SET_CONFIG_STATE_REQUESTED,
 };
 
-enum class VrrThrottleRequester : uint32_t {
+enum class RrThrottleRequester : uint32_t {
     PIXEL_DISP = 0,
     TEST,
     LHBM,
+    BRIGHTNESS,
     MAX,
 };
 
 enum class DispIdleTimerRequester : uint32_t {
     SF = 0,
-    VRR_THROTTLE,
+    RR_THROTTLE,
     MAX,
 };
 
@@ -218,7 +226,7 @@ struct exynos_win_config_data
     struct decon_frame src = {0, 0, 0, 0, 0, 0};
     struct decon_frame dst = {0, 0, 0, 0, 0, 0};
     bool protection = false;
-    bool compression = false;
+    CompressionInfo compressionInfo;
     bool needColorTransform = false;
 
     void reset(){
@@ -284,7 +292,7 @@ class ExynosSortedLayer : public Vector <ExynosLayer*>
     public:
         ssize_t remove(const ExynosLayer *item);
         status_t vector_sort();
-        static int compare(ExynosLayer * const *lhs, ExynosLayer *const *rhs);
+        static int compare(void const *lhs, void const *rhs);
 };
 
 class DisplayTDMInfo {
@@ -309,6 +317,7 @@ class ExynosCompositionInfo : public ExynosMPPSource {
         ExynosCompositionInfo(uint32_t type);
         uint32_t mType;
         bool mHasCompositionLayer;
+        bool mPrevHasCompositionLayer = false;
         int32_t mFirstIndex;
         int32_t mLastIndex;
         buffer_handle_t mTargetBuffer;
@@ -322,14 +331,14 @@ class ExynosCompositionInfo : public ExynosMPPSource {
         exynos_win_config_data mLastWinConfigData;
 
         int32_t mWindowIndex;
-        bool mCompressed;
+        CompressionInfo mCompressionInfo;
 
         void initializeInfos(ExynosDisplay *display);
+        void initializeInfosComplete(ExynosDisplay *display);
         void setTargetBuffer(ExynosDisplay *display, buffer_handle_t handle,
                 int32_t acquireFence, android_dataspace dataspace);
-        void setCompressed(bool compressed);
-        bool getCompressed();
-        void dump(String8& result);
+        void setCompressionType(uint32_t compressionType);
+        void dump(String8& result) const;
         String8 getTypeStr();
 };
 
@@ -347,7 +356,44 @@ struct ResolutionInfo {
     int      nPanelType[3];
 };
 
+typedef struct FrameIntervalPowerHint {
+    int frameIntervalNs = 0;
+    int averageRefreshPeriodNs = 0;
+} FrameIntervalPowerHint_t;
+
+typedef struct NotifyExpectedPresentConfig {
+    int HeadsUpNs = 0;
+    int TimeoutNs = 0;
+} NotifyExpectedPresentConfig_t;
+
+typedef struct VrrConfig {
+    bool isFullySupported = false;
+    int vsyncPeriodNs = 0;
+    int minFrameIntervalNs = 0;
+    std::optional<std::vector<FrameIntervalPowerHint_t>> frameIntervalPowerHint;
+    std::optional<NotifyExpectedPresentConfig_t> notifyExpectedPresentConfig;
+} VrrConfig_t;
+
+typedef struct XrrSettings {
+    android::hardware::graphics::composer::XrrVersionInfo_t versionInfo;
+    NotifyExpectedPresentConfig_t notifyExpectedPresentConfig;
+    std::function<void(int)> configChangeCallback;
+} XrrSettings_t;
+
 typedef struct displayConfigs {
+    std::string toString() const {
+        std::ostringstream os;
+        os << "vsyncPeriod = " << vsyncPeriod;
+        os << ", w = " << width;
+        os << ", h = " << height;
+        os << ", Xdpi = " << Xdpi;
+        os << ", Ydpi = " << Ydpi;
+        os << ", groupId = " << groupId;
+        os << (isNsMode ? ", NS " : ", HS ");
+        os << ", refreshRate = " << refreshRate;
+        return os.str();
+    }
+
     // HWC2_ATTRIBUTE_VSYNC_PERIOD
     VsyncPeriodNanos vsyncPeriod;
     // HWC2_ATTRIBUTE_WIDTH
@@ -360,6 +406,13 @@ typedef struct displayConfigs {
     uint32_t Ydpi;
     // HWC2_ATTRIBUTE_CONFIG_GROUP
     uint32_t groupId;
+
+    std::optional<VrrConfig_t> vrrConfig;
+
+    /* internal use */
+    bool isNsMode = false;
+    bool isOperationRateToBts;
+    int32_t refreshRate;
 } displayConfigs_t;
 
 struct DisplayControl {
@@ -400,10 +453,9 @@ class ExynosDisplay {
         uint32_t mXdpi;
         uint32_t mYdpi;
         uint32_t mVsyncPeriod;
-        uint32_t mBtsVsyncPeriod;
-
-        int                     mPanelType;
-        int                     mPsrMode;
+        int32_t mRefreshRate;
+        int32_t mBtsFrameScanoutPeriod;
+        int32_t mBtsPendingOperationRatePeriod;
 
         /* Constructor */
         ExynosDisplay(uint32_t type, uint32_t index, ExynosDevice* device,
@@ -416,7 +468,7 @@ class ExynosDisplay {
         const String8 mDisplayName;
         const String8 mDisplayTraceName;
         HwcMountOrientation mMountOrientation = HwcMountOrientation::ROT_0;
-        Mutex mDisplayMutex;
+        mutable Mutex mDisplayMutex;
 
         /** State variables */
         bool mPlugState;
@@ -484,7 +536,7 @@ class ExynosDisplay {
         dynamic_recomp_mode mDynamicReCompMode;
         bool mDREnable;
         bool mDRDefault;
-        Mutex mDRMutex;
+        mutable Mutex mDRMutex;
 
         nsecs_t  mLastFpsTime;
         uint64_t mFrameCount;
@@ -538,8 +590,15 @@ class ExynosDisplay {
 
         std::unique_ptr<BrightnessController> mBrightnessController;
 
+        /* For histogram */
+        std::unique_ptr<HistogramController> mHistogramController;
+
+        std::unique_ptr<DisplayTe2Manager> mDisplayTe2Manager;
+
         /* For debugging */
         hwc_display_contents_1_t *mHWC1LayerList;
+        int mBufferDumpCount = 0;
+        int mBufferDumpNum = 0;
 
         /* Support Multi-resolution scheme */
         int mOldScalerMode;
@@ -555,6 +614,10 @@ class ExynosDisplay {
 
         // Skip present frame if there was no validate after power on
         bool mSkipFrame;
+        // Drop frame during resolution switch because the merged display frame
+        // is not equal to the full-resolution yet.
+        // TODO(b/310656340): remove this if it has been fixed from SF.
+        bool mDropFrameDuringResSwitch = false;
 
         hwc_vsync_period_change_constraints_t mVsyncPeriodChangeConstraints;
         hwc_vsync_period_change_timeline_t mVsyncAppliedTimeLine;
@@ -574,7 +637,11 @@ class ExynosDisplay {
         int32_t initializeValidateInfos();
         int32_t addClientCompositionLayer(uint32_t layerIndex);
         int32_t removeClientCompositionLayer(uint32_t layerIndex);
+        bool hasClientComposition();
         int32_t addExynosCompositionLayer(uint32_t layerIndex, float totalUsedCapa);
+
+        bool isPowerModeOff() const;
+        bool isSecureContentPresenting() const;
 
         /**
          * Dynamic AFBC Control solution : To get the prepared information is applied to current or not.
@@ -1135,6 +1202,15 @@ class ExynosDisplay {
          */
         int32_t getMountOrientation(HwcMountOrientation *orientation);
 
+        /*
+         * HWC3
+         *
+         * Retrieve the vrrConfig for the corresponding display configuration.
+         * If the configuration doesn't exist, return a nullopt.
+         *
+         */
+        std::optional<VrrConfig_t> getVrrConfigs(hwc2_config_t config);
+
         /* setActiveConfig MISCs */
         bool isBadConfig(hwc2_config_t config);
         bool needNotChangeConfig(hwc2_config_t config);
@@ -1150,10 +1226,11 @@ class ExynosDisplay {
         int32_t getConfigAppliedTime(const uint64_t desiredTime,
                 const uint64_t actualChangeTime,
                 int64_t &appliedTime, int64_t &refreshTime);
-        void updateBtsVsyncPeriod(uint32_t vsyncPeriod, bool configApplied = false);
+        void updateBtsFrameScanoutPeriod(int32_t frameScanoutPeriod, bool configApplied = false);
+        void tryUpdateBtsFromOperationRate(bool beforeValidateDisplay);
         uint32_t getBtsRefreshRate() const;
-        virtual void checkBtsReassignResource(const uint32_t __unused vsyncPeriod,
-                                              const uint32_t __unused btsVsyncPeriod) {}
+        virtual void checkBtsReassignResource(const int32_t __unused vsyncPeriod,
+                                              const int32_t __unused btsVsyncPeriod) {}
 
         /* TODO : TBD */
         int32_t setCursorPositionAsync(uint32_t x_pos, uint32_t y_pos);
@@ -1166,7 +1243,12 @@ class ExynosDisplay {
         /* This function is called by ExynosDisplayInterface class to set acquire fence*/
         int32_t setReadbackBufferAcqFence(int32_t acqFence);
 
+        int32_t uncacheLayerBuffers(ExynosLayer* layer, const std::vector<buffer_handle_t>& buffers,
+                                    std::vector<buffer_handle_t>& outClearableBuffers);
+
         virtual void dump(String8& result);
+        void dumpLocked(String8& result) REQUIRES(mDisplayMutex);
+        void dumpAllBuffers() REQUIRES(mDisplayMutex);
 
         virtual int32_t startPostProcessing();
 
@@ -1200,16 +1282,17 @@ class ExynosDisplay {
         void setHWCControl(uint32_t ctrl, int32_t val);
         void setGeometryChanged(uint64_t changedBit);
         void clearGeometryChanged();
-        bool isFrameUpdate();
+
+        virtual const std::string& getPanelName() { return mPanelName; };
 
         virtual void setDDIScalerEnable(int width, int height);
         virtual int getDDIScalerMode(int width, int height);
         void increaseMPPDstBufIndex();
         virtual void initDisplayInterface(uint32_t interfaceType);
         virtual int32_t updateColorConversionInfo() { return NO_ERROR; };
+        virtual int32_t resetColorMappingInfo(ExynosMPPSource* /*mppSrc*/) { return NO_ERROR; }
         virtual int32_t updatePresentColorConversionInfo() { return NO_ERROR; };
         virtual bool checkRrCompensationEnabled() { return false; };
-        virtual bool isColorCalibratedByDevice() { return false; };
         virtual int32_t getColorAdjustedDbv(uint32_t &) { return NO_ERROR; }
 
         virtual int32_t SetCurrentPanelGammaSource(const displaycolor::DisplayType /* type */,
@@ -1231,8 +1314,10 @@ class ExynosDisplay {
         virtual int32_t setLhbmState(bool __unused enabled) { return NO_ERROR; }
         virtual bool getLhbmState() { return false; };
         virtual void setEarlyWakeupDisplay() {}
-        virtual void setExpectedPresentTime(uint64_t __unused timestamp) {}
+        virtual void setExpectedPresentTime(uint64_t __unused timestamp,
+                                            int __unused frameIntervalNs) {}
         virtual uint64_t getPendingExpectedPresentTime() { return 0; }
+        virtual int getPendingFrameInterval() { return 0; }
         virtual void applyExpectedPresentTime() {}
         virtual int32_t getDisplayIdleTimerSupport(bool& outSupport);
         virtual int32_t getDisplayMultiThreadedPresentSupport(bool& outSupport);
@@ -1249,7 +1334,7 @@ class ExynosDisplay {
 
         /* getDisplayPreAssignBit support mIndex up to 1.
            It supports only dual LCD and 2 external displays */
-        inline uint32_t getDisplayPreAssignBit() {
+        inline uint32_t getDisplayPreAssignBit() const {
             uint32_t type = SECOND_DISPLAY_START_BIT * mIndex + mType;
             return 1 << type;
         }
@@ -1258,6 +1343,43 @@ class ExynosDisplay {
         int32_t getRCDLayerSupport(bool& outSupport) const;
         int32_t setDebugRCDLayerEnabled(bool enable);
 
+        /* ignore / accept brightness update requests */
+        virtual int32_t ignoreBrightnessUpdateRequests(bool ignore);
+
+        /* set brightness to specific nits value */
+        virtual int32_t setBrightnessNits(const float nits);
+
+        /* set brightness by dbv value */
+        virtual int32_t setBrightnessDbv(const uint32_t dbv);
+
+        virtual std::string getPanelSysfsPath() const { return std::string(); }
+
+        virtual void onVsync(int64_t __unused timestamp) { return; };
+
+        displaycolor::DisplayType getDcDisplayType() const;
+
+        virtual int32_t notifyExpectedPresent(int64_t __unused timestamp,
+                                              int32_t __unused frameIntervalNs) {
+            return HWC2_ERROR_UNSUPPORTED;
+        };
+
+        virtual int32_t setPresentTimeoutController(uint32_t __unused controllerType) {
+            return HWC2_ERROR_UNSUPPORTED;
+        }
+
+        virtual int32_t setPresentTimeoutParameters(
+                int __unused timeoutNs,
+                const std::vector<std::pair<uint32_t, uint32_t>>& __unused settings) {
+            return HWC2_ERROR_UNSUPPORTED;
+        }
+
+        virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
+
+        virtual int32_t registerRefreshRateChangeListener(
+                std::shared_ptr<RefreshRateChangeListener> listener) {
+            return NO_ERROR;
+        }
+
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig);
@@ -1265,6 +1387,8 @@ class ExynosDisplay {
 
         void updateRefreshRateHint();
         bool isFullScreenComposition();
+
+        std::string mPanelName;
 
     public:
         /**
@@ -1275,9 +1399,12 @@ class ExynosDisplay {
         std::unique_ptr<ExynosDisplayInterface> mDisplayInterface;
         void requestLhbm(bool on);
 
-        virtual int setMinIdleRefreshRate(const int __unused fps) { return NO_ERROR; }
-        virtual int setRefreshRateThrottleNanos(const int64_t __unused delayNanos,
-                                                const VrrThrottleRequester __unused requester) {
+        virtual int32_t setMinIdleRefreshRate(const int __unused fps,
+                                              const RrThrottleRequester __unused requester) {
+            return NO_ERROR;
+        }
+        virtual int32_t setRefreshRateThrottleNanos(const int64_t __unused delayNanos,
+                                                    const RrThrottleRequester __unused requester) {
             return NO_ERROR;
         }
 
@@ -1302,12 +1429,17 @@ class ExynosDisplay {
         int lookupDisplayConfigs(const int32_t& width,
                                  const int32_t& height,
                                  const int32_t& fps,
+                                 const int32_t& vsyncRate,
                                  int32_t* outConfig);
+        int lookupDisplayConfigsRelaxed(const int32_t& width,
+                                        const int32_t& height,
+                                        const int32_t& fps,
+                                        int32_t* outConfig);
 
     private:
         bool skipStaticLayerChanged(ExynosCompositionInfo& compositionInfo);
 
-        bool skipSignalIdle();
+        bool shouldSignalNonIdle();
 
         /// minimum possible dim rate in the case hbm peak is 1000 nits and norml
         // display brightness is 2 nits
@@ -1332,8 +1464,8 @@ class ExynosDisplay {
             virtual ~PowerHalHintWorker();
             int Init();
 
-            void signalRefreshRate(hwc2_power_mode_t powerMode, uint32_t vsyncPeriod);
-            void signalIdle();
+            void signalRefreshRate(hwc2_power_mode_t powerMode, int32_t refreshRate);
+            void signalNonIdle();
             void signalActualWorkDuration(nsecs_t actualDurationNanos);
             void signalTargetWorkDuration(nsecs_t targetDurationNanos);
 
@@ -1358,14 +1490,14 @@ class ExynosDisplay {
             int32_t checkPowerHalExtHintSupport(const std::string& mode);
             int32_t sendPowerHalExtHint(const std::string& mode, bool enabled);
 
-            int32_t checkRefreshRateHintSupport(int refreshRate);
-            int32_t updateRefreshRateHintInternal(hwc2_power_mode_t powerMode,
-                                                  uint32_t vsyncPeriod);
-            int32_t sendRefreshRateHint(int refreshRate, bool enabled);
+            int32_t checkRefreshRateHintSupport(const int32_t refreshRate);
+            int32_t updateRefreshRateHintInternal(const hwc2_power_mode_t powerMode,
+                                                  const int32_t refreshRate);
+            int32_t sendRefreshRateHint(const int32_t refreshRate, bool enabled);
             void forceUpdateHints();
 
             int32_t checkIdleHintSupport();
-            int32_t updateIdleHint(int64_t deadlineTime, bool forceUpdate);
+            int32_t updateIdleHint(const int64_t deadlineTime, const bool forceUpdate);
             bool needUpdateIdleHintLocked(int64_t& timeout) REQUIRES(mutex_);
 
             // for adpf cpu hints
@@ -1389,7 +1521,7 @@ class ExynosDisplay {
             int mLastRefreshRateHint;
 
             // support list of refresh rate hints
-            std::map<int, bool> mRefreshRateHintSupportMap;
+            std::map<int32_t, bool> mRefreshRateHintSupportMap;
 
             bool mIdleHintIsEnabled;
             bool mForceUpdateIdleHint;
@@ -1406,7 +1538,7 @@ class ExynosDisplay {
             std::string mRefreshRateHintPrefixStr;
 
             hwc2_power_mode_t mPowerModeState;
-            uint32_t mVsyncPeriod;
+            int32_t mRefreshRate;
 
             uint32_t mConnectRetryCount;
             bool isPowerHalExist() { return mConnectRetryCount < 10; }
@@ -1526,8 +1658,8 @@ class ExynosDisplay {
             assert(vsync_period > 0);
             return static_cast<uint32_t>(vsync_period);
         }
-
-        virtual void calculateTimeline(
+        inline int32_t getDisplayFrameScanoutPeriodFromConfig(hwc2_config_t config);
+        virtual void calculateTimelineLocked(
                 hwc2_config_t config,
                 hwc_vsync_period_change_constraints_t* vsyncPeriodChangeConstraints,
                 hwc_vsync_period_change_timeline_t* outTimeline);
@@ -1539,7 +1671,7 @@ class ExynosDisplay {
         virtual bool isEnabled() { return mPlugState; }
 
         // Resource TDM (Time-Division Multiplexing)
-        std::map<uint32_t, DisplayTDMInfo> mDisplayTDMInfo;
+        std::map<std::pair<int32_t, int32_t>, DisplayTDMInfo> mDisplayTDMInfo;
 
         class RotatingLogFileWriter {
         public:
@@ -1561,7 +1693,7 @@ class ExynosDisplay {
             bool chooseOpenedFile();
             void write(const String8& content) {
                 if (mFile) {
-                    fwrite(content.string(), 1, content.size(), mFile);
+                    fwrite(content.c_str(), 1, content.size(), mFile);
                 }
             }
             void flush() {
@@ -1582,7 +1714,7 @@ class ExynosDisplay {
             int32_t mLastFileIndex;
             FILE* mFile;
         };
-        RotatingLogFileWriter mErrLogFileWriter;
+        mutable RotatingLogFileWriter mErrLogFileWriter;
         RotatingLogFileWriter mDebugDumpFileWriter;
         RotatingLogFileWriter mFenceFileWriter;
 
@@ -1597,40 +1729,94 @@ class ExynosDisplay {
             virtual int32_t onConfig(hwc2_config_t __unused cfg) { return 0; }
             virtual int32_t onBrightness(uint32_t __unused dbv) { return 0; }
             virtual int32_t onPowerMode(int32_t __unused mode) { return 0; }
-            virtual int32_t getOperationRate() { return 0; }
+            virtual int32_t getTargetOperationRate() const { return 0; }
         };
 
     public:
         std::unique_ptr<OperationRateManager> mOperationRateManager;
         bool isOperationRateSupported() { return mOperationRateManager != nullptr; }
+        void handleTargetOperationRate();
 
-        class RefreshRateIndicatorHandler : public DrmSysfsEventHandler {
+        bool mHpdStatus;
+
+        virtual void invalidate();
+        virtual bool checkHotplugEventUpdated(bool &hpdStatus);
+        virtual void handleHotplugEvent(bool hpdStatus);
+        virtual void hotplug();
+
+        void contentProtectionUpdated(HdcpLevels hdcpLevels);
+
+        class RefreshRateIndicator {
         public:
-            RefreshRateIndicatorHandler(ExynosDisplay* display);
-            int32_t init();
-            virtual void handleSysfsEvent() override;
-            virtual int getFd() override { return mFd.get(); };
-            bool isIgnoringLastUpdate() { return mIgnoringLastUpdate; }
-            void updateRefreshRate(int refreshRate);
+            virtual ~RefreshRateIndicator() = default;
+            virtual int32_t init() { return NO_ERROR; }
+            virtual int32_t disable() { return NO_ERROR; }
+            virtual void updateRefreshRate(int __unused refreshRate) {}
+            virtual void checkOnPresentDisplay() {}
+            virtual void checkOnSetActiveConfig(int __unused refreshRate) {}
+        };
+
+        class SysfsBasedRRIHandler : public RefreshRateIndicator,
+                                     public DrmSysfsEventHandler,
+                                     public std::enable_shared_from_this<SysfsBasedRRIHandler> {
+        public:
+            SysfsBasedRRIHandler(ExynosDisplay* display);
+            virtual ~SysfsBasedRRIHandler() = default;
+
+            int32_t init() override;
+            int32_t disable() override;
+            void updateRefreshRate(int refreshRate) override;
+            void checkOnPresentDisplay() override;
+
+            void handleSysfsEvent() override;
+            int getFd() override { return mFd.get(); }
 
         private:
             void updateRefreshRateLocked(int refreshRate) REQUIRES(mMutex);
+            void setAllowWakeup(bool enabled);
 
             ExynosDisplay* mDisplay;
             int mLastRefreshRate GUARDED_BY(mMutex);
             nsecs_t mLastCallbackTime GUARDED_BY(mMutex);
             std::atomic_bool mIgnoringLastUpdate = false;
+            bool mCanIgnoreIncreaseUpdate GUARDED_BY(mMutex) = false;
             UniqueFd mFd;
             std::mutex mMutex;
 
             static constexpr auto kRefreshRateStatePathFormat =
                     "/sys/class/backlight/panel%d-backlight/state";
+            static constexpr auto kRefreshRateAllowWakeupStateChangePathFormat =
+                    "/sys/class/backlight/panel%d-backlight/allow_wakeup_by_state_change";
         };
 
-        std::shared_ptr<RefreshRateIndicatorHandler> mRefreshRateIndicatorHandler;
-        int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled);
-        void updateRefreshRateIndicator();
+        class ActiveConfigBasedRRIHandler : public RefreshRateIndicator {
+        public:
+            ActiveConfigBasedRRIHandler(ExynosDisplay* display);
+            virtual ~ActiveConfigBasedRRIHandler() = default;
+
+            int32_t init() override;
+            void updateRefreshRate(int refreshRate) override;
+            void checkOnSetActiveConfig(int refreshRate) override;
+
+        private:
+            void updateVsyncPeriod(int vsyncPeriod);
+
+            ExynosDisplay* mDisplay;
+            int mLastRefreshRate;
+        };
+
+        std::shared_ptr<RefreshRateIndicator> mRefreshRateIndicatorHandler;
+        virtual int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled);
         nsecs_t getLastLayerUpdateTime();
+        bool mUpdateRRIndicatorOnly = false;
+        bool checkUpdateRRIndicatorOnly();
+        bool isUpdateRRIndicatorOnly();
+        virtual void checkPreblendingRequirement(){};
+
+        void resetColorMappingInfoForClientComp();
+        void storePrevValidateCompositionType();
+
+        virtual bool isVrrSupported() const { return false; }
 };
 
 #endif //_EXYNOSDISPLAY_H
