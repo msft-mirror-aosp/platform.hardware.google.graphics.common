@@ -395,12 +395,12 @@ void ExynosVirtualDisplay::setCompositionType()
     size_t CompositionDeviceLayerCount = 0;;
     for (size_t i = 0; i < mLayers.size(); i++) {
         ExynosLayer *layer = mLayers[i];
-        if (layer->mValidateCompositionType == HWC2_COMPOSITION_CLIENT ||
-            layer->mValidateCompositionType == HWC2_COMPOSITION_INVALID) {
+        if (layer->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT ||
+            layer->getValidateCompositionType() == HWC2_COMPOSITION_INVALID) {
             compositionClientLayerCount++;
         }
-        if (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE ||
-            layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS) {
+        if (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE ||
+            layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS) {
             CompositionDeviceLayerCount++;
         }
     }
@@ -465,14 +465,14 @@ void ExynosVirtualDisplay::setDrmMode()
     mIsSecureDRM = false;
     for (size_t i = 0; i < mLayers.size(); i++) {
         ExynosLayer *layer = mLayers[i];
-        if ((layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE ||
-            layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS) &&
+        if ((layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE ||
+             layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS) &&
             layer->mLayerBuffer && getDrmMode(layer->mLayerBuffer) == SECURE_DRM) {
             mIsSecureDRM = true;
             DISPLAY_LOGD(eDebugVirtualDisplay, "include secure drm layer");
         }
-        if ((layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE ||
-            layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS) &&
+        if ((layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE ||
+             layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS) &&
             layer->mLayerBuffer && getDrmMode(layer->mLayerBuffer) == NORMAL_DRM) {
             mIsNormalDRM = true;
             DISPLAY_LOGD(eDebugVirtualDisplay, "include normal drm layer");
@@ -486,7 +486,7 @@ void ExynosVirtualDisplay::handleSkipFrame()
     mIsSkipFrame = true;
     for (size_t i = 0; i < mLayers.size(); i++) {
         ExynosLayer *layer = mLayers[i];
-        layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
+        layer->updateValidateCompositionType(HWC2_COMPOSITION_DEVICE);
     }
     mIsSecureDRM = false;
     mIsNormalDRM = false;
@@ -500,8 +500,8 @@ void ExynosVirtualDisplay::handleAcquireFence()
     /* handle fence of DEVICE or EXYNOS composition layers */
     for (size_t i = 0; i < mLayers.size(); i++) {
         ExynosLayer *layer = mLayers[i];
-        if (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE ||
-            layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS) {
+        if (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE ||
+            layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS) {
             layer->mReleaseFence = layer->mAcquireFence;
             setFenceInfo(layer->mAcquireFence, this, FENCE_TYPE_SRC_ACQUIRE, FENCE_IP_LAYER,
                          HwcFenceDirection::TO);

@@ -218,7 +218,7 @@ bool ExynosExternalDisplay::handleRotate()
             layer->mOverlayInfo = eSkipRotateAnim;
             for (size_t j = 0; j < mLayers.size(); j++) {
                 ExynosLayer *skipLayer = mLayers[j];
-                skipLayer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
+                skipLayer->updateValidateCompositionType(HWC2_COMPOSITION_DEVICE);
             }
             mIsSkipFrame = true;
             return true;
@@ -293,9 +293,10 @@ int32_t ExynosExternalDisplay::validateDisplay(
         uint32_t changed_count = 0;
         for (size_t i = 0; i < mLayers.size(); i++) {
             ExynosLayer *layer = mLayers[i];
-            if (layer && (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE ||
-                layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS)) {
-                layer->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+            if (layer &&
+                (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE ||
+                 layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS)) {
+                layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT, eSkipStartFrame);
                 layer->mReleaseFence = layer->mAcquireFence;
                 changed_count++;
             }

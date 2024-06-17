@@ -455,6 +455,11 @@ void ExynosDevice::dump(String8 &result) {
     }
     result.append("\n");
 
+    for (size_t i = 0; i < mDisplays.size(); i++) {
+        ExynosDisplay* display = mDisplays[i];
+        if (display->mPlugState == true) display->miniDump(result);
+    }
+
     for (size_t i = 0;i < mDisplays.size(); i++) {
         ExynosDisplay *display = mDisplays[i];
         if (display->mPlugState == true)

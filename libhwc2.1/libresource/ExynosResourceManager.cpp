@@ -490,17 +490,15 @@ int32_t ExynosResourceManager::setResourcePriority(ExynosDisplay *display)
 
     for (uint32_t i = 0; i < display->mLayers.size(); i++) {
         ExynosLayer *layer = display->mLayers[i];
-        if ((layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) &&
-            (layer->mM2mMPP != NULL) &&
-            (layer->mM2mMPP->mPhysicalType == MPP_G2D) &&
+        if ((layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE) &&
+            (layer->mM2mMPP != NULL) && (layer->mM2mMPP->mPhysicalType == MPP_G2D) &&
             ((check_ret = layer->mM2mMPP->prioritize(2)) != NO_ERROR)) {
             if (check_ret < 0) {
                 HWC_LOGE(display, "Fail to set exynoscomposition priority(%d)", ret);
             } else {
                 m2mMPP = layer->mM2mMPP;
                 layer->resetAssignedResource();
-                layer->mOverlayInfo |= eResourcePendingWork;
-                layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
+                layer->updateValidateCompositionType(HWC2_COMPOSITION_DEVICE, eResourcePendingWork);
                 ret = EXYNOS_ERROR_CHANGED;
                 HDEBUGLOGD(eDebugResourceManager, "\t%s is reserved without display because of panding work",
                         m2mMPP->mName.c_str());
@@ -528,8 +526,8 @@ int32_t ExynosResourceManager::setResourcePriority(ExynosDisplay *display)
                     for (uint32_t i = firstIndex; i <= lastIndex; i++) {
                         ExynosLayer *layer = display->mLayers[i];
                         layer->resetAssignedResource();
-                        layer->mOverlayInfo |= eResourcePendingWork;
-                        layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
+                        layer->updateValidateCompositionType(HWC2_COMPOSITION_DEVICE,
+                                                             eResourcePendingWork);
                         layer->mCheckMPPFlag[m2mMPP->mLogicalType] = eMPPHWBusy;
                     }
                 }
@@ -562,8 +560,7 @@ int32_t ExynosResourceManager::assignResourceInternal(ExynosDisplay *display)
     for (uint32_t i = 0; i < display->mLayers.size(); i++) {
         ExynosLayer *layer = display->mLayers[i];
         if (layer->mCompositionType == HWC2_COMPOSITION_CLIENT) {
-            layer->mOverlayInfo |= eSkipLayer;
-            layer->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+            layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT, eForceBySF);
             if (((ret = display->addClientCompositionLayer(i)) != NO_ERROR) &&
                  (ret != EXYNOS_ERROR_CHANGED)) {
                 HWC_LOGE(display, "Handle HWC2_COMPOSITION_CLIENT type layers, but addClientCompositionLayer failed (%d)", ret);
@@ -614,8 +611,7 @@ int32_t ExynosResourceManager::assignResourceInternal(ExynosDisplay *display)
                 for (uint32_t i = firstIndex; i <= lastIndex; i++) {
                     ExynosLayer *layer = display->mLayers[i];
                     layer->resetAssignedResource();
-                    layer->mOverlayInfo |= eInsufficientMPP;
-                    layer->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+                    layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT, eInsufficientMPP);
                     if (((ret = display->addClientCompositionLayer(i)) != NO_ERROR) &&
                         (ret != EXYNOS_ERROR_CHANGED)) {
                         HWC_LOGE(display, "Change compositionTypes to HWC2_COMPOSITION_CLIENT, but addClientCompositionLayer failed (%d)", ret);
@@ -699,7 +695,8 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                     if ((layer->mSupportedMPPFlag & m2mMPP->mLogicalType) != 0)
                         isAssignableState = isAssignable(m2mMPP, display, src_img, dst_img, layer);
 
-                    bool canChange = (layer->mValidateCompositionType != HWC2_COMPOSITION_CLIENT) &&
+                    bool canChange =
+                            (layer->getValidateCompositionType() != HWC2_COMPOSITION_CLIENT) &&
                             ((display->mDisplayControl.cursorSupport == false) ||
                              (layer->mCompositionType != HWC2_COMPOSITION_CURSOR)) &&
                             (layer->mSupportedMPPFlag & m2mMPP->mLogicalType) && isAssignableState;
@@ -707,11 +704,10 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                     HDEBUGLOGD(eDebugResourceAssigning,
                                "\tlayer[%d] type: %d, 0x%8x, isAssignable: %d, canChange: %d, "
                                "remainNum(%d)",
-                               i, layer->mValidateCompositionType, layer->mSupportedMPPFlag,
+                               i, layer->getValidateCompositionType(), layer->mSupportedMPPFlag,
                                isAssignableState, canChange, remainNum);
                     if (canChange) {
                         layer->resetAssignedResource();
-                        layer->mOverlayInfo |= eUpdateExynosComposition;
                         if ((ret = m2mMPP->assignMPP(display, layer)) != NO_ERROR)
                         {
                             ALOGE("%s:: %s MPP assignMPP() error (%d)",
@@ -721,7 +717,8 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                         layer->setExynosMidImage(dst_img);
                         float totalUsedCapacity = getResourceUsedCapa(*m2mMPP);
                         display->addExynosCompositionLayer(i, totalUsedCapacity);
-                        layer->mValidateCompositionType = HWC2_COMPOSITION_EXYNOS;
+                        layer->updateValidateCompositionType(HWC2_COMPOSITION_EXYNOS,
+                                                             eUpdateExynosComposition);
                         remainNum--;
                     }
                     if ((canChange == false) || (remainNum == 0))
@@ -739,7 +736,8 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                     if ((layer->mSupportedMPPFlag & m2mMPP->mLogicalType) != 0)
                         isAssignableState = isAssignable(m2mMPP, display, src_img, dst_img, layer);
 
-                    bool canChange = (layer->mValidateCompositionType != HWC2_COMPOSITION_CLIENT) &&
+                    bool canChange =
+                            (layer->getValidateCompositionType() != HWC2_COMPOSITION_CLIENT) &&
                             ((display->mDisplayControl.cursorSupport == false) ||
                              (layer->mCompositionType != HWC2_COMPOSITION_CURSOR)) &&
                             (layer->mSupportedMPPFlag & m2mMPP->mLogicalType) && isAssignableState;
@@ -747,7 +745,7 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                     HDEBUGLOGD(eDebugResourceAssigning,
                                "\tlayer[%d] type: %d, 0x%8x, isAssignable: %d, canChange: %d, "
                                "remainNum(%d)",
-                               i, layer->mValidateCompositionType, layer->mSupportedMPPFlag,
+                               i, layer->getValidateCompositionType(), layer->mSupportedMPPFlag,
                                isAssignableState, canChange, remainNum);
                     if (canChange) {
                         layer->resetAssignedResource();
@@ -761,7 +759,7 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
                         layer->setExynosMidImage(dst_img);
                         float totalUsedCapacity = getResourceUsedCapa(*m2mMPP);
                         display->addExynosCompositionLayer(i, totalUsedCapacity);
-                        layer->mValidateCompositionType = HWC2_COMPOSITION_EXYNOS;
+                        layer->updateValidateCompositionType(HWC2_COMPOSITION_EXYNOS);
                         remainNum--;
                     }
                     if ((canChange == false) || (remainNum == 0))
@@ -788,7 +786,7 @@ int32_t ExynosResourceManager::updateExynosComposition(ExynosDisplay *display)
             ExynosLayer* layer = display->mLayers[display->mExynosCompositionInfo.mFirstIndex];
             if (layer->mSupportedMPPFlag & otfMPP->mLogicalType) {
                 layer->resetAssignedResource();
-                layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
+                layer->updateValidateCompositionType(HWC2_COMPOSITION_DEVICE);
                 display->mExynosCompositionInfo.initializeInfos(display);
                 // reset otfMPP
                 if ((ret = otfMPP->resetAssignedState()) != NO_ERROR)
@@ -839,7 +837,7 @@ int32_t ExynosResourceManager::changeLayerFromClientToDevice(ExynosDisplay* disp
         HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", layer_index,
                    m2mMPP->mName.c_str());
     }
-    layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
+    layer->updateValidateCompositionType(HWC2_COMPOSITION_DEVICE);
     display->mWindowNumUsed++;
     HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: mWindowNumUsed(%d)", layer_index,
                display->mWindowNumUsed);
@@ -875,7 +873,7 @@ int32_t ExynosResourceManager::updateClientComposition(ExynosDisplay *display)
         int32_t compositionType = 0;
         ExynosLayer *layer = display->mLayers[i];
         if ((layer->mOverlayPriority >= ePriorityHigh) &&
-            (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE)) {
+            (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE)) {
             display->mClientCompositionInfo.mFirstIndex++;
             continue;
         }
@@ -906,7 +904,7 @@ int32_t ExynosResourceManager::updateClientComposition(ExynosDisplay *display)
         int32_t compositionType = 0;
         ExynosLayer *layer = display->mLayers[i];
         if ((layer->mOverlayPriority >= ePriorityHigh) &&
-            (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE)) {
+            (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE)) {
             display->mClientCompositionInfo.mLastIndex--;
             continue;
         }
@@ -1079,8 +1077,7 @@ int32_t ExynosResourceManager::validateLayer(uint32_t index, ExynosDisplay *disp
         return eReallocOnGoingForDDI;
     }
 
-    if (layer->mCompositionType == HWC2_COMPOSITION_CLIENT)
-        return eSkipLayer;
+    if (layer->mCompositionType == HWC2_COMPOSITION_CLIENT) return eForceBySF;
 
 #ifndef HWC_SUPPORT_COLOR_TRANSFORM
     if (display->mColorTransformHint != HAL_COLOR_TRANSFORM_IDENTITY) {
@@ -1649,8 +1646,8 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
         uint32_t validateFlag = 0;
         int32_t compositionType = 0;
 
-        if ((layer->mValidateCompositionType == HWC2_COMPOSITION_CLIENT) ||
-            (layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS))
+        if ((layer->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT) ||
+            (layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS))
             continue;
         if (layer->mOverlayPriority != priority)
             continue;
@@ -1665,7 +1662,7 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
         // TODO: call validate function for RCD layer
         if (layer->mCompositionType == HWC2_COMPOSITION_DISPLAY_DECORATION &&
             validateRCDLayer(*display, *layer, i, src_img, dst_img) == NO_ERROR) {
-            layer->mValidateCompositionType = HWC2_COMPOSITION_DISPLAY_DECORATION;
+            layer->updateValidateCompositionType(HWC2_COMPOSITION_DISPLAY_DECORATION);
             continue;
         }
 
@@ -1692,7 +1689,7 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
                 HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", i,
                            m2mMPP->mName.c_str());
             }
-            layer->mValidateCompositionType = compositionType;
+            layer->updateValidateCompositionType(compositionType, validateFlag);
             display->mWindowNumUsed++;
             HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: mWindowNumUsed(%d)", i,
                        display->mWindowNumUsed);
@@ -1709,7 +1706,7 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
                 HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: %s MPP is assigned", i,
                            m2mMPP->mName.c_str());
             }
-            layer->mValidateCompositionType = compositionType;
+            layer->updateValidateCompositionType(compositionType, validateFlag);
 
             HDEBUGLOGD(eDebugResourceAssigning, "\t\t[%d] layer: exynosComposition", i);
             /* G2D composition */
@@ -1743,12 +1740,12 @@ int32_t ExynosResourceManager::assignLayers(ExynosDisplay * display, uint32_t pr
             }
 
             /* Fail to assign resource, set HWC2_COMPOSITION_CLIENT */
-            if (validateFlag != NO_ERROR)
-                layer->mOverlayInfo |= validateFlag;
-            else
-                layer->mOverlayInfo |= eMPPUnsupported;
+            if (validateFlag != NO_ERROR) {
+                layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT, validateFlag);
+            } else {
+                layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT, eMPPUnsupported);
+            }
 
-            layer->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
             if (((ret = display->addClientCompositionLayer(i)) == EXYNOS_ERROR_CHANGED) ||
                 (ret < 0))
                 return ret;
@@ -1787,15 +1784,15 @@ int32_t ExynosResourceManager::assignWindow(ExynosDisplay *display)
     for (uint32_t i = 0; i < display->mLayers.size(); i++) {
         ExynosLayer *layer = display->mLayers[i];
         HDEBUGLOGD(eDebugResourceAssigning, "\t[%d] layer type: %d", i,
-                   layer->mValidateCompositionType);
+                   layer->getValidateCompositionType());
 
-        if (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) {
+        if (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE) {
             layer->mWindowIndex = windowIndex;
             HDEBUGLOGD(eDebugResourceManager, "\t\t[%d] layer windowIndex: %d", i, windowIndex);
-        } else if ((layer->mValidateCompositionType == HWC2_COMPOSITION_CLIENT) ||
-                   (layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS)) {
+        } else if ((layer->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT) ||
+                   (layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS)) {
             ExynosCompositionInfo *compositionInfo;
-            if (layer->mValidateCompositionType == HWC2_COMPOSITION_CLIENT)
+            if (layer->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT)
                 compositionInfo = &display->mClientCompositionInfo;
             else
                 compositionInfo = &display->mExynosCompositionInfo;
@@ -1816,12 +1813,12 @@ int32_t ExynosResourceManager::assignWindow(ExynosDisplay *display)
             compositionInfo->mWindowIndex = windowIndex;
             HDEBUGLOGD(eDebugResourceManager, "\t\t[%d] %s Composition windowIndex: %d",
                     i, compositionInfo->getTypeStr().c_str(), windowIndex);
-        } else if (layer->mValidateCompositionType == HWC2_COMPOSITION_DISPLAY_DECORATION) {
+        } else if (layer->getValidateCompositionType() == HWC2_COMPOSITION_DISPLAY_DECORATION) {
             layer->mWindowIndex = -1;
             continue;
         } else {
             HWC_LOGE(display, "%s:: Invalid layer compositionType layer(%d), compositionType(%d)",
-                    __func__, i, layer->mValidateCompositionType);
+                     __func__, i, layer->getValidateCompositionType());
             continue;
         }
         windowIndex++;
