@@ -29,7 +29,7 @@ namespace android::hardware::graphics::composer {
 struct VideoFrameRateCalculatorParameters {
     VideoFrameRateCalculatorParameters() {
         mPeriodParams.mAlwaysCallback = true;
-        mPeriodParams.mConfidencePercentage = 95;
+        mPeriodParams.mConfidencePercentage = 50;
     }
 
     int mDelta = 5;
@@ -62,14 +62,14 @@ public:
 
     void setEnabled(bool isEnabled) final;
 
-    void setMinFrameInterval(int64_t minFrameIntervalNs) final;
+    void setVrrConfigAttributes(int64_t vsyncPeriodNs, int64_t minFrameIntervalNs) final;
 
 private:
     int onReportRefreshRate(int);
 
     void setNewRefreshRate(int newRefreshRate);
 
-    std::unique_ptr<RefreshRateCalculator> mRefreshRateCalculator;
+    std::shared_ptr<RefreshRateCalculator> mRefreshRateCalculator;
 
     EventQueue* mEventQueue;
     VideoFrameRateCalculatorParameters mParams;
