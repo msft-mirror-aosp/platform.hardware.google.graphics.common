@@ -123,6 +123,9 @@ class HalImpl : public IComposerHal {
       int32_t setLayerBlendMode(int64_t display, int64_t layer, common::BlendMode mode) override;
       int32_t setLayerBuffer(int64_t display, int64_t layer, buffer_handle_t buffer,
                              const ndk::ScopedFileDescriptor& acquireFence) override;
+      int32_t uncacheLayerBuffers(int64_t display, int64_t layer,
+                                  const std::vector<buffer_handle_t>& buffers,
+                                  std::vector<buffer_handle_t>& outClearableBuffers) override;
       int32_t setLayerColor(int64_t display, int64_t layer, Color color) override;
       int32_t setLayerColorTransform(int64_t display, int64_t layer,
                                      const std::vector<float>& matrix) override;
@@ -156,6 +159,7 @@ class HalImpl : public IComposerHal {
       int32_t setOutputBuffer(int64_t display, buffer_handle_t buffer,
                               const ndk::ScopedFileDescriptor& releaseFence) override;
       int32_t setPowerMode(int64_t display, PowerMode mode) override;
+      int32_t getPowerMode(int64_t display, std::optional<PowerMode>& outMode) override;
       int32_t setReadbackBuffer(int64_t display, buffer_handle_t buffer,
                                 const ndk::ScopedFileDescriptor& releaseFence) override;
       int32_t setVsyncEnabled(int64_t display, bool enabled) override;
