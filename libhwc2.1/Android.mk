@@ -85,7 +85,7 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libhardware \
 
 LOCAL_SHARED_LIBRARIES += android.hardware.graphics.composer3-V3-ndk \
                           android.hardware.drm-V1-ndk \
-                          com.google.hardware.pixel.display-V10-ndk \
+                          com.google.hardware.pixel.display-V12-ndk \
                           android.frameworks.stats-V2-ndk \
                           libpixelatoms_defs \
                           pixelatoms-cpp \
@@ -136,6 +136,7 @@ LOCAL_SRC_FILES := \
 	libdevice/ExynosDevice.cpp \
 	libdevice/ExynosLayer.cpp \
 	libdevice/HistogramDevice.cpp \
+	libdevice/DisplayTe2Manager.cpp \
 	libmaindisplay/ExynosPrimaryDisplay.cpp \
 	libresource/ExynosMPP.cpp \
 	libresource/ExynosResourceManager.cpp \
@@ -145,16 +146,22 @@ LOCAL_SRC_FILES := \
 	libdisplayinterface/ExynosDisplayInterface.cpp \
 	libdisplayinterface/ExynosDeviceDrmInterface.cpp \
 	libdisplayinterface/ExynosDisplayDrmInterface.cpp \
-	libvrr/DisplayStateResidencyWatcher.cpp \
-	libvrr/VariableRefreshRateController.cpp \
 	libvrr/display/common/CommonDisplayContextProvider.cpp \
 	libvrr/display/exynos/ExynosDisplayContextProvider.cpp \
+	libvrr/Power/PowerStatsPresentProfileTokenGenerator.cpp \
+	libvrr/Power/DisplayStateResidencyProvider.cpp \
+	libvrr/Power/DisplayStateResidencyWatcher.cpp \
+	libvrr/FileNode.cpp \
 	libvrr/RefreshRateCalculator/InstantRefreshRateCalculator.cpp \
+	libvrr/RefreshRateCalculator/ExitIdleRefreshRateCalculator.cpp \
 	libvrr/RefreshRateCalculator/PeriodRefreshRateCalculator.cpp \
 	libvrr/RefreshRateCalculator/CombinedRefreshRateCalculator.cpp \
 	libvrr/RefreshRateCalculator/RefreshRateCalculatorFactory.cpp \
 	libvrr/RefreshRateCalculator/VideoFrameRateCalculator.cpp \
+	libvrr/Statistics/VariableRefreshRateStatistic.cpp \
 	libvrr/Utils.cpp \
+	libvrr/VariableRefreshRateController.cpp \
+	libvrr/VariableRefreshRateVersion.cpp \
 	pixel-display.cpp \
 	pixelstats-display.cpp \
 	histogram_mediator.cpp
@@ -213,7 +220,7 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libutils libbinder libexynosdisplay l
 	android.hardware.graphics.composer3-V3-ndk \
 	android.hardware.drm-V1-ndk
 
-LOCAL_SHARED_LIBRARIES += com.google.hardware.pixel.display-V10-ndk \
+LOCAL_SHARED_LIBRARIES += com.google.hardware.pixel.display-V12-ndk \
                           android.frameworks.stats-V2-ndk \
                           libpixelatoms_defs \
                           pixelatoms-cpp \
@@ -294,7 +301,7 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libutils libexynosdisplay libacryl \
 
 LOCAL_SHARED_LIBRARIES += android.hardware.graphics.composer3-V3-ndk \
                           android.hardware.drm-V1-ndk \
-                          com.google.hardware.pixel.display-V10-ndk \
+                          com.google.hardware.pixel.display-V12-ndk \
                           android.frameworks.stats-V2-ndk \
                           libpixelatoms_defs \
                           pixelatoms-cpp \

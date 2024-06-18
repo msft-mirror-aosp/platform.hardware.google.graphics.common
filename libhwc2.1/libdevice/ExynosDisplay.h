@@ -39,12 +39,15 @@
 #include "drmeventlistener.h"
 #include "worker.h"
 
+#include "../libvrr/interface/VariableRefreshRateInterface.h"
+
 #define HWC_CLEARDISPLAY_WITH_COLORMAP
 #define HWC_PRINT_FRAME_NUM     10
 
 #define LOW_FPS_THRESHOLD     5
 
 using ::aidl::android::hardware::drm::HdcpLevels;
+using ::android::hardware::graphics::composer::RefreshRateChangeListener;
 using ::android::hardware::graphics::composer::V2_4::VsyncPeriodNanos;
 using namespace std::chrono_literals;
 
@@ -60,6 +63,7 @@ class ExynosDevice;
 class ExynosMPP;
 class ExynosMPPSource;
 class HistogramController;
+class DisplayTe2Manager;
 
 namespace aidl {
 namespace google {
@@ -288,7 +292,7 @@ class ExynosSortedLayer : public Vector <ExynosLayer*>
     public:
         ssize_t remove(const ExynosLayer *item);
         status_t vector_sort();
-        static int compare(ExynosLayer * const *lhs, ExynosLayer *const *rhs);
+        static int compare(void const *lhs, void const *rhs);
 };
 
 class DisplayTDMInfo {
@@ -364,20 +368,32 @@ typedef struct NotifyExpectedPresentConfig {
 
 typedef struct VrrConfig {
     bool isFullySupported = false;
-    bool isNsMode = false;
     int vsyncPeriodNs = 0;
     int minFrameIntervalNs = 0;
     std::optional<std::vector<FrameIntervalPowerHint_t>> frameIntervalPowerHint;
     std::optional<NotifyExpectedPresentConfig_t> notifyExpectedPresentConfig;
 } VrrConfig_t;
 
-typedef struct VrrSettings {
-    bool enabled;
+typedef struct XrrSettings {
+    android::hardware::graphics::composer::XrrVersionInfo_t versionInfo;
     NotifyExpectedPresentConfig_t notifyExpectedPresentConfig;
     std::function<void(int)> configChangeCallback;
-} VrrSettings_t;
+} XrrSettings_t;
 
 typedef struct displayConfigs {
+    std::string toString() const {
+        std::ostringstream os;
+        os << "vsyncPeriod = " << vsyncPeriod;
+        os << ", w = " << width;
+        os << ", h = " << height;
+        os << ", Xdpi = " << Xdpi;
+        os << ", Ydpi = " << Ydpi;
+        os << ", groupId = " << groupId;
+        os << (isNsMode ? ", NS " : ", HS ");
+        os << ", refreshRate = " << refreshRate;
+        return os.str();
+    }
+
     // HWC2_ATTRIBUTE_VSYNC_PERIOD
     VsyncPeriodNanos vsyncPeriod;
     // HWC2_ATTRIBUTE_WIDTH
@@ -394,6 +410,7 @@ typedef struct displayConfigs {
     std::optional<VrrConfig_t> vrrConfig;
 
     /* internal use */
+    bool isNsMode = false;
     bool isOperationRateToBts;
     int32_t refreshRate;
 } displayConfigs_t;
@@ -575,6 +592,8 @@ class ExynosDisplay {
 
         /* For histogram */
         std::unique_ptr<HistogramController> mHistogramController;
+
+        std::unique_ptr<DisplayTe2Manager> mDisplayTe2Manager;
 
         /* For debugging */
         hwc_display_contents_1_t *mHWC1LayerList;
@@ -844,6 +863,8 @@ class ExynosDisplay {
          */
         virtual int32_t setPowerMode(
                 int32_t /*hwc2_power_mode_t*/ mode);
+
+        virtual std::optional<hwc2_power_mode_t> getPowerMode() { return mPowerModeState; }
 
         /* setVsyncEnabled(..., enabled)
          * Descriptor: HWC2_FUNCTION_SET_VSYNC_ENABLED
@@ -1224,6 +1245,9 @@ class ExynosDisplay {
         /* This function is called by ExynosDisplayInterface class to set acquire fence*/
         int32_t setReadbackBufferAcqFence(int32_t acqFence);
 
+        int32_t uncacheLayerBuffers(ExynosLayer* layer, const std::vector<buffer_handle_t>& buffers,
+                                    std::vector<buffer_handle_t>& outClearableBuffers);
+
         virtual void dump(String8& result);
         void dumpLocked(String8& result) REQUIRES(mDisplayMutex);
         void dumpAllBuffers() REQUIRES(mDisplayMutex);
@@ -1349,6 +1373,13 @@ class ExynosDisplay {
                 int __unused timeoutNs,
                 const std::vector<std::pair<uint32_t, uint32_t>>& __unused settings) {
             return HWC2_ERROR_UNSUPPORTED;
+        }
+
+        virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
+
+        virtual int32_t registerRefreshRateChangeListener(
+                std::shared_ptr<RefreshRateChangeListener> listener) {
+            return NO_ERROR;
         }
 
     protected:
@@ -1710,7 +1741,7 @@ class ExynosDisplay {
 
         bool mHpdStatus;
 
-        void invalidate();
+        virtual void invalidate();
         virtual bool checkHotplugEventUpdated(bool &hpdStatus);
         virtual void handleHotplugEvent(bool hpdStatus);
         virtual void hotplug();
@@ -1777,13 +1808,17 @@ class ExynosDisplay {
         };
 
         std::shared_ptr<RefreshRateIndicator> mRefreshRateIndicatorHandler;
-        int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled);
+        virtual int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled);
         nsecs_t getLastLayerUpdateTime();
-        bool needUpdateRRIndicator();
+        bool mUpdateRRIndicatorOnly = false;
+        bool checkUpdateRRIndicatorOnly();
+        bool isUpdateRRIndicatorOnly();
         virtual void checkPreblendingRequirement(){};
 
         void resetColorMappingInfoForClientComp();
         void storePrevValidateCompositionType();
+
+        virtual bool isVrrSupported() const { return false; }
 };
 
 #endif //_EXYNOSDISPLAY_H
