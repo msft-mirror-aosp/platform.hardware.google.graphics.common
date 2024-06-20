@@ -644,6 +644,7 @@ class ExynosDisplayDrmInterface :
         const uint8_t kEDIDProductIDByte2 = 11;
         uint32_t mManufacturerInfo;
         uint32_t mProductId;
+        bool mIsFirstClean = true;
 
     public:
         virtual bool readHotplugStatus();
