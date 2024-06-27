@@ -1214,6 +1214,68 @@ std::string TableBuilder::build() {
     return output;
 }
 
+std::string TableBuilder::buildForMiniDump() {
+    std::stringstream splitter, header;
+    std::vector<std::stringstream> contents;
+    splitter << "|";
+    header << "|";
+    if (kToVs.size()) {
+        contents.resize(kToVs.begin()->second.size());
+        for (auto& content : contents) content << "|";
+    }
+
+    for (const auto& key : keys) {
+        auto& values = kToVs[key];
+        auto max_value_iter = std::max_element(values.begin(), values.end(),
+                                               [](const std::string& a, const std::string& b) {
+                                                   return a.size() < b.size();
+                                               });
+        const int size = max_value_iter != values.end()
+                ? std::max(key.size(), max_value_iter->size())
+                : key.size();
+        splitter << std::string(size, '-') << "+";
+        header << buildPaddedString(key, size) << "|";
+        for (size_t i = 0; i < values.size(); ++i) {
+            contents[i] << buildPaddedString(values[i], size) << "|";
+        }
+    }
+
+    std::string output = splitter.str() + "\n" + header.str() + "\n";
+    for (auto& content : contents) {
+        output += splitter.str() + "\n" + content.str() + "\n";
+    }
+    output += splitter.str() + "\n";
+    return output;
+}
+
+TableBuilder& TableBuilder::addKeyValue(const std::string& key, const uint64_t& value, bool toHex) {
+    recordKeySequence(key);
+    std::stringstream v;
+    if (toHex)
+        v << "0x" << std::hex << value;
+    else
+        v << value;
+    kToVs[key].emplace_back(v.str());
+    return *this;
+}
+
+TableBuilder& TableBuilder::addKeyValue(const std::string& key, const std::vector<uint64_t>& values,
+                                        bool toHex) {
+    recordKeySequence(key);
+    std::stringstream value;
+    for (int i = 0; i < values.size(); i++) {
+        if (i) value << ", ";
+
+        if (toHex)
+            value << "0x" << std::hex << values[i];
+        else
+            value << values[i];
+    }
+
+    kToVs[key].emplace_back(value.str());
+    return *this;
+}
+
 std::string TableBuilder::buildPaddedString(const std::string& str, int size) {
     int totalPadding = size - str.size();
     int leftPadding = totalPadding / 2.0;
