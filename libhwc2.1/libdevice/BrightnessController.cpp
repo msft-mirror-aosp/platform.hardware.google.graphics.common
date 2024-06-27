@@ -46,21 +46,21 @@ void BrightnessController::LinearBrightnessTable::Init(const struct brightness_c
     mIsValid = true;
 }
 
+// cannot use linear interpolation between brightness and dbv because they have
+// a bilinear relationship
 std::optional<uint32_t> BrightnessController::LinearBrightnessTable::BrightnessToDbv(
         float brightness) const {
     BrightnessMode bm = GetBrightnessMode(brightness);
-    if (bm == BrightnessMode::BM_MAX) {
+    if (bm == BrightnessMode::BM_INVALID) {
         return std::nullopt;
     }
-    const auto& range = mBrightnessRanges.at(bm);
-    float dbv = 0.0;
 
-    dbv = LinearInterpolation(brightness, range.brightness_min, range.brightness_max, range.dbv_min,
-                              range.dbv_max);
-    if (isnan(dbv) || dbv < 0) {
+    std::optional<float> nits = BrightnessToNits(brightness, bm);
+    if (nits == std::nullopt) {
         return std::nullopt;
     }
-    return lround(dbv);
+
+    return NitsToDbv(bm, nits.value());
 }
 
 std::optional<float> BrightnessController::LinearBrightnessTable::NitsToBrightness(

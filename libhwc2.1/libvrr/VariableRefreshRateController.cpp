@@ -242,6 +242,9 @@ void VariableRefreshRateController::setActiveVrrConfiguration(hwc2_config_t conf
             LOG(ERROR) << "VrrController: Set an undefined active configuration";
             return;
         }
+        const auto oldMaxFrameRate =
+                durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
+        mVrrActiveConfig = config;
         // If the minimum refresh rate is active and the maximum refresh rate timeout is set,
         // also we are stay at the maximum refresh rate, any change in the active configuration
         // needs to reconfigure the maximum refresh rate according to the newly activated
@@ -256,8 +259,6 @@ void VariableRefreshRateController::setActiveVrrConfiguration(hwc2_config_t conf
                     LOG(WARNING) << "VrrController: write file node error, command = " << command;
                 }
                 onRefreshRateChangedInternal(newMaxFrameRate);
-                const auto& oldMaxFrameRate =
-                        durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
                 LOG(INFO) << "VrrController: update maximum refresh rate from " << oldMaxFrameRate
                           << " to " << newMaxFrameRate;
             } else {
@@ -267,7 +268,6 @@ void VariableRefreshRateController::setActiveVrrConfiguration(hwc2_config_t conf
                            << " , mMaximumRefreshRateTimeoutNs = " << mMaximumRefreshRateTimeoutNs;
             }
         }
-        mVrrActiveConfig = config;
         if (mVariableRefreshRateStatistic) {
             mVariableRefreshRateStatistic
                     ->setActiveVrrConfiguration(config,
@@ -696,15 +696,16 @@ void VariableRefreshRateController::onPresent(int fence) {
                               mVrrConfigs[mVrrActiveConfig].notifyExpectedPresentConfig->TimeoutNs);
         }
         if (shouldHandleVendorRenderingTimeout()) {
-            // Post next frame insertion event.
-            auto vendorPresentTimeoutNs = mRecord.mPendingCurrentPresentTime.value().mTime +
-                    (mVendorPresentTimeoutOverride
-                             ? mVendorPresentTimeoutOverride.value().mTimeoutNs
-                             : std::max(static_cast<int64_t>(
-                                                mRecord.mPendingCurrentPresentTime.value()
-                                                        .mDuration),
-                                        kDefaultVendorPresentTimeoutNs));
-            postEvent(VrrControllerEventType::kVendorRenderingTimeout, vendorPresentTimeoutNs);
+            auto presentTimeoutNs = mVendorPresentTimeoutOverride
+                    ? mVendorPresentTimeoutOverride.value().mTimeoutNs
+                    : mPresentTimeoutEventHandler->getPresentTimeoutNs();
+            // If |presentTimeoutNs| == 0, we don't need to handle the present timeout. Otherwise,
+            // post the next frame insertion event
+            if (presentTimeoutNs) {
+                // Convert the relative time clock from now to the absolute steady time clock.
+                presentTimeoutNs = getSteadyClockTimeNs() + presentTimeoutNs;
+                postEvent(VrrControllerEventType::kVendorRenderingTimeout, presentTimeoutNs);
+            }
         }
         mRecord.mPendingCurrentPresentTime = std::nullopt;
     }
