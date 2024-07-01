@@ -75,13 +75,6 @@ typedef struct pre_processed_layer_info
     uint32_t mPrivateFormat = 0;
 } pre_processed_layer_info_t;
 
-enum {
-    HWC2_COMPOSITION_DISPLAY_DECORATION = toUnderlying(Composition::DISPLAY_DECORATION),
-    HWC2_COMPOSITION_REFRESH_RATE_INDICATOR = toUnderlying(Composition::REFRESH_RATE_INDICATOR),
-    /*add after hwc2_composition_t, margin number here*/
-    HWC2_COMPOSITION_EXYNOS = 32,
-};
-
 class ExynosLayer : public ExynosMPPSource {
     public:
 
@@ -111,10 +104,18 @@ class ExynosLayer : public ExynosMPPSource {
          */
         int32_t mExynosCompositionType;
 
+    private:
         /**
          * Validated compositionType
          */
         int32_t mValidateCompositionType;
+
+    public:
+        void updateValidateCompositionType(const int32_t& type, const int32_t& ovlInfo = 0) {
+            mValidateCompositionType = type;
+            mOverlayInfo |= ovlInfo;
+        }
+        int32_t getValidateCompositionType() const { return mValidateCompositionType; }
 
         /**
          * The last validated composition type
@@ -476,6 +477,7 @@ class ExynosLayer : public ExynosMPPSource {
 
         void resetValidateData();
         virtual void dump(String8& result);
+        virtual void miniDump(TableBuilder& tb);
         void printLayer();
         int32_t setSrcExynosImage(exynos_image *src_img);
         int32_t setDstExynosImage(exynos_image *dst_img);
