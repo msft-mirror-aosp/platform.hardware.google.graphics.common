@@ -16,11 +16,17 @@
 
 #pragma once
 
+#include <android-base/thread_annotations.h>
+
 #include <utils/Singleton.h>
 
+#include <condition_variable>
 #include <fstream>
 #include <optional>
+#include <queue>
+#include <shared_mutex>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 
 #include <log/log.h>
@@ -34,6 +40,8 @@ public:
 
     std::string dump();
 
+    int getFileHandler(const std::string& nodeName);
+
     uint32_t getLastWrittenValue(const std::string& nodeName);
 
     std::optional<std::string> readString(const std::string& nodeName);
@@ -41,11 +49,24 @@ public:
     bool WriteUint32(const std::string& nodeName, uint32_t value);
 
 private:
-    int getFileHandler(const std::string& nodeName);
+    int getFileHandlerLocked(const std::string& nodeName);
 
-    std::string mNodePath;
+    uint32_t getLastWrittenValueLocked(const std::string& nodeName);
+
+    void threadBody();
+
+    bool writeUint32InternalLocked(int fd, uint32_t value);
+
+    const std::string mNodePath;
     std::unordered_map<std::string, int> mFds;
     std::unordered_map<int, uint32_t> mLastWrittenValue;
+
+    std::queue<std::pair<int, int>> mPendingValues;
+    std::optional<std::pair<int, int>> mPendingValue = std::nullopt;
+
+    std::shared_mutex mMutex;
+    std::condition_variable_any mCondition;
+    bool mThreadExit = false;
 };
 
 class FileNodeManager : public Singleton<FileNodeManager> {
