@@ -162,6 +162,10 @@ struct DisplayInfo {
 
     // If brightness table exists in pb file, it will overwrite values in brightness_ranges
     BrightnessRangeMap brightness_ranges;
+
+    // displays that no need to calibrate like virtual or external displays
+    // expect the pipeline outputs pixels with a standard color space
+    bool standard_calibrated_display{false};
 };
 
 struct Color {
