@@ -552,6 +552,15 @@ class IDisplayColorGeneric {
      * the displaycolor internal states and need to apply to next frame update.
      */
     virtual bool CheckUpdateNeeded(const int64_t display) = 0;
+
+    /**
+     * @brief Check if early power on is needed.
+     *
+     * @return true for yes.
+     */
+    //deprecated by the 'int64_t display' version
+    virtual bool IsEarlyPowerOnNeeded(const DisplayType display) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const int64_t display) = 0;
 };
 
 extern "C" {
