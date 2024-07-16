@@ -142,6 +142,7 @@ class IBrightnessTable {
 
     virtual std::optional<std::reference_wrapper<const DisplayBrightnessRange>> GetBrightnessRange(
         BrightnessMode bm) const = 0;
+    virtual std::optional<uint32_t> BrightnessToDbv(float brightness) const = 0;
     virtual std::optional<float> BrightnessToNits(float brightness, BrightnessMode &bm) const = 0;
     virtual std::optional<uint32_t> NitsToDbv(BrightnessMode bm, float nits) const = 0;
     virtual std::optional<float> DbvToNits(BrightnessMode bm, uint32_t dbv) const = 0;
@@ -161,6 +162,10 @@ struct DisplayInfo {
 
     // If brightness table exists in pb file, it will overwrite values in brightness_ranges
     BrightnessRangeMap brightness_ranges;
+
+    // displays that no need to calibrate like virtual or external displays
+    // expect the pipeline outputs pixels with a standard color space
+    bool standard_calibrated_display{false};
 };
 
 struct Color {
@@ -547,6 +552,15 @@ class IDisplayColorGeneric {
      * the displaycolor internal states and need to apply to next frame update.
      */
     virtual bool CheckUpdateNeeded(const int64_t display) = 0;
+
+    /**
+     * @brief Check if early power on is needed.
+     *
+     * @return true for yes.
+     */
+    //deprecated by the 'int64_t display' version
+    virtual bool IsEarlyPowerOnNeeded(const DisplayType display) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const int64_t display) = 0;
 };
 
 extern "C" {
