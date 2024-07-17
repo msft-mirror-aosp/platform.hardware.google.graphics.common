@@ -864,6 +864,8 @@ class ExynosDisplay {
         virtual int32_t setPowerMode(
                 int32_t /*hwc2_power_mode_t*/ mode);
 
+        virtual std::optional<hwc2_power_mode_t> getPowerMode() { return mPowerModeState; }
+
         /* setVsyncEnabled(..., enabled)
          * Descriptor: HWC2_FUNCTION_SET_VSYNC_ENABLED
          * HWC2_PFN_SET_VSYNC_ENABLED
@@ -1246,6 +1248,7 @@ class ExynosDisplay {
         int32_t uncacheLayerBuffers(ExynosLayer* layer, const std::vector<buffer_handle_t>& buffers,
                                     std::vector<buffer_handle_t>& outClearableBuffers);
 
+        virtual void miniDump(String8& result);
         virtual void dump(String8& result);
         void dumpLocked(String8& result) REQUIRES(mDisplayMutex);
         void dumpAllBuffers() REQUIRES(mDisplayMutex);
@@ -1374,6 +1377,8 @@ class ExynosDisplay {
         }
 
         virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
+
+        virtual int32_t setDisplayTemperature(const int __unused temperature) { return NO_ERROR; }
 
         virtual int32_t registerRefreshRateChangeListener(
                 std::shared_ptr<RefreshRateChangeListener> listener) {

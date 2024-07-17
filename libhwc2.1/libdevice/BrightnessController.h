@@ -287,6 +287,7 @@ private:
             }
             return mBrightnessRanges.at(bm);
         }
+        std::optional<uint32_t> BrightnessToDbv(float brightness) const override;
         std::optional<float> BrightnessToNits(float brightness, BrightnessMode& bm) const override;
         std::optional<float> NitsToBrightness(float nits) const override;
         std::optional<float> DbvToBrightness(uint32_t dbv) const override;
