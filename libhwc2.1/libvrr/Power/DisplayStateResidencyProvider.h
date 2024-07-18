@@ -71,9 +71,9 @@ private:
 
     std::shared_ptr<StatisticsProvider> mStatisticsProvider;
 
-    DisplayPresentStatistics mStatistics;
+    DisplayRefreshStatistics mStatistics;
 
-    typedef std::map<PowerStatsPresentProfile, DisplayPresentRecord> PowerStatsPresentStatistics;
+    typedef std::map<PowerStatsPresentProfile, DisplayRefreshRecord> PowerStatsPresentStatistics;
 
     PowerStatsPresentStatistics mRemappedStatistics;
 
