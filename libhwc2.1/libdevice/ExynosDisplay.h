@@ -1378,6 +1378,8 @@ class ExynosDisplay {
 
         virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
 
+        virtual int32_t setDisplayTemperature(const int __unused temperature) { return NO_ERROR; }
+
         virtual int32_t registerRefreshRateChangeListener(
                 std::shared_ptr<RefreshRateChangeListener> listener) {
             return NO_ERROR;
