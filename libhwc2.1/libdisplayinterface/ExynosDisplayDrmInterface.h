@@ -302,6 +302,11 @@ class ExynosDisplayDrmInterface :
                 bool Callback(int display, int64_t timestamp);
                 void resetVsyncTimeStamp() { mVsyncTimeStamp = 0; };
                 void resetDesiredVsyncPeriod() { mDesiredVsyncPeriod = 0;};
+
+                // Sets the vsync period to sync with ExynosDisplay::setActiveConfig.
+                // Note: Vsync period updates should typically be done through Callback.
+                void setVsyncPeriod(const uint64_t& period) { mVsyncPeriod = period; }
+
             private:
                 bool mVsyncEnabled = false;
                 uint64_t mVsyncTimeStamp = 0;

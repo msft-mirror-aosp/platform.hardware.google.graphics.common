@@ -1486,6 +1486,7 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     mDrmConnector->set_active_mode(mode);
     mActiveModeState.setMode(mode, modeBlob, drmReq);
     mActiveModeState.clearPendingModeState();
+    mVsyncCallback.setVsyncPeriod(mode.te_period());
 
     if (reconfig) {
         mDrmConnector->ResetLpMode();
