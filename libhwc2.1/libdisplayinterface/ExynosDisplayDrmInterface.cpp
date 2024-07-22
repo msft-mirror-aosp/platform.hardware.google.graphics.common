@@ -2240,6 +2240,18 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
                          __func__, ret);
             }
         }
+
+        if (mXrrSettings.versionInfo.needVrrParameters()) {
+            auto frameInterval = mExynosDisplay->getPendingFrameInterval();
+            if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(),
+                                                mDrmConnector->frame_interval(),
+                                                frameInterval)) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to set frameInterval property (%d)",
+                         __func__,
+                         ret);
+            }
+        }
+
         mExynosDisplay->applyExpectedPresentTime();
     }
 
