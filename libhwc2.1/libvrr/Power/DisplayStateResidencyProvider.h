@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include <unordered_set>
+#include <vector>
 
 #include <aidl/android/hardware/power/stats/State.h>
 #include <aidl/android/hardware/power/stats/StateResidency.h>
@@ -48,12 +48,17 @@ public:
 
 private:
     static const std::set<Fraction<int>> kFpsMappingTable;
-    static const std::unordered_set<int> kFpsLowPowerModeMappingTable;
-    static const std::unordered_set<int> kActivePowerModes;
+    static const std::vector<int> kFpsLowPowerModeMappingTable;
+    static const std::vector<int> kActivePowerModes;
+    static const std::vector<RefreshSource> kRefreshSource;
 
     // The format of pattern is: ([token label]'delimiter'?)*
-    static constexpr std::string_view kDisplayStateResidencyPattern =
+    static constexpr std::string_view kPresentDisplayStateResidencyPattern =
             "[mode](:)[width](x)[height](@)[fps]()";
+
+    // The format of pattern is: ([token label]'delimiter'?)*
+    static constexpr std::string_view kNonPresentDisplayStateResidencyPattern =
+            "[mode](:)[width](x)[height](@)[refreshSource]()";
 
     static constexpr char kTokenLabelStart = '[';
     static constexpr char kTokenLabelEnd = ']';
@@ -66,6 +71,8 @@ private:
     void generatePowerStatsStates();
 
     bool parseDisplayStateResidencyPattern();
+    bool parseResidencyPattern(std::vector<std::pair<std::string, std::string>>& mResidencyPattern,
+                               const std::string_view kResidencyPattern);
 
     std::shared_ptr<CommonDisplayContextProvider> mDisplayContextProvider;
 
@@ -78,7 +85,8 @@ private:
     PowerStatsPresentStatistics mRemappedStatistics;
 
     PowerStatsPresentProfileTokenGenerator mPowerStatsPresentProfileTokenGenerator;
-    std::vector<std::pair<std::string, std::string>> mDisplayStateResidencyPattern;
+    std::vector<std::pair<std::string, std::string>> mPresentDisplayStateResidencyPattern;
+    std::vector<std::pair<std::string, std::string>> mNonPresentDisplayStateResidencyPattern;
 
     std::vector<State> mStates;
     std::map<PowerStatsPresentProfile, int> mPowerStatsPresentProfileToIdMap;
