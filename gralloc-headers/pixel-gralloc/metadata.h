@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <limits>
 
+#include "format.h"
+#include "format_type.h"
+
 namespace pixel::graphics {
 
 constexpr const char* kGralloc4StandardMetadataTypeName = GRALLOC4_STANDARD_METADATA_TYPE;
@@ -104,5 +107,35 @@ struct CompressedPlaneLayout {
 
     bool operator!=(const CompressedPlaneLayout& other) const { return !(*this == other); }
 };
+
+template <MetadataType T>
+struct always_false : std::false_type {};
+
+namespace metadata {
+
+template <MetadataType T>
+struct ReturnType {
+    static_assert(always_false<T>::value, "Unspecialized ReturnType is not supported");
+    using type = void;
+};
+
+#define DEFINE_TYPE(meta_name, return_type)      \
+    template <>                                  \
+    struct ReturnType<MetadataType::meta_name> { \
+        using type = return_type;                \
+    };
+
+DEFINE_TYPE(PLANE_DMA_BUFS, std::vector<int>);
+DEFINE_TYPE(VIDEO_HDR, void*);
+DEFINE_TYPE(VIDEO_ROI, void*);
+DEFINE_TYPE(VIDEO_GMV, VideoGMV);
+
+DEFINE_TYPE(COMPRESSED_PLANE_LAYOUTS, std::vector<CompressedPlaneLayout>);
+DEFINE_TYPE(PIXEL_FORMAT_ALLOCATED, Format);
+DEFINE_TYPE(FORMAT_TYPE, FormatType);
+
+#undef DEFINE_TYPE
+
+} // namespace metadata
 
 } // namespace pixel::graphics
