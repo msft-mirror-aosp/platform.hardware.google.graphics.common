@@ -707,9 +707,6 @@ void VariableRefreshRateController::onPresent(int fence) {
             LOG(WARNING) << "VrrController: last present fence remains open.";
         }
         mLastPresentFence = dupFence;
-        // Drop the out of date timeout.
-        dropEventLocked(VrrControllerEventType::kSystemRenderingTimeout);
-        cancelPresentTimeoutHandlingLocked();
         // Post next rendering timeout.
         int64_t timeoutNs;
         if (mVrrConfigs[mVrrActiveConfig].isFullySupported) {
@@ -721,15 +718,20 @@ void VariableRefreshRateController::onPresent(int fence) {
         postEvent(VrrControllerEventType::kSystemRenderingTimeout,
                   getSteadyClockTimeNs() + timeoutNs);
         if (shouldHandleVendorRenderingTimeout()) {
-            auto presentTimeoutNs = mVendorPresentTimeoutOverride
-                    ? mVendorPresentTimeoutOverride.value().mTimeoutNs
-                    : mPresentTimeoutEventHandler->getPresentTimeoutNs();
-            // If |presentTimeoutNs| == 0, we don't need to handle the present timeout. Otherwise,
-            // post the next frame insertion event
-            if (presentTimeoutNs) {
-                // Convert the relative time clock from now to the absolute steady time clock.
-                presentTimeoutNs = getSteadyClockTimeNs() + presentTimeoutNs;
-                postEvent(VrrControllerEventType::kVendorRenderingTimeout, presentTimeoutNs);
+            // Post next frame insertion event.
+            int64_t firstTimeOutNs;
+            if (mVendorPresentTimeoutOverride) {
+                firstTimeOutNs = mVendorPresentTimeoutOverride.value().mTimeoutNs;
+            } else {
+                firstTimeOutNs = mPresentTimeoutEventHandler->getPresentTimeoutNs();
+            }
+            firstTimeOutNs -= kDefaultAheadOfTimeNs;
+            if (firstTimeOutNs >= 0) {
+                auto vendorPresentTimeoutNs =
+                        mRecord.mPendingCurrentPresentTime.value().mTime + firstTimeOutNs;
+                postEvent(VrrControllerEventType::kVendorRenderingTimeout, vendorPresentTimeoutNs);
+            } else {
+                LOG(ERROR) << "VrrController: the first vendor present timeout is negative";
             }
         }
         mRecord.mPendingCurrentPresentTime = std::nullopt;
@@ -742,6 +744,9 @@ void VariableRefreshRateController::setExpectedPresentTime(int64_t timestampNano
     ATRACE_CALL();
 
     const std::lock_guard<std::mutex> lock(mMutex);
+    // Drop the out of date timeout.
+    dropEventLocked(VrrControllerEventType::kSystemRenderingTimeout);
+    cancelPresentTimeoutHandlingLocked();
     mRecord.mPendingCurrentPresentTime = {mVrrActiveConfig, timestampNanos, frameIntervalNs};
 }
 
