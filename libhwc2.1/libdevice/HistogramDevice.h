@@ -47,6 +47,9 @@ public:
     using HistogramWeights = aidl::com::google::hardware::pixel::display::Weight;
     using HistogramChannelIoctl_t = ExynosDisplayDrmInterface::HistogramChannelIoctl_t;
 
+    /* For blocking roi and roi, (0, 0, 0, 0) means disabled */
+    static constexpr HistogramRoiRect DISABLED_ROI = {0, 0, 0, 0};
+
     /* Histogram weight constraint: weightR + weightG + weightB = WEIGHT_SUM */
     static constexpr size_t WEIGHT_SUM = 1024;
 
@@ -99,6 +102,9 @@ public:
         /* requested roi from the client by registerHistogram or reconfigHistogram */
         HistogramRoiRect requestedRoi GUARDED_BY(channelInfoMutex);
 
+        /* requested blocking roi from the client by registerHistogram or reconfigHistogram */
+        HistogramRoiRect requestedBlockingRoi GUARDED_BY(channelInfoMutex);
+
         /* histogram config that would be applied to hardware, the requestedRoi may be different
          * from the roi described in workingConfig due to RRS (Runtime Resolution Switch) */
         HistogramConfig workingConfig GUARDED_BY(channelInfoMutex);
@@ -113,7 +119,7 @@ public:
         std::condition_variable histDataCollecting_cv;
 
         ChannelInfo();
-        ChannelInfo(const ChannelInfo &other);
+        ChannelInfo(const ChannelInfo& other);
     };
 
     /* TokenInfo is not only used to stored the corresponding channel id but also passed to the
@@ -124,7 +130,7 @@ public:
 
         /* pointer to the HistogramDevice, binderdied callback would use this pointer to cleanup the
          * channel in HistogramDevice by the member function unregisterHistogram */
-        HistogramDevice *histogramDevice;
+        HistogramDevice* histogramDevice;
 
         /* binderdied callback would call unregisterHistogram with this token */
         ndk::SpAIBinder token;
@@ -139,7 +145,7 @@ public:
      * @channelCount number of the histogram channels in the system.
      * @reservedChannels a list of channel id that are reserved by the driver.
      */
-    explicit HistogramDevice(ExynosDisplay *display, uint8_t channelCount,
+    explicit HistogramDevice(ExynosDisplay* display, uint8_t channelCount,
                              std::vector<uint8_t> reservedChannels);
 
     /**
@@ -158,7 +164,7 @@ public:
      *
      * @crtc drm crtc object which would contain histogram related information.
      */
-    void initDrm(const DrmCrtc &crtc);
+    void initDrm(const DrmCrtc& crtc);
 
     /**
      * getHistogramCapability
@@ -168,7 +174,7 @@ public:
      * @histogramCapability: describe the histogram capability for the system.
      * @return ok() when the interface is supported and arguments are valid, else otherwise.
      */
-    ndk::ScopedAStatus getHistogramCapability(HistogramCapability *histogramCapability) const;
+    ndk::ScopedAStatus getHistogramCapability(HistogramCapability* histogramCapability) const;
 
     /**
      * registerHistogram
@@ -186,9 +192,9 @@ public:
      * @return ok() when the interface is supported, or EX_UNSUPPORTED_OPERATION when the interface
      * is not supported yet.
      */
-    ndk::ScopedAStatus registerHistogram(const ndk::SpAIBinder &token,
-                                         const HistogramConfig &histogramConfig,
-                                         HistogramErrorCode *histogramErrorCode);
+    ndk::ScopedAStatus registerHistogram(const ndk::SpAIBinder& token,
+                                         const HistogramConfig& histogramConfig,
+                                         HistogramErrorCode* histogramErrorCode);
 
     /**
      * queryHistogram
@@ -204,9 +210,9 @@ public:
      * @return ok() when the interface is supported, or EX_UNSUPPORTED_OPERATION when the interface
      * is not supported yet.
      */
-    ndk::ScopedAStatus queryHistogram(const ndk::SpAIBinder &token,
-                                      std::vector<char16_t> *histogramBuffer,
-                                      HistogramErrorCode *histogramErrorCode);
+    ndk::ScopedAStatus queryHistogram(const ndk::SpAIBinder& token,
+                                      std::vector<char16_t>* histogramBuffer,
+                                      HistogramErrorCode* histogramErrorCode);
 
     /**
      * reconfigHistogram
@@ -221,9 +227,9 @@ public:
      * @return ok() when the interface is supported, or EX_UNSUPPORTED_OPERATION when the interface
      * is not supported yet.
      */
-    ndk::ScopedAStatus reconfigHistogram(const ndk::SpAIBinder &token,
-                                         const HistogramConfig &histogramConfig,
-                                         HistogramErrorCode *histogramErrorCode);
+    ndk::ScopedAStatus reconfigHistogram(const ndk::SpAIBinder& token,
+                                         const HistogramConfig& histogramConfig,
+                                         HistogramErrorCode* histogramErrorCode);
 
     /**
      * unregisterHistogram
@@ -237,8 +243,8 @@ public:
      * @return ok() when the interface is supported, or EX_UNSUPPORTED_OPERATION when the interface
      * is not supported yet.
      */
-    ndk::ScopedAStatus unregisterHistogram(const ndk::SpAIBinder &token,
-                                           HistogramErrorCode *histogramErrorCode);
+    ndk::ScopedAStatus unregisterHistogram(const ndk::SpAIBinder& token,
+                                           HistogramErrorCode* histogramErrorCode);
 
     /**
      * handleDrmEvent
@@ -248,7 +254,7 @@ public:
      *
      * @event histogram channel drm event pointer (struct exynos_drm_histogram_channel_event *)
      */
-    void handleDrmEvent(void *event);
+    void handleDrmEvent(void* event);
 
     /**
      * prepareAtomicCommit
@@ -257,7 +263,7 @@ public:
      *
      * @drmReq drm atomic request object
      */
-    void prepareAtomicCommit(ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq);
+    void prepareAtomicCommit(ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq);
 
     /**
      * postAtomicCommit
@@ -276,7 +282,7 @@ public:
      *
      * @result histogram channel dump information would be appended to this string
      */
-    void dump(String8 &result) const;
+    void dump(String8& result) const;
 
 protected:
     HistogramCapability mHistogramCapability;
@@ -284,12 +290,18 @@ protected:
 private:
     mutable std::mutex mAllocatorMutex;
     std::queue<uint8_t> mFreeChannels GUARDED_BY(mAllocatorMutex); // free channel list
-    std::unordered_map<AIBinder *, TokenInfo> mTokenInfoMap GUARDED_BY(mAllocatorMutex);
+    std::unordered_map<AIBinder*, TokenInfo> mTokenInfoMap GUARDED_BY(mAllocatorMutex);
     std::vector<ChannelInfo> mChannels;
-    ExynosDisplay *mDisplay = nullptr;
+    int32_t mDisplayActiveH = 0;
+    int32_t mDisplayActiveV = 0;
+    ExynosDisplay* mDisplay = nullptr;
+
+    mutable std::mutex mInitDrmDoneMutex;
+    bool mInitDrmDone GUARDED_BY(mInitDrmDoneMutex) = false;
+    std::condition_variable mInitDrmDone_cv;
 
     /* Death recipient for the binderdied callback, would be deleted in the destructor */
-    AIBinder_DeathRecipient *mDeathRecipient = nullptr;
+    AIBinder_DeathRecipient* mDeathRecipient = nullptr;
 
     /**
      * initChannels
@@ -299,7 +311,7 @@ private:
      * @channelCount number of channels in the system including the reserved channels.
      * @reservedChannels a list of channel id that are reserved by the driver.
      */
-    void initChannels(uint8_t channelCount, const std::vector<uint8_t> &reservedChannels);
+    void initChannels(uint8_t channelCount, const std::vector<uint8_t>& reservedChannels);
 
     /**
      * initHistogramCapability
@@ -312,11 +324,20 @@ private:
     void initHistogramCapability(bool supportMultiChannel);
 
     /**
-     * initSupportSamplePosList
+     * initPlatformHistogramCapability
      *
-     * Initialize the supported sample position list.
+     * Initialize platform specific histogram capability.
      */
-    virtual void initSupportSamplePosList();
+    virtual void initPlatformHistogramCapability() {}
+
+    /**
+     * waitInitDrmDone
+     *
+     * Wait until the initDrm is finished, or when the timeout expires.
+     *
+     * @return true if initDrm is finished, or false when the timeout expires.
+     */
+    bool waitInitDrmDone();
 
     /**
      * configHistogram
@@ -329,9 +350,9 @@ private:
      * @isReconfig is true if it is not the register request, only need to change the config.
      * @return ok() when the interface is supported, or else otherwise.
      */
-    ndk::ScopedAStatus configHistogram(const ndk::SpAIBinder &token,
-                                       const HistogramConfig &histogramConfig,
-                                       HistogramErrorCode *histogramErrorCode, bool isReconfig);
+    ndk::ScopedAStatus configHistogram(const ndk::SpAIBinder& token,
+                                       const HistogramConfig& histogramConfig,
+                                       HistogramErrorCode* histogramErrorCode, bool isReconfig);
 
     /**
      * getHistogramData
@@ -344,22 +365,21 @@ private:
      * @histogramBuffer AIDL created buffer which will be sent back to the client.
      * @histogramErrorCode::NONE when success, or else otherwise.
      */
-    void getHistogramData(uint8_t channelId, std::vector<char16_t> *histogramBuffer,
-                          HistogramErrorCode *histogramErrorCode);
+    void getHistogramData(uint8_t channelId, std::vector<char16_t>* histogramBuffer,
+                          HistogramErrorCode* histogramErrorCode);
 
     /**
      * parseDrmEvent
      *
-     * Parse the histogram drm event (struct may vary between different platform), need to be
-     * overrided in the derived HistogramController class if needed. This function should get the
-     * histogram channel id and the histogram buffer address from the event struct.
+     * Parse the histogram drm event. This function should get the histogram channel id
+     * and the histogram buffer address from the event struct.
      *
      * @event histogram drm event struct.
      * @channelId stores the extracted channel id from the event.
      * @buffer stores the extracted buffer address from the event.
      * @return NO_ERROR on success, else otherwise.
      */
-    virtual int parseDrmEvent(void *event, uint8_t &channelId, char16_t *&buffer) const;
+    int parseDrmEvent(void* event, uint8_t& channelId, char16_t*& buffer) const;
 
     /**
      * acquireChannelLocked
@@ -371,7 +391,7 @@ private:
      * @channelId store the acquired channel id.
      * @return HistogramErrorCode::NONE when success, or else otherwise.
      */
-    HistogramErrorCode acquireChannelLocked(const ndk::SpAIBinder &token, uint8_t &channelId)
+    HistogramErrorCode acquireChannelLocked(const ndk::SpAIBinder& token, uint8_t& channelId)
             REQUIRES(mAllocatorMutex);
 
     /**
@@ -392,7 +412,7 @@ private:
      * @token binder object created by the client.
      * @return HistogramErrorCode::NONE when success, or else otherwise.
      */
-    HistogramErrorCode getChannelIdByTokenLocked(const ndk::SpAIBinder &token, uint8_t &channelId)
+    HistogramErrorCode getChannelIdByTokenLocked(const ndk::SpAIBinder& token, uint8_t& channelId)
             REQUIRES(mAllocatorMutex);
 
     /**
@@ -415,10 +435,9 @@ private:
      * @channelId the channel id to be configured.
      * @token binder object created by the client.
      * @histogramConfig histogram config requested by the client.
-     * @threshold histogram threshold calculated from the roi.
      */
-    void fillupChannelInfo(uint8_t channelId, const ndk::SpAIBinder &token,
-                           const HistogramConfig &histogramConfig, int threshold);
+    void fillupChannelInfo(uint8_t channelId, const ndk::SpAIBinder& token,
+                           const HistogramConfig& histogramConfig);
 
     /**
      * prepareChannelCommit
@@ -437,10 +456,13 @@ private:
      *
      * @drmReq drm atomic request object
      * @channelId histogram channel id
+     * @moduleDisplayInterface display drm interface pointer
+     * @isResolutionChanged true if the resolution change is detected, false otherwise.
      * @return NO_ERROR on success, else otherwise
      */
-    int prepareChannelCommit(ExynosDisplayDrmInterface::DrmModeAtomicReq &drmReq,
-                             uint8_t channelId);
+    int prepareChannelCommit(ExynosDisplayDrmInterface::DrmModeAtomicReq& drmReq, uint8_t channelId,
+                             ExynosDisplayDrmInterface* moduleDisplayInterface,
+                             bool isResolutionChanged);
 
     /**
      * createHistogramDrmConfigLocked
@@ -455,10 +477,8 @@ private:
      * @length size of the histogram config.
      * @return NO_ERROR on success, else otherwise
      */
-    virtual int createHistogramDrmConfigLocked(const ChannelInfo &channel,
-                                               std::shared_ptr<void> &configPtr,
-                                               size_t &length) const
-            REQUIRES(channel.channelInfoMutex);
+    int createHistogramDrmConfigLocked(const ChannelInfo& channel, std::shared_ptr<void>& configPtr,
+                                       size_t& length) const REQUIRES(channel.channelInfoMutex);
 
     /**
      * convertRoiLocked
@@ -471,18 +491,21 @@ private:
      * @workingRoi converted roi from the requested roi
      * @return NO_ERROR on success, else otherwise
      */
-    int convertRoiLocked(ExynosDisplayDrmInterface *moduleDisplayInterface,
-                         const HistogramRoiRect &requestedRoi, HistogramRoiRect &workingRoi) const;
+    int convertRoiLocked(ExynosDisplayDrmInterface* moduleDisplayInterface,
+                         const HistogramRoiRect& requestedRoi, HistogramRoiRect& workingRoi) const;
 
-    void dumpHistogramCapability(String8 &result) const;
+    void dumpHistogramCapability(String8& result) const;
 
-    HistogramErrorCode validateHistogramConfig(const HistogramConfig &histogramConfig) const;
-    HistogramErrorCode validateHistogramRoi(const HistogramRoiRect &roi) const;
-    HistogramErrorCode validateHistogramWeights(const HistogramWeights &weights) const;
-    HistogramErrorCode validateHistogramSamplePos(const HistogramSamplePos &samplePos) const;
+    HistogramErrorCode validateHistogramConfig(const HistogramConfig& histogramConfig) const;
+    HistogramErrorCode validateHistogramRoi(const HistogramRoiRect& roi, const char* roiType) const;
+    HistogramErrorCode validateHistogramWeights(const HistogramWeights& weights) const;
+    HistogramErrorCode validateHistogramSamplePos(const HistogramSamplePos& samplePos) const;
+    HistogramErrorCode validateHistogramBlockingRoi(
+            const std::optional<HistogramRoiRect>& blockingRoi) const;
 
-    static int calculateThreshold(const HistogramRoiRect &roi);
-    static std::string toString(const ChannelStatus_t &status);
-    static std::string toString(const HistogramRoiRect &roi);
-    static std::string toString(const HistogramWeights &weights);
+    int calculateThreshold(const HistogramRoiRect& roi) const;
+
+    static std::string toString(const ChannelStatus_t& status);
+    static std::string toString(const HistogramRoiRect& roi);
+    static std::string toString(const HistogramWeights& weights);
 };

@@ -53,8 +53,9 @@ class DrmConnector {
 
   std::string name() const;
 
-  int UpdateModes();
+  int UpdateModes(bool is_vrr_mode = false);
   int UpdateEdidProperty();
+  int UpdateLuminanceAndHdrProperties();
 
   const std::vector<DrmMode> &modes() const {
     return modes_;
@@ -86,9 +87,10 @@ class DrmConnector {
   const DrmProperty &lhbm_on() const;
   const DrmProperty &mipi_sync() const;
   const DrmProperty &panel_idle_support() const;
-  const DrmProperty &vrr_switch_duration() const;
+  const DrmProperty &rr_switch_duration() const;
   const DrmProperty &operation_rate() const;
   const DrmProperty &refresh_on_lp() const;
+  const DrmProperty &content_protection() const;
 
   const std::vector<DrmProperty *> &properties() const {
       return properties_;
@@ -147,9 +149,10 @@ class DrmConnector {
   DrmProperty lhbm_on_;
   DrmProperty mipi_sync_;
   DrmProperty panel_idle_support_;
-  DrmProperty vrr_switch_duration_;
+  DrmProperty rr_switch_duration_;
   DrmProperty operation_rate_;
   DrmProperty refresh_on_lp_;
+  DrmProperty content_protection_;
   std::vector<DrmProperty *> properties_;
 
   std::vector<DrmEncoder *> possible_encoders_;

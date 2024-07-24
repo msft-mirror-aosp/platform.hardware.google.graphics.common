@@ -401,7 +401,7 @@ int32_t ExynosLayer::setLayerBuffer(buffer_handle_t buffer, int32_t acquireFence
             return HWC2_ERROR_BAD_LAYER;
     }
 
-    VendorGraphicBufferMeta gmeta(mLayerBuffer);
+    VendorGraphicBufferMeta gmeta(buffer);
     internal_format = gmeta.format;
 
     if ((mLayerBuffer == NULL) || (buffer == NULL))
@@ -411,9 +411,9 @@ int32_t ExynosLayer::setLayerBuffer(buffer_handle_t buffer, int32_t acquireFence
             setGeometryChanged(GEOMETRY_LAYER_DRM_CHANGED);
         if (VendorGraphicBufferMeta::get_format(mLayerBuffer) != gmeta.format)
             setGeometryChanged(GEOMETRY_LAYER_FORMAT_CHANGED);
-        if ((VendorGraphicBufferMeta::get_usage(buffer) &
+        if ((VendorGraphicBufferMeta::get_usage(mLayerBuffer) &
                     toUnderlying(AidlBufferUsage::FRONT_BUFFER)) !=
-                (VendorGraphicBufferMeta::get_usage(mLayerBuffer) &
+                (VendorGraphicBufferMeta::get_usage(buffer) &
                     toUnderlying(AidlBufferUsage::FRONT_BUFFER)))
             setGeometryChanged(GEOMETRY_LAYER_FRONT_BUFFER_USAGE_CHANGED);
     }
@@ -606,7 +606,6 @@ int32_t ExynosLayer::setLayerSidebandStream(const native_handle_t* __unused stre
 }
 
 int32_t ExynosLayer::setLayerSourceCrop(hwc_frect_t crop) {
-
     if ((crop.left != mSourceCrop.left) ||
         (crop.top != mSourceCrop.top) ||
         (crop.right != mSourceCrop.right) ||
@@ -1029,6 +1028,7 @@ void ExynosLayer::dump(String8& result)
 {
     int format = HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
     int32_t fd, fd1, fd2;
+    uint64_t unique_id;
     if (mLayerBuffer != NULL)
     {
         VendorGraphicBufferMeta gmeta(mLayerBuffer);
@@ -1036,11 +1036,13 @@ void ExynosLayer::dump(String8& result)
         fd = gmeta.fd;
         fd1 = gmeta.fd1;
         fd2 = gmeta.fd2;
+        unique_id = gmeta.unique_id;
     } else {
         format = HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
         fd = -1;
         fd1 = -1;
         fd2 = -1;
+        unique_id = 0;
     }
 
     {
@@ -1083,6 +1085,7 @@ void ExynosLayer::dump(String8& result)
                           .add("exynosType", mExynosCompositionType)
                           .add("validateType", mValidateCompositionType)
                           .add("overlayInfo", mOverlayInfo, true)
+                          .add("GrallocBufferId", unique_id)
                           .build()
                           .c_str());
 

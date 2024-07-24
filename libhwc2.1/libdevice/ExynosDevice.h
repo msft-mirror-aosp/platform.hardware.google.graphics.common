@@ -17,6 +17,7 @@
 #ifndef _EXYNOSDEVICE_H
 #define _EXYNOSDEVICE_H
 
+#include <aidl/android/hardware/drm/HdcpLevels.h>
 #include <aidl/android/hardware/graphics/composer3/OverlayProperties.h>
 #include <aidl/com/google/hardware/pixel/display/BnDisplay.h>
 #include <cutils/atomic.h>
@@ -59,6 +60,7 @@
 #define WRITEBACK_CAPTURE_PATH "/data/vendor/log/hwc"
 #endif
 
+using ::aidl::android::hardware::drm::HdcpLevels;
 using HbmState = ::aidl::com::google::hardware::pixel::display::HbmState;
 using LbeState = ::aidl::com::google::hardware::pixel::display::LbeState;
 using PanelCalibrationStatus = ::aidl::com::google::hardware::pixel::display::PanelCalibrationStatus;
@@ -217,7 +219,7 @@ class ExynosDevice {
         std::unique_ptr<ExynosDeviceInterface> mDeviceInterface;
 
         // Con/Destructors
-        ExynosDevice();
+        ExynosDevice(bool vrrApiSupported);
         virtual ~ExynosDevice();
 
         bool isFirstValidate();
@@ -280,7 +282,7 @@ class ExynosDevice {
         int32_t registerCallback (
                 int32_t descriptor, hwc2_callback_data_t callbackData, hwc2_function_pointer_t point);
         bool isCallbackAvailable(int32_t descriptor);
-        void onHotPlug(uint32_t displayId, bool status);
+        void onHotPlug(uint32_t displayId, bool status, int hotplugErrorCode);
         void onRefresh(uint32_t displayId);
         void onRefreshDisplays();
 
@@ -288,6 +290,8 @@ class ExynosDevice {
         bool onVsync_2_4(uint32_t displayId, int64_t timestamp, uint32_t vsyncPeriod);
         void onVsyncPeriodTimingChanged(uint32_t displayId,
                                         hwc_vsync_period_change_timeline_t *timeline);
+
+        void onContentProtectionUpdated(uint32_t displayId, HdcpLevels hdcpLevels);
 
         void setHWCDebug(unsigned int debug);
         uint32_t getHWCDebug();
@@ -344,7 +348,11 @@ class ExynosDevice {
             return HWC2_ERROR_UNSUPPORTED;
         }
 
-        void onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t vsyncPeriod);
+        void onRefreshRateChangedDebug(hwc2_display_t displayId, uint32_t vsyncPeriod,
+                                       uint32_t refreshPeriod = 0);
+
+        bool isVrrApiSupported() const { return mVrrApiSupported; };
+        void setVBlankOffDelay(const int vblankOffDelay);
 
     protected:
         void initDeviceInterface(uint32_t interfaceType);
@@ -354,7 +362,6 @@ class ExynosDevice {
         Mutex mCaptureMutex;
         Condition mCaptureCondition;
         std::atomic<bool> mIsWaitingReadbackReqDone = false;
-        void setVBlankOffDelay(int vblankOffDelay);
         bool isCallbackRegisteredLocked(int32_t descriptor);
 
     public:
@@ -365,6 +372,7 @@ class ExynosDevice {
     private:
         bool mIsInTUI;
         bool mDisplayOffAsync;
+        bool mVrrApiSupported = false;
 
     public:
         void handleHotplug();

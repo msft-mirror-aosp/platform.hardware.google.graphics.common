@@ -26,6 +26,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "DeconCommonHeader.h"
@@ -162,7 +163,7 @@ const format_description_t exynos_format_desc[] = {
         1, 1, 32, RGB | BIT10 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("RGBA_1010102"), 0},
     {HAL_PIXEL_FORMAT_EXYNOS_ARGB_8888, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ARGB8888,
         1, 1, 32, RGB | BIT8 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("EXYNOS_ARGB_8888"), 0},
-    {HAL_PIXEL_FORMAT_RGBA_FP16, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ARGB16161616F,
+    {HAL_PIXEL_FORMAT_RGBA_FP16, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ABGR16161616F,
         1, 1, 64, RGB | BIT16 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("RGBA_FP16"), 0},
 
     /* YUV 420 */
@@ -470,7 +471,7 @@ bool hasHdrInfo(android_dataspace dataSpace);
 bool hasHdr10Plus(exynos_image &img);
 
 void dumpExynosImage(uint32_t type, exynos_image &img);
-void dumpExynosImage(String8& result, exynos_image &img);
+void dumpExynosImage(String8& result, const exynos_image& img);
 void dumpHandle(uint32_t type, buffer_handle_t h);
 void printExynosLayer(const ExynosLayer *layer);
 String8 getFormatStr(int format, uint32_t compressType);
@@ -628,11 +629,18 @@ public:
     CtrlValue() : value_(), dirty_(false) {}
     CtrlValue(const T& value) : value_(value), dirty_(false) {}
 
-    void store(T value) {
+    void store(const T& value) {
         if (value == value_) return;
         dirty_ = true;
         value_ = value;
     };
+
+    void store(T&& value) {
+        if (value == value_) return;
+        dirty_ = true;
+        value_ = std::move(value);
+    };
+
     const T &get() { return value_; };
     bool is_dirty() { return dirty_; };
     void clear_dirty() { dirty_ = false; };
@@ -664,10 +672,72 @@ struct RollingAverage {
     }
 };
 
+class FileNodeWriter {
+public:
+    FileNodeWriter(const std::string& nodePath) : mNodePath(nodePath) {}
+
+    ~FileNodeWriter() {
+        for (auto& node : mOperateNodes) {
+            close(node.second);
+        }
+    }
+
+    std::optional<std::string> read(const std::string& nodeName) {
+        std::string fullPath = mNodePath + nodeName;
+        std::ifstream ifs(fullPath);
+        if (ifs) {
+            std::ostringstream os;
+            os << ifs.rdbuf(); // reading data
+            return os.str();
+        }
+        return std::nullopt;
+    }
+
+    template <typename T>
+    bool WriteCommandString(const std::string& nodeName, T cmd) {
+        // ref: https://elixir.bootlin.com/linux/latest/source/include/linux/kstrtox.h
+        static_assert(std::is_integral_v<T>);
+
+        int fd = getOperateNodeFileHandle(nodeName);
+        if (fd >= 0) {
+            std::string cmdString = std::to_string(cmd);
+            int ret = write(fd, cmdString.c_str(), std::strlen(cmdString.c_str()));
+            if (ret < 0) {
+                ALOGE("Write to file node %s failed, ret = %d errno = %d", mNodePath.c_str(), ret,
+                      errno);
+                return false;
+            }
+        } else {
+            ALOGE("Write to invalid file node %s", mNodePath.c_str());
+            return false;
+        }
+        return true;
+    }
+
+private:
+    int getOperateNodeFileHandle(const std::string& nodeName) {
+        if (mOperateNodes.count(nodeName) > 0) {
+            return mOperateNodes[nodeName];
+        }
+        std::string fullPath = mNodePath + nodeName;
+        int fd = open(fullPath.c_str(), O_WRONLY, 0);
+        if (fd < 0) {
+            ALOGE("Open file node failed, fd = %d", fd);
+            return fd;
+        }
+        mOperateNodes[nodeName] = fd;
+        return fd;
+    }
+
+    std::string mNodePath;
+    std::unordered_map<std::string, int> mOperateNodes;
+};
+
 // Waits for a given property value, or returns std::nullopt if unavailable
 std::optional<std::string> waitForPropertyValue(const std::string &property, int64_t timeoutMs);
 
 uint32_t rectSize(const hwc_rect_t &rect);
 void assign(decon_win_rect &win_rect, uint32_t left, uint32_t right, uint32_t width,
             uint32_t height);
+uint32_t nanoSec2Hz(uint64_t ns);
 #endif

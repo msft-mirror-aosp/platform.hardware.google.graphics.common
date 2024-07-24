@@ -51,6 +51,28 @@ class ExynosDevice;
 template <typename T>
 using DrmArray = std::array<T, HWC_DRM_BO_MAX_PLANES>;
 
+class DisplayConfigGroupIdGenerator {
+public:
+    DisplayConfigGroupIdGenerator() = default;
+    ~DisplayConfigGroupIdGenerator() = default;
+
+    // Vrr will utilize the last two parameters. In the case of non-vrr, they are automatically set
+    // to 0. Avoid using this class with a mix of Vrr and non-Vrr settings, as doing so may yield
+    // unexpected results.
+    int getGroupId(int width, int height, int minFrameInterval = 0, int vsyncPeriod = 0) {
+        const auto &key = std::make_tuple(width, height, minFrameInterval, vsyncPeriod);
+        if (groups_.count(key) > 0) {
+            return groups_[key];
+        }
+        size_t last_id = groups_.size();
+        groups_[key] = last_id;
+        return last_id;
+    }
+
+private:
+    std::map<std::tuple<int, int, int, int>, int> groups_;
+};
+
 class FramebufferManager {
     public:
         FramebufferManager(){};
@@ -234,6 +256,12 @@ class ExynosDisplayDrmInterface :
                     mOldBlobs.clear();
                     return NO_ERROR;
                 };
+                void dumpDrmAtomicCommitMessage(int err);
+
+                void setAckCallback(std::function<void()> callback) {
+                    mAckCallback = std::move(callback);
+                };
+
             private:
                 drmModeAtomicReqPtr mPset;
                 drmModeAtomicReqPtr mSavedPset;
@@ -242,6 +270,15 @@ class ExynosDisplayDrmInterface :
                 /* Destroy old blobs after commit */
                 std::vector<uint32_t> mOldBlobs;
                 int drmFd() const { return mDrmDisplayInterface->mDrmDevice->fd(); }
+
+                std::function<void()> mAckCallback;
+
+                static constexpr uint32_t kAllowDumpDrmAtomicMessageTimeMs = 5000U;
+                static constexpr const char* kDrmModuleParametersDebugNode =
+                        "/sys/module/drm/parameters/debug";
+                static constexpr const int kEnableDrmAtomicMessage = 16;
+                static constexpr const int kDisableDrmDebugMessage = 0;
+
         };
         class ExynosVsyncCallback {
             public:
@@ -354,8 +391,7 @@ class ExynosDisplayDrmInterface :
             /* cancel the histogram data request by calling histogram_channel_cancel_ioctl */
             CANCEL,
         };
-        virtual int32_t sendHistogramChannelIoctl(HistogramChannelIoctl_t control,
-                                                  uint8_t channelId) const;
+        int32_t sendHistogramChannelIoctl(HistogramChannelIoctl_t control, uint8_t channelId) const;
 
         int32_t getFrameCount() { return mFrameCounter; }
         virtual void registerHistogramInfo(const std::shared_ptr<IDLHistogram> &info) { return; }
@@ -368,6 +404,25 @@ class ExynosDisplayDrmInterface :
         int32_t getPanelFullResolutionVSize() { return mPanelFullResolutionVSize; }
         uint32_t getCrtcId() { return mDrmCrtc->id(); }
         int32_t triggerClearDisplayPlanes();
+
+        virtual void setVrrSettings(const VrrSettings_t& vrrSettings) override;
+        bool isFullVrrSupported() const {
+            return (mIsVrrModeSupported && mExynosDisplay->mDevice->isVrrApiSupported());
+        }
+        bool isPseudoVrrSupported() const {
+            return (mIsVrrModeSupported && !mExynosDisplay->mDevice->isVrrApiSupported());
+        }
+
+        void handleDrmPropertyUpdate(uint32_t connector_id, uint32_t prop_id);
+
+        /* store the manufacturer info and product id from EDID
+         * - Manufacturer ID is stored in EDID byte 8 and 9.
+         * - Manufacturer product ID is stored in EDID byte 10 and 11.
+         */
+        virtual void setManufacturerInfo(uint8_t edid8, uint8_t edid9) override;
+        virtual uint32_t getManufacturerInfo() override { return mManufacturerInfo; }
+        virtual void setProductId(uint8_t edid10, uint8_t edid11) override;
+        virtual uint32_t getProductId() override { return mProductId; }
 
     protected:
         enum class HalMipiSyncType : uint32_t {
@@ -424,10 +479,11 @@ class ExynosDisplayDrmInterface :
             }
         };
         int32_t createModeBlob(const DrmMode &mode, uint32_t &modeBlob);
-        int32_t setDisplayMode(DrmModeAtomicReq &drmReq, const uint32_t modeBlob);
+        int32_t setDisplayMode(DrmModeAtomicReq& drmReq, const uint32_t& modeBlob,
+                               const uint32_t& modeId);
         int32_t clearDisplayMode(DrmModeAtomicReq &drmReq);
         int32_t clearDisplayPlanes(DrmModeAtomicReq &drmReq);
-        int32_t chosePreferredConfig();
+        int32_t choosePreferredConfig();
         int getDeconChannel(ExynosMPP *otfMPP);
         /*
          * This function adds FB and gets new fb id if fbId is 0,
@@ -534,6 +590,8 @@ class ExynosDisplayDrmInterface :
         DrmReadbackInfo mReadbackInfo;
         FramebufferManager mFBManager;
         std::array<uint8_t, MONITOR_DESCRIPTOR_DATA_LENGTH> mMonitorDescription;
+        nsecs_t mLastDumpDrmAtomicMessageTime;
+        bool mIsResolutionSwitchInProgress = false;
 
     private:
         int32_t getDisplayFakeEdid(uint8_t &outPort, uint32_t &outDataSize, uint8_t *outData);
@@ -544,6 +602,12 @@ class ExynosDisplayDrmInterface :
         int32_t mFrameCounter = 0;
         int32_t mPanelFullResolutionHSize = 0;
         int32_t mPanelFullResolutionVSize = 0;
+
+        // Vrr related settings.
+        bool mIsVrrModeSupported = false;
+        int32_t mNotifyExpectedPresentHeadsUpNs = 0;
+        int32_t mNotifyExpectedPresentTimeoutNs = 0;
+        std::function<void(int)> mConfigChangeCallback;
 
         /**
          * retrievePanelFullResolution
@@ -556,8 +620,17 @@ class ExynosDisplayDrmInterface :
          */
         void retrievePanelFullResolution();
 
+        const uint8_t kEDIDManufacturerIDByte1 = 8;
+        const uint8_t kEDIDManufacturerIDByte2 = 9;
+        const uint8_t kEDIDProductIDByte1 = 10;
+        const uint8_t kEDIDProductIDByte2 = 11;
+        uint32_t mManufacturerInfo;
+        uint32_t mProductId;
+
     public:
         virtual bool readHotplugStatus();
+        virtual int readHotplugErrorCode();
+        virtual void resetHotplugErrorCode();
 };
 
 #endif

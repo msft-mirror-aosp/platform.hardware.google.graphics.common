@@ -77,6 +77,7 @@ public:
     int processOperationRate(int32_t hz);
     bool isDbmSupported() { return mDbmSupported; }
     int applyPendingChangeViaSysfs(const nsecs_t vsyncNs);
+    int applyAclViaSysfs();
     bool validateLayerBrightness(float brightness);
 
     /**
@@ -141,6 +142,24 @@ public:
         return mBrightnessLevel.get();
     }
 
+    std::optional<std::tuple<float, BrightnessMode>> getBrightnessNitsAndMode() {
+        std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
+        BrightnessMode brightnessMode;
+        if (mBrightnessTable == nullptr) {
+            return std::nullopt;
+        }
+
+        auto brightness = mBrightnessTable->DbvToBrightness(mBrightnessLevel.get());
+        if (brightness == std::nullopt) {
+            return std::nullopt;
+        }
+        auto nits = mBrightnessTable->BrightnessToNits(brightness.value(), brightnessMode);
+        if (nits == std::nullopt) {
+            return std::nullopt;
+        }
+        return std::make_tuple(nits.value(), brightnessMode);
+    }
+
     bool isDimSdr() {
         std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
         return mInstantHbmReq.get();
@@ -153,6 +172,11 @@ public:
     uint32_t getOperationRate() {
         std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
         return mOperationRate.get();
+    }
+
+    bool isOperationRatePending() {
+        std::lock_guard<std::recursive_mutex> lock(mBrightnessMutex);
+        return mOperationRate.is_dirty();
     }
 
     bool isSupported() {
@@ -181,7 +205,7 @@ public:
         return nodeName.c_str();
     }
 
-    void updateBrightnessTable(const IBrightnessTable* table);
+    void updateBrightnessTable(std::unique_ptr<const IBrightnessTable>& table);
     const BrightnessRangeMap& getBrightnessRanges() const {
         return mKernelBrightnessTable.GetBrightnessRangeMap();
     }
@@ -386,7 +410,7 @@ private:
     bool mBrightnessIntfSupported = false;
     LinearBrightnessTable mKernelBrightnessTable;
     // External object from libdisplaycolor
-    const IBrightnessTable* mBrightnessTable = nullptr;
+    std::unique_ptr<const IBrightnessTable> mBrightnessTable;
 
     int32_t mPanelIndex;
     DrmEnumParser::MapHal2DrmEnum mHbmModeEnums;
