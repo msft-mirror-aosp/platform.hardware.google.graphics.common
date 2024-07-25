@@ -30,12 +30,12 @@ enum class VrrControllerEventType {
     // kSystemRenderingTimeout is responsible for managing present timeout according to the
     // configuration specified in the system HAL API.
     kSystemRenderingTimeout = kGeneralEventMask + (1 << 0),
-    // kVendorRenderingTimeout is responsible for managing present timeout based on the vendor's
-    // proprietary definition.
-    kVendorRenderingTimeout = kGeneralEventMask + (1 << 1),
-    // kHandleVendorRenderingTimeout is responsible for addressing present timeout by invoking
-    // the handling function provided by the vendor.
-    kHandleVendorRenderingTimeout = kGeneralEventMask + (1 << 2),
+    // kVendorRenderingTimeoutInit is responsible for initializing vendor's timeout
+    // configurations and kicking off subsequent handling
+    kVendorRenderingTimeoutInit = kGeneralEventMask + (1 << 1),
+    // kVendorRenderingTimeoutPost is responsible for handling the timeout event
+    // per config after initialization
+    kVendorRenderingTimeoutPost = kGeneralEventMask + (1 << 2),
     kHibernateTimeout = kGeneralEventMask + (1 << 3),
     kNotifyExpectedPresentConfig = kGeneralEventMask + (1 << 4),
     kTestEvent = kGeneralEventMask + (1 << 5),
@@ -78,10 +78,10 @@ struct VrrControllerEvent {
                 return "kSystemRenderingTimeout";
             case VrrControllerEventType::kExitIdleRefreshRateCalculatorUpdate:
                 return "kExitIdleRefreshRateCalculatorUpdate";
-            case VrrControllerEventType::kVendorRenderingTimeout:
-                return "kVendorRenderingTimeout";
-            case VrrControllerEventType::kHandleVendorRenderingTimeout:
-                return "kHandleVendorRenderingTimeout";
+            case VrrControllerEventType::kVendorRenderingTimeoutInit:
+                return "kVendorRenderingTimeoutInit";
+            case VrrControllerEventType::kVendorRenderingTimeoutPost:
+                return "kVendorRenderingTimeoutPost";
             case VrrControllerEventType::kHibernateTimeout:
                 return "kHibernateTimeout";
             case VrrControllerEventType::kNotifyExpectedPresentConfig:
