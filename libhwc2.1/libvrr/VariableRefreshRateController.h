@@ -148,6 +148,8 @@ private:
 
     static constexpr std::string_view kVendorDisplayPanelLibrary = "libdisplaypanel.so";
 
+    static constexpr int kDefaultAheadOfTimeNs = 1000000; // 1 ms;
+
     enum class VrrControllerState {
         kDisable = 0,
         kRendering,
