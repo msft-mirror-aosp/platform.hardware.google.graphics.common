@@ -344,7 +344,7 @@ void VariableRefreshRateController::preSetPowerMode(int32_t powerMode) {
                 if (!mFileNode->WriteUint32(kRefreshControlNodeName, command)) {
                     LOG(ERROR) << "VrrController: write file node error, command = " << command;
                 }
-                dropEventLocked(VrrControllerEventType::kVendorRenderingTimeout);
+                dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
                 return;
             }
             case HWC_POWER_MODE_OFF:
@@ -486,7 +486,7 @@ void VariableRefreshRateController::setPresentTimeoutController(uint32_t control
             static_cast<PresentTimeoutControllerType>(controllerType);
     if (newControllerType != mPresentTimeoutController) {
         if (mPresentTimeoutController == PresentTimeoutControllerType::kSoftware) {
-            dropEventLocked(VrrControllerEventType::kVendorRenderingTimeout);
+            dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
         }
         mPresentTimeoutController = newControllerType;
         uint32_t command = getCurrentRefreshControlStateLocked();
@@ -521,7 +521,7 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
     mMaximumRefreshRateTimeoutNs = minLockTimeForPeakRefreshRate;
     dropEventLocked(VrrControllerEventType::kMinLockTimeForPeakRefreshRate);
     if (isMinimumRefreshRateActive()) {
-        dropEventLocked(VrrControllerEventType::kVendorRenderingTimeout);
+        dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
         // Delegate timeout management to hardware.
         setBit(command, kPanelRefreshCtrlFrameInsertionAutoModeOffset);
         // Configure panel to maintain the minimum refresh rate.
@@ -707,9 +707,6 @@ void VariableRefreshRateController::onPresent(int fence) {
             LOG(WARNING) << "VrrController: last present fence remains open.";
         }
         mLastPresentFence = dupFence;
-        // Drop the out of date timeout.
-        dropEventLocked(VrrControllerEventType::kSystemRenderingTimeout);
-        cancelPresentTimeoutHandlingLocked();
         // Post next rendering timeout.
         int64_t timeoutNs;
         if (mVrrConfigs[mVrrActiveConfig].isFullySupported) {
@@ -721,15 +718,21 @@ void VariableRefreshRateController::onPresent(int fence) {
         postEvent(VrrControllerEventType::kSystemRenderingTimeout,
                   getSteadyClockTimeNs() + timeoutNs);
         if (shouldHandleVendorRenderingTimeout()) {
-            auto presentTimeoutNs = mVendorPresentTimeoutOverride
-                    ? mVendorPresentTimeoutOverride.value().mTimeoutNs
-                    : mPresentTimeoutEventHandler->getPresentTimeoutNs();
-            // If |presentTimeoutNs| == 0, we don't need to handle the present timeout. Otherwise,
-            // post the next frame insertion event
-            if (presentTimeoutNs) {
-                // Convert the relative time clock from now to the absolute steady time clock.
-                presentTimeoutNs = getSteadyClockTimeNs() + presentTimeoutNs;
-                postEvent(VrrControllerEventType::kVendorRenderingTimeout, presentTimeoutNs);
+            // Post next frame insertion event.
+            int64_t firstTimeOutNs;
+            if (mVendorPresentTimeoutOverride) {
+                firstTimeOutNs = mVendorPresentTimeoutOverride.value().mTimeoutNs;
+            } else {
+                firstTimeOutNs = mPresentTimeoutEventHandler->getPresentTimeoutNs();
+            }
+            firstTimeOutNs -= kDefaultAheadOfTimeNs;
+            if (firstTimeOutNs >= 0) {
+                auto vendorPresentTimeoutNs =
+                        mRecord.mPendingCurrentPresentTime.value().mTime + firstTimeOutNs;
+                postEvent(VrrControllerEventType::kVendorRenderingTimeoutInit,
+                          vendorPresentTimeoutNs);
+            } else {
+                LOG(ERROR) << "VrrController: the first vendor present timeout is negative";
             }
         }
         mRecord.mPendingCurrentPresentTime = std::nullopt;
@@ -742,6 +745,9 @@ void VariableRefreshRateController::setExpectedPresentTime(int64_t timestampNano
     ATRACE_CALL();
 
     const std::lock_guard<std::mutex> lock(mMutex);
+    // Drop the out of date timeout.
+    dropEventLocked(VrrControllerEventType::kSystemRenderingTimeout);
+    cancelPresentTimeoutHandlingLocked();
     mRecord.mPendingCurrentPresentTime = {mVrrActiveConfig, timestampNanos, frameIntervalNs};
 }
 
@@ -754,8 +760,8 @@ void VariableRefreshRateController::onVsync(int64_t timestampNanos,
 }
 
 void VariableRefreshRateController::cancelPresentTimeoutHandlingLocked() {
-    dropEventLocked(VrrControllerEventType::kVendorRenderingTimeout);
-    dropEventLocked(VrrControllerEventType::kHandleVendorRenderingTimeout);
+    dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
+    dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutPost);
 }
 
 void VariableRefreshRateController::dropEventLocked() {
@@ -1049,7 +1055,7 @@ void VariableRefreshRateController::threadBody() {
                         handleCadenceChange();
                         break;
                     }
-                    case VrrControllerEventType::kVendorRenderingTimeout: {
+                    case VrrControllerEventType::kVendorRenderingTimeoutInit: {
                         if (mPresentTimeoutEventHandler) {
                             // Verify whether a present timeout override exists, and if so, execute
                             // it first.
@@ -1064,7 +1070,7 @@ void VariableRefreshRateController::threadBody() {
                                     for (int j = 0; j < params.mSchedule[i].first; ++j) {
                                         timedEvent.mWhenNs = whenFromNowNs;
                                         postEvent(VrrControllerEventType::
-                                                          kHandleVendorRenderingTimeout,
+                                                          kVendorRenderingTimeoutPost,
                                                   timedEvent);
                                         whenFromNowNs += intervalNs;
                                     }
@@ -1074,7 +1080,7 @@ void VariableRefreshRateController::threadBody() {
                                 if (!handleEvents.empty()) {
                                     for (auto& event : handleEvents) {
                                         postEvent(VrrControllerEventType::
-                                                          kHandleVendorRenderingTimeout,
+                                                          kVendorRenderingTimeoutPost,
                                                   event);
                                     }
                                 }
@@ -1082,7 +1088,7 @@ void VariableRefreshRateController::threadBody() {
                         }
                         break;
                     }
-                    case VrrControllerEventType::kHandleVendorRenderingTimeout: {
+                    case VrrControllerEventType::kVendorRenderingTimeoutPost: {
                         handlePresentTimeout(event);
                         if (event.mFunctor) {
                             event.mFunctor();
