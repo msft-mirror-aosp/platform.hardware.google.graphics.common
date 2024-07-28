@@ -877,4 +877,10 @@ inline std::string transCompTypeToString(const uint32_t& type) {
     else
         return std::string("Unknown");
 }
+
+static constexpr int64_t SIGNAL_TIME_PENDING = INT64_MAX;
+static constexpr int64_t SIGNAL_TIME_INVALID = -1;
+
+nsecs_t getSignalTime(int32_t fd);
+
 #endif
