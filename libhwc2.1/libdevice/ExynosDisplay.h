@@ -1378,6 +1378,8 @@ class ExynosDisplay {
 
         virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
 
+        virtual int32_t setDisplayTemperature(const int __unused temperature) { return NO_ERROR; }
+
         virtual int32_t registerRefreshRateChangeListener(
                 std::shared_ptr<RefreshRateChangeListener> listener) {
             return NO_ERROR;
@@ -1622,8 +1624,6 @@ class ExynosDisplay {
         };
 
         static const constexpr int kAveragesBufferSize = 3;
-        static const constexpr nsecs_t SIGNAL_TIME_PENDING = INT64_MAX;
-        static const constexpr nsecs_t SIGNAL_TIME_INVALID = -1;
         std::unordered_map<uint32_t, RollingAverage<kAveragesBufferSize>> mRollingAverages;
         // mPowerHalHint should be declared only after mDisplayId and mDisplayTraceName have been
         // declared since mDisplayId and mDisplayTraceName are needed as the parameter of
@@ -1649,7 +1649,6 @@ class ExynosDisplay {
         bool mUsePowerHints = false;
         nsecs_t getExpectedPresentTime(nsecs_t startTime);
         nsecs_t getPredictedPresentTime(nsecs_t startTime);
-        nsecs_t getSignalTime(int32_t fd) const;
         void updateAverages(nsecs_t endTime);
         std::optional<nsecs_t> getPredictedDuration(bool duringValidation);
         atomic_bool mDebugRCDLayerEnabled = true;
