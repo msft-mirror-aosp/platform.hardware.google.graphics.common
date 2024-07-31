@@ -140,10 +140,15 @@ private:
     static constexpr int64_t SIGNAL_TIME_PENDING = INT64_MAX;
     static constexpr int64_t SIGNAL_TIME_INVALID = -1;
 
+    static constexpr int64_t kDefaultSystemPresentTimeoutNs =
+            500 * (std::nano::den / std::milli::den); // 500 ms
+
     static constexpr int64_t kDefaultVendorPresentTimeoutNs =
             33 * (std::nano::den / std::milli::den); // 33 ms
 
     static constexpr std::string_view kVendorDisplayPanelLibrary = "libdisplaypanel.so";
+
+    static constexpr int kDefaultAheadOfTimeNs = 1000000; // 1 ms;
 
     enum class VrrControllerState {
         kDisable = 0,
@@ -280,6 +285,9 @@ private:
 
     inline bool isMinimumRefreshRateActive() const { return (mMinimumRefreshRate > 1); }
 
+    // Report frame frequency changes to the kernel via the sysfs node.
+    void onFrameRateChangedForDBI(int refreshRate);
+    // Report refresh rate changes to the framework(SurfaceFlinger) or other display HWC components.
     void onRefreshRateChanged(int refreshRate);
     void onRefreshRateChangedInternal(int refreshRate);
     void reportRefreshRateIndicator();
@@ -327,6 +335,8 @@ private:
     std::shared_ptr<RefreshRateCalculator> mRefreshRateCalculator;
     int mLastRefreshRate = kDefaultInvalidRefreshRate;
     std::unordered_map<hwc2_config_t, std::vector<int>> mValidRefreshRates;
+
+    std::shared_ptr<RefreshRateCalculator> mFrameRateReporter;
 
     // Power stats.
     std::shared_ptr<DisplayStateResidencyWatcher> mResidencyWatcher;
