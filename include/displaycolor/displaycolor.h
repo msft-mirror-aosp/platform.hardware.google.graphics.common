@@ -162,6 +162,10 @@ struct DisplayInfo {
 
     // If brightness table exists in pb file, it will overwrite values in brightness_ranges
     BrightnessRangeMap brightness_ranges;
+
+    // displays that no need to calibrate like virtual or external displays
+    // expect the pipeline outputs pixels with a standard color space
+    bool standard_calibrated_display{false};
 };
 
 struct Color {
@@ -347,7 +351,8 @@ struct DisplayScene {
                dbv == rhs.dbv &&
                refresh_rate == rhs.refresh_rate &&
                operation_rate == rhs.operation_rate &&
-               hdr_layer_state == rhs.hdr_layer_state;
+               hdr_layer_state == rhs.hdr_layer_state &&
+               temperature == rhs.temperature;
     }
     bool operator!=(const DisplayScene &rhs) const {
         return !(*this == rhs);
@@ -388,6 +393,9 @@ struct DisplayScene {
 
     /// operation rate to switch between hs/ns mode
     uint32_t operation_rate = 120;
+
+    /// display temperature in degrees Celsius
+    uint32_t temperature = UINT_MAX;
 
     /// hdr layer state on screen
     HdrLayerState hdr_layer_state = HdrLayerState::kHdrNone;
@@ -548,6 +556,15 @@ class IDisplayColorGeneric {
      * the displaycolor internal states and need to apply to next frame update.
      */
     virtual bool CheckUpdateNeeded(const int64_t display) = 0;
+
+    /**
+     * @brief Check if early power on is needed.
+     *
+     * @return true for yes.
+     */
+    //deprecated by the 'int64_t display' version
+    virtual bool IsEarlyPowerOnNeeded(const DisplayType display) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const int64_t display) = 0;
 };
 
 extern "C" {
