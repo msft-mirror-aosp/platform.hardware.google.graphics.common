@@ -82,6 +82,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
 
         virtual int32_t setFixedTe2Rate(const int rateHz) override;
 
+        virtual void onProximitySensorStateChanged(bool active) override;
+
         virtual int32_t setDisplayTemperature(const int temperatue) override;
 
         const std::string& getPanelName() final;
