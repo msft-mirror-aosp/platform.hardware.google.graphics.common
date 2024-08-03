@@ -1342,6 +1342,13 @@ int32_t ExynosPrimaryDisplay::setDisplayTemperature(const int temperature) {
     return HWC2_ERROR_UNSUPPORTED;
 }
 
+void ExynosPrimaryDisplay::onProximitySensorStateChanged(bool active) {
+    if (mProximitySensorStateChangeCallback) {
+        ALOGI("ExynosPrimaryDisplay: %s: %d", __func__, active);
+        mProximitySensorStateChangeCallback->onProximitySensorStateChanged(active);
+    }
+}
+
 int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
                                                     const RrThrottleRequester requester) {
     if (targetFps < 0) {
@@ -1402,6 +1409,9 @@ int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
             ALOGD("%s: proximity state %s, min %dhz, doze mode %d", __func__,
                   proximityActive ? "active" : "inactive", targetFps, dozeMode);
             mDisplayTe2Manager->updateTe2OptionForProximity(proximityActive, targetFps, dozeMode);
+            if (!dozeMode) {
+                onProximitySensorStateChanged(proximityActive);
+            }
         }
 
         if (maxMinIdleFps == mMinIdleRefreshRate) return NO_ERROR;

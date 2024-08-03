@@ -437,6 +437,23 @@ ndk::ScopedAStatus Display::queryStats(DisplayStats::Tag tag,
     return ndk::ScopedAStatus::ok();
 }
 
+ndk::ScopedAStatus Display::isProximitySensorStateCallbackSupported(bool* _aidl_return) {
+    if (mDisplay) {
+        *_aidl_return = mDisplay->isProximitySensorStateCallbackSupported();
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::registerProximitySensorStateChangeCallback(
+        const std::shared_ptr<IDisplayProximitySensorCallback>& callback) {
+    if (mDisplay && callback) {
+        mDisplay->mProximitySensorStateChangeCallback = callback;
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
 } // namespace display
 } // namespace pixel
 } // namespace hardware
