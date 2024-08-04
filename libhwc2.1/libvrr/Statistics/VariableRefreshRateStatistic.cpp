@@ -279,6 +279,15 @@ void VariableRefreshRateStatistic::updateIdleStats(int64_t endTimeStampInBootClo
         mLastRefreshTimeInBootClockNs = endTimeStampInBootClockNs;
         record.mUpdated = true;
     } else {
+        if ((mMinimumRefreshRate > 1) &&
+            (!isPresentRefresh(mDisplayRefreshProfile.mRefreshSource))) {
+            ALOGE("%s We should not have non-present refresh when the minimum refresh rate is set, "
+                  "as it should use auto mode.",
+                  __func__);
+            return;
+        }
+        mDisplayRefreshProfile.mRefreshSource = RefreshSource::kRefreshSourceIdlePresent;
+
         int numVsync = roundDivide(durationFromLastPresentNs, mTeIntervalNs);
         mDisplayRefreshProfile.mNumVsync =
                 (mMinimumRefreshRate > 1 ? (mTeFrequency / mMinimumRefreshRate) : mTeFrequency);

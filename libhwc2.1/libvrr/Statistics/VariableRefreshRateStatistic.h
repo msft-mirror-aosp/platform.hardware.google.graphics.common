@@ -127,7 +127,7 @@ typedef struct DisplayRefreshRecord {
     std::string toString() const {
         std::ostringstream os;
         os << "Count = " << mCount;
-        os << ", AccumulatedTimeNs = " << mAccumulatedTimeNs / 1000000;
+        os << ", AccumulatedTime Ms = " << mAccumulatedTimeNs / 1000000;
         os << ", LastTimeStampInBootClockNs = " << mLastTimeStampInBootClockNs;
         return os.str();
     }
