@@ -165,7 +165,7 @@ std::tuple<uint64_t, int> DrmProperty::getEnumValueWithName(std::string name) co
 
 bool DrmProperty::validateChange(uint64_t value) const {
   if (isImmutable()) {
-    ALOGE("%s: %s is immutable drm property (%zu)", __func__, name().c_str());
+    ALOGE("%s: %s is immutable drm property (%u)", __func__, name().c_str(), id());
     return false;
   } else if (isRange()) {
     if (value < values_[0] || value > values_[1]) {

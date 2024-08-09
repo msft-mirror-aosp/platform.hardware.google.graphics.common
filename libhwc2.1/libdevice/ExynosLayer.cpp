@@ -1170,7 +1170,7 @@ void ExynosLayer::miniDump(TableBuilder& tb) {
         tb.addKeyValue("MPP", "IGN");
     else if ((mOtfMPP == NULL) && (mM2mMPP == NULL))
         tb.addKeyValue("MPP", "NA");
-    else if (mM2mMPP != NULL) {
+    else if (mM2mMPP != NULL && mOtfMPP != NULL) {
         String8 MPP = mM2mMPP->mName + "," + mOtfMPP->mName;
         tb.addKeyValue("MPP", MPP.c_str());
     } else if (mOtfMPP != NULL)
