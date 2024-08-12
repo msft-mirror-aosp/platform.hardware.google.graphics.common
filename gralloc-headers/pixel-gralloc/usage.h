@@ -46,6 +46,8 @@ enum Usage : uint64_t {
 
     NO_COMPRESSION = 1ULL << 29,
 
+    JPEG = 1ULL << 30,
+
     TPU_OUTPUT = 1ULL << 31,
 
     // Video IPs. These flags only make sense in combination with VIDEO_ENCODER/VIDEO_DECODER usage
