@@ -1543,6 +1543,19 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
         result.appendFormat("Temperature : %d°C\n", mDisplayTemperature);
     }
     result.appendFormat("\n");
+
+    DisplayType displayType = getDcDisplayType();
+    std::string displayTypeIdentifier;
+    if (displayType == DisplayType::DISPLAY_PRIMARY) {
+        displayTypeIdentifier = "primarydisplay";
+    } else if (displayType == DisplayType::DISPLAY_EXTERNAL) {
+        displayTypeIdentifier = "externaldisplay";
+    }
+    if (!displayTypeIdentifier.empty()) {
+        auto xrrVersion =
+                android::hardware::graphics::composer::getDisplayXrrVersion(displayTypeIdentifier);
+        result.appendFormat("XRR version: %d.%d\n", xrrVersion.first, xrrVersion.second);
+    }
 }
 
 void ExynosPrimaryDisplay::calculateTimelineLocked(

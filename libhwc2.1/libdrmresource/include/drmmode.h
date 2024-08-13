@@ -73,6 +73,7 @@ class DrmMode {
   float te_period(int64_t unit = std::nano::den) const;
 
   bool is_operation_rate_to_bts() const;
+  bool is_boost_2x_bts() const;
   uint32_t flags() const;
   uint32_t type() const;
 

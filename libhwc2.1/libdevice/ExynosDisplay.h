@@ -428,6 +428,7 @@ typedef struct displayConfigs {
     /* internal use */
     bool isNsMode = false;
     bool isOperationRateToBts;
+    bool isBoost2xBts;
     int32_t refreshRate;
 } displayConfigs_t;
 
