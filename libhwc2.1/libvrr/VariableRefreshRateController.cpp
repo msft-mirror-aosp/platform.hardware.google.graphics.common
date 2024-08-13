@@ -999,7 +999,7 @@ bool VariableRefreshRateController::shouldHandleVendorRenderingTimeout() const {
 }
 
 void VariableRefreshRateController::threadBody() {
-    struct sched_param param = {.sched_priority = sched_get_priority_max(SCHED_FIFO)};
+    struct sched_param param = {.sched_priority = sched_get_priority_min(SCHED_FIFO)};
     if (sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
         LOG(ERROR) << "VrrController: fail to set scheduler to SCHED_FIFO.";
         return;
