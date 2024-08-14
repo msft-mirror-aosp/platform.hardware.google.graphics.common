@@ -344,7 +344,7 @@ void VariableRefreshRateController::preSetPowerMode(int32_t powerMode) {
                 if (!mFileNode->WriteUint32(kRefreshControlNodeName, command)) {
                     LOG(ERROR) << "VrrController: write file node error, command = " << command;
                 }
-                dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
+                cancelPresentTimeoutHandlingLocked();
                 return;
             }
             case HWC_POWER_MODE_OFF:
@@ -486,7 +486,7 @@ void VariableRefreshRateController::setPresentTimeoutController(uint32_t control
             static_cast<PresentTimeoutControllerType>(controllerType);
     if (newControllerType != mPresentTimeoutController) {
         if (mPresentTimeoutController == PresentTimeoutControllerType::kSoftware) {
-            dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
+            cancelPresentTimeoutHandlingLocked();
         }
         mPresentTimeoutController = newControllerType;
         uint32_t command = getCurrentRefreshControlStateLocked();
@@ -521,7 +521,7 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
     mMaximumRefreshRateTimeoutNs = minLockTimeForPeakRefreshRate;
     dropEventLocked(VrrControllerEventType::kMinLockTimeForPeakRefreshRate);
     if (isMinimumRefreshRateActive()) {
-        dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
+        cancelPresentTimeoutHandlingLocked();
         // Delegate timeout management to hardware.
         setBit(command, kPanelRefreshCtrlFrameInsertionAutoModeOffset);
         // Configure panel to maintain the minimum refresh rate.
