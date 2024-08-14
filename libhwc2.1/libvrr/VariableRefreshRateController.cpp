@@ -107,7 +107,7 @@ auto VariableRefreshRateController::CreateInstance(ExynosDisplay* display,
 
 VariableRefreshRateController::VariableRefreshRateController(ExynosDisplay* display,
                                                              const std::string& panelName)
-      : mDisplay(display), mPanelName(panelName) {
+      : mDisplay(display), mPanelName(panelName), mPendingVendorRenderingTimeoutTasks(this) {
     mState = VrrControllerState::kDisable;
     std::string displayFileNodePath = mDisplay->getPanelSysfsPath();
     if (displayFileNodePath.empty()) {
@@ -344,7 +344,7 @@ void VariableRefreshRateController::preSetPowerMode(int32_t powerMode) {
                 if (!mFileNode->WriteUint32(kRefreshControlNodeName, command)) {
                     LOG(ERROR) << "VrrController: write file node error, command = " << command;
                 }
-                dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
+                cancelPresentTimeoutHandlingLocked();
                 return;
             }
             case HWC_POWER_MODE_OFF:
@@ -486,7 +486,7 @@ void VariableRefreshRateController::setPresentTimeoutController(uint32_t control
             static_cast<PresentTimeoutControllerType>(controllerType);
     if (newControllerType != mPresentTimeoutController) {
         if (mPresentTimeoutController == PresentTimeoutControllerType::kSoftware) {
-            dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
+            cancelPresentTimeoutHandlingLocked();
         }
         mPresentTimeoutController = newControllerType;
         uint32_t command = getCurrentRefreshControlStateLocked();
@@ -521,7 +521,7 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
     mMaximumRefreshRateTimeoutNs = minLockTimeForPeakRefreshRate;
     dropEventLocked(VrrControllerEventType::kMinLockTimeForPeakRefreshRate);
     if (isMinimumRefreshRateActive()) {
-        dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
+        cancelPresentTimeoutHandlingLocked();
         // Delegate timeout management to hardware.
         setBit(command, kPanelRefreshCtrlFrameInsertionAutoModeOffset);
         // Configure panel to maintain the minimum refresh rate.
@@ -748,6 +748,7 @@ void VariableRefreshRateController::setExpectedPresentTime(int64_t timestampNano
     // Drop the out of date timeout.
     dropEventLocked(VrrControllerEventType::kSystemRenderingTimeout);
     cancelPresentTimeoutHandlingLocked();
+    mPendingVendorRenderingTimeoutTasks.baseTimeNs = timestampNanos;
     mRecord.mPendingCurrentPresentTime = {mVrrActiveConfig, timestampNanos, frameIntervalNs};
 }
 
@@ -762,6 +763,7 @@ void VariableRefreshRateController::onVsync(int64_t timestampNanos,
 void VariableRefreshRateController::cancelPresentTimeoutHandlingLocked() {
     dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutInit);
     dropEventLocked(VrrControllerEventType::kVendorRenderingTimeoutPost);
+    mPendingVendorRenderingTimeoutTasks.reset();
 }
 
 void VariableRefreshRateController::dropEventLocked() {
@@ -898,7 +900,7 @@ void VariableRefreshRateController::handleStayHibernate() {
               getSteadyClockTimeNs() + kDefaultWakeUpTimeInPowerSaving);
 }
 
-void VariableRefreshRateController::handlePresentTimeout(const VrrControllerEvent& event) {
+void VariableRefreshRateController::handlePresentTimeout() {
     ATRACE_CALL();
 
     if (mState == VrrControllerState::kDisable) {
@@ -913,6 +915,7 @@ void VariableRefreshRateController::handlePresentTimeout(const VrrControllerEven
     if (mFrameRateReporter) {
         mFrameRateReporter->onPresent(getSteadyClockTimeNs(), 0);
     }
+    mPendingVendorRenderingTimeoutTasks.scheduleNextTask();
 }
 
 void VariableRefreshRateController::onFrameRateChangedForDBI(int refreshRate) {
@@ -1057,39 +1060,50 @@ void VariableRefreshRateController::threadBody() {
                     }
                     case VrrControllerEventType::kVendorRenderingTimeoutInit: {
                         if (mPresentTimeoutEventHandler) {
+                            size_t numberOfIntervals = 0;
                             // Verify whether a present timeout override exists, and if so, execute
                             // it first.
                             if (mVendorPresentTimeoutOverride) {
                                 const auto& params = mVendorPresentTimeoutOverride.value();
-                                TimedEvent timedEvent("VendorPresentTimeoutOverride");
-                                timedEvent.mIsRelativeTime = true;
-                                timedEvent.mFunctor = params.mFunctor;
                                 int64_t whenFromNowNs = 0;
                                 for (int i = 0; i < params.mSchedule.size(); ++i) {
-                                    uint32_t intervalNs = params.mSchedule[i].second;
-                                    for (int j = 0; j < params.mSchedule[i].first; ++j) {
-                                        timedEvent.mWhenNs = whenFromNowNs;
-                                        postEvent(VrrControllerEventType::
-                                                          kVendorRenderingTimeoutPost,
-                                                  timedEvent);
-                                        whenFromNowNs += intervalNs;
+                                    numberOfIntervals += params.mSchedule[i].first;
+                                }
+                                if (numberOfIntervals > 0) {
+                                    mPendingVendorRenderingTimeoutTasks.reserveSpace(
+                                            numberOfIntervals);
+                                    for (int i = 0; i < params.mSchedule.size(); ++i) {
+                                        uint32_t intervalNs = params.mSchedule[i].second;
+                                        for (int j = 0; j < params.mSchedule[i].first; ++j) {
+                                            mPendingVendorRenderingTimeoutTasks.addTask(
+                                                    whenFromNowNs);
+                                            whenFromNowNs += intervalNs;
+                                        }
                                     }
                                 }
                             } else {
                                 auto handleEvents = mPresentTimeoutEventHandler->getHandleEvents();
                                 if (!handleEvents.empty()) {
-                                    for (auto& event : handleEvents) {
-                                        postEvent(VrrControllerEventType::
-                                                          kVendorRenderingTimeoutPost,
-                                                  event);
+                                    numberOfIntervals = handleEvents.size();
+                                    mPendingVendorRenderingTimeoutTasks.reserveSpace(
+                                            numberOfIntervals);
+                                    for (int i = 0; i < handleEvents.size(); ++i) {
+                                        mPendingVendorRenderingTimeoutTasks.addTask(
+                                                handleEvents[i].mWhenNs);
                                     }
                                 }
+                            }
+                            if (numberOfIntervals > 0) {
+                                // Start from 1 since we will execute the first task immediately
+                                // below.
+                                mPendingVendorRenderingTimeoutTasks.nextTaskIndex = 1;
+                                handlePresentTimeout();
                             }
                         }
                         break;
                     }
                     case VrrControllerEventType::kVendorRenderingTimeoutPost: {
-                        handlePresentTimeout(event);
+                        handlePresentTimeout();
                         if (event.mFunctor) {
                             event.mFunctor();
                         }
