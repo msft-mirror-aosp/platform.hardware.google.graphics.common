@@ -4626,6 +4626,8 @@ inline int32_t ExynosDisplay::getDisplayFrameScanoutPeriodFromConfig(hwc2_config
                 frameScanoutPeriodNs =
                         (frameScanoutPeriodNs <= opPeriodNs) ? frameScanoutPeriodNs : opPeriodNs;
             }
+        } else if (mDisplayConfigs[config].isBoost2xBts) {
+            frameScanoutPeriodNs = frameScanoutPeriodNs / 2;
         }
     }
 
