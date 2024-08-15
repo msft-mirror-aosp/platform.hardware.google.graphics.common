@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include "interface/Event.h"
+#include "interface/VariableRefreshRateInterface.h"
 
 inline void clearBit(uint32_t& data, uint32_t bit) {
     data &= ~(1L << (bit));
@@ -102,31 +103,10 @@ bool hasPresentFrameFlag(int flag, PresentFrameFlag target);
 
 bool isPowerModeOff(int powerMode);
 
+bool isPresentRefresh(RefreshSource refreshSource);
+
 void setTimedEventWithAbsoluteTime(TimedEvent& event);
 
-class SystemClockTimeTranslator {
-public:
-    SystemClockTimeTranslator() { synchronize(); }
-
-    ~SystemClockTimeTranslator() = default;
-
-    int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs) const {
-        return steadyClockTimeNs + mDiff;
-    }
-    int64_t bootClockTimeToSteadyClockTimeNs(int64_t bootClockTimeNs) const {
-        return bootClockTimeNs - mDiff;
-    }
-
-    void synchronize() {
-        mBootClockTimeNs = getBootClockTimeNs();
-        mSteadyClockTimeNs = getSteadyClockTimeNs();
-        mDiff = mBootClockTimeNs - mSteadyClockTimeNs;
-    }
-
-private:
-    int64_t mBootClockTimeNs;
-    int64_t mSteadyClockTimeNs;
-    int64_t mDiff;
-};
+int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs);
 
 } // namespace android::hardware::graphics::composer

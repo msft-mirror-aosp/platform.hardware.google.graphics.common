@@ -56,11 +56,19 @@ bool isPowerModeOff(int powerMode) {
     return ((powerMode == HWC_POWER_MODE_OFF) || (powerMode == HWC_POWER_MODE_DOZE_SUSPEND));
 }
 
+bool isPresentRefresh(RefreshSource refreshSource) {
+    return (refreshSource & kRefreshSourcePresentMask);
+}
+
 void setTimedEventWithAbsoluteTime(TimedEvent& event) {
     if (event.mIsRelativeTime) {
         event.mWhenNs += getSteadyClockTimeNs();
         event.mIsRelativeTime = false;
     }
+}
+
+int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs) {
+    return steadyClockTimeNs + (getBootClockTimeNs() - getSteadyClockTimeNs());
 }
 
 } // namespace android::hardware::graphics::composer

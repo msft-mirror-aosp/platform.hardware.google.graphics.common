@@ -46,13 +46,20 @@ enum Usage : uint64_t {
 
     NO_COMPRESSION = 1ULL << 29,
 
+    JPEG = 1ULL << 30,
+
+    TPU_OUTPUT = 1ULL << 31,
+
     // Video IPs. These flags only make sense in combination with VIDEO_ENCODER/VIDEO_DECODER usage
     // flags
     MFC = 1ULL << 50,
     BO = 1ULL << 51,
     BW = BO,
 
-    // Used for the camera ISP image heap of the dual PD buffer.
+    // Used to identify the remosaic sub-block of camera
+    REMOSAIC = 1ULL << 61,
+
+    // Used for the camera ISP image heap of the dual PD buffer
     TPU_INPUT = 1ULL << 62,
 
     // Used to select specific heap for faceauth raw images used for evaluation

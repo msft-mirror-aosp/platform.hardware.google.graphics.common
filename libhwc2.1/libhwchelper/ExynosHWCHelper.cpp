@@ -1214,6 +1214,68 @@ std::string TableBuilder::build() {
     return output;
 }
 
+std::string TableBuilder::buildForMiniDump() {
+    std::stringstream splitter, header;
+    std::vector<std::stringstream> contents;
+    splitter << "|";
+    header << "|";
+    if (kToVs.size()) {
+        contents.resize(kToVs.begin()->second.size());
+        for (auto& content : contents) content << "|";
+    }
+
+    for (const auto& key : keys) {
+        auto& values = kToVs[key];
+        auto max_value_iter = std::max_element(values.begin(), values.end(),
+                                               [](const std::string& a, const std::string& b) {
+                                                   return a.size() < b.size();
+                                               });
+        const int size = max_value_iter != values.end()
+                ? std::max(key.size(), max_value_iter->size())
+                : key.size();
+        splitter << std::string(size, '-') << "+";
+        header << buildPaddedString(key, size) << "|";
+        for (size_t i = 0; i < values.size(); ++i) {
+            contents[i] << buildPaddedString(values[i], size) << "|";
+        }
+    }
+
+    std::string output = splitter.str() + "\n" + header.str() + "\n";
+    for (auto& content : contents) {
+        output += splitter.str() + "\n" + content.str() + "\n";
+    }
+    output += splitter.str() + "\n";
+    return output;
+}
+
+TableBuilder& TableBuilder::addKeyValue(const std::string& key, const uint64_t& value, bool toHex) {
+    recordKeySequence(key);
+    std::stringstream v;
+    if (toHex)
+        v << "0x" << std::hex << value;
+    else
+        v << value;
+    kToVs[key].emplace_back(v.str());
+    return *this;
+}
+
+TableBuilder& TableBuilder::addKeyValue(const std::string& key, const std::vector<uint64_t>& values,
+                                        bool toHex) {
+    recordKeySequence(key);
+    std::stringstream value;
+    for (int i = 0; i < values.size(); i++) {
+        if (i) value << ", ";
+
+        if (toHex)
+            value << "0x" << std::hex << values[i];
+        else
+            value << values[i];
+    }
+
+    kToVs[key].emplace_back(value.str());
+    return *this;
+}
+
 std::string TableBuilder::buildPaddedString(const std::string& str, int size) {
     int totalPadding = size - str.size();
     int leftPadding = totalPadding / 2.0;
@@ -1403,3 +1465,31 @@ uint32_t nanoSec2Hz(uint64_t ns) {
     constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
     return round(static_cast<float>(nsecsPerSec) / ns);
 };
+
+nsecs_t getSignalTime(const int32_t fd) {
+    if (fd == -1) {
+        return SIGNAL_TIME_INVALID;
+    }
+
+    struct sync_file_info* finfo = sync_file_info(fd);
+    if (finfo == nullptr) {
+        return SIGNAL_TIME_INVALID;
+    }
+
+    if (finfo->status != 1) {
+        const auto status = finfo->status;
+        sync_file_info_free(finfo);
+        return status < 0 ? SIGNAL_TIME_INVALID : SIGNAL_TIME_PENDING;
+    }
+
+    uint64_t timestamp = 0;
+    struct sync_fence_info* pinfo = sync_get_fence_info(finfo);
+    for (size_t i = 0; i < finfo->num_fences; i++) {
+        if (pinfo[i].timestamp_ns > timestamp) {
+            timestamp = pinfo[i].timestamp_ns;
+        }
+    }
+
+    sync_file_info_free(finfo);
+    return nsecs_t(timestamp);
+}

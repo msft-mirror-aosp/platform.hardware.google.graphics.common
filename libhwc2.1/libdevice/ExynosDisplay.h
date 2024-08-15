@@ -94,6 +94,22 @@ class WorkDuration;
 } // namespace android
 } // namespace aidl
 
+namespace aidl {
+namespace com {
+namespace google {
+namespace hardware {
+namespace pixel {
+namespace display {
+
+class IDisplayProximitySensorCallback;
+
+} // namespace display
+} // namespace pixel
+} // namespace hardware
+} // namespace google
+} // namespace com
+} // namespace aidl
+
 using WorkDuration = aidl::android::hardware::power::WorkDuration;
 
 enum dynamic_recomp_mode {
@@ -412,6 +428,7 @@ typedef struct displayConfigs {
     /* internal use */
     bool isNsMode = false;
     bool isOperationRateToBts;
+    bool isBoost2xBts;
     int32_t refreshRate;
 } displayConfigs_t;
 
@@ -594,6 +611,10 @@ class ExynosDisplay {
         std::unique_ptr<HistogramController> mHistogramController;
 
         std::unique_ptr<DisplayTe2Manager> mDisplayTe2Manager;
+
+        std::shared_ptr<
+                aidl::com::google::hardware::pixel::display::IDisplayProximitySensorCallback>
+                mProximitySensorStateChangeCallback;
 
         /* For debugging */
         hwc_display_contents_1_t *mHWC1LayerList;
@@ -863,6 +884,8 @@ class ExynosDisplay {
          */
         virtual int32_t setPowerMode(
                 int32_t /*hwc2_power_mode_t*/ mode);
+
+        virtual std::optional<hwc2_power_mode_t> getPowerMode() { return mPowerModeState; }
 
         /* setVsyncEnabled(..., enabled)
          * Descriptor: HWC2_FUNCTION_SET_VSYNC_ENABLED
@@ -1246,6 +1269,7 @@ class ExynosDisplay {
         int32_t uncacheLayerBuffers(ExynosLayer* layer, const std::vector<buffer_handle_t>& buffers,
                                     std::vector<buffer_handle_t>& outClearableBuffers);
 
+        virtual void miniDump(String8& result);
         virtual void dump(String8& result);
         void dumpLocked(String8& result) REQUIRES(mDisplayMutex);
         void dumpAllBuffers() REQUIRES(mDisplayMutex);
@@ -1374,6 +1398,10 @@ class ExynosDisplay {
         }
 
         virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
+        virtual void onProximitySensorStateChanged(bool __unused active) { return; }
+        bool isProximitySensorStateCallbackSupported() { return mDisplayTe2Manager != nullptr; }
+
+        virtual int32_t setDisplayTemperature(const int __unused temperature) { return NO_ERROR; }
 
         virtual int32_t registerRefreshRateChangeListener(
                 std::shared_ptr<RefreshRateChangeListener> listener) {
@@ -1619,8 +1647,6 @@ class ExynosDisplay {
         };
 
         static const constexpr int kAveragesBufferSize = 3;
-        static const constexpr nsecs_t SIGNAL_TIME_PENDING = INT64_MAX;
-        static const constexpr nsecs_t SIGNAL_TIME_INVALID = -1;
         std::unordered_map<uint32_t, RollingAverage<kAveragesBufferSize>> mRollingAverages;
         // mPowerHalHint should be declared only after mDisplayId and mDisplayTraceName have been
         // declared since mDisplayId and mDisplayTraceName are needed as the parameter of
@@ -1646,7 +1672,6 @@ class ExynosDisplay {
         bool mUsePowerHints = false;
         nsecs_t getExpectedPresentTime(nsecs_t startTime);
         nsecs_t getPredictedPresentTime(nsecs_t startTime);
-        nsecs_t getSignalTime(int32_t fd) const;
         void updateAverages(nsecs_t endTime);
         std::optional<nsecs_t> getPredictedDuration(bool duringValidation);
         atomic_bool mDebugRCDLayerEnabled = true;

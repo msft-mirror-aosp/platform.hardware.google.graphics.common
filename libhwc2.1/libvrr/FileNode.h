@@ -40,9 +40,9 @@ public:
 
     bool WriteUint32(const std::string& nodeName, uint32_t value);
 
-private:
     int getFileHandler(const std::string& nodeName);
 
+private:
     std::string mNodePath;
     std::unordered_map<std::string, int> mFds;
     std::unordered_map<int, uint32_t> mLastWrittenValue;
