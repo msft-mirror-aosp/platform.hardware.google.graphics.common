@@ -38,7 +38,8 @@ typedef struct PowerStatsPresentProfile {
             return isOff() == rhs.isOff();
         }
         return (mWidth == rhs.mWidth) && (mHeight == rhs.mHeight) && (mFps == rhs.mFps) &&
-                (mPowerMode == rhs.mPowerMode) && (mBrightnessMode == rhs.mBrightnessMode);
+                (mPowerMode == rhs.mPowerMode) && (mBrightnessMode == rhs.mBrightnessMode) &&
+                (mRefreshSource == rhs.mRefreshSource);
     }
 
     bool operator<(const PowerStatsPresentProfile& rhs) const {
@@ -50,6 +51,8 @@ typedef struct PowerStatsPresentProfile {
             return (isOff() || (mPowerMode < rhs.mPowerMode));
         } else if (mBrightnessMode != rhs.mBrightnessMode) {
             return mBrightnessMode < rhs.mBrightnessMode;
+        } else if (mRefreshSource != rhs.mRefreshSource) {
+            return mRefreshSource < rhs.mRefreshSource;
         } else if (mWidth != rhs.mWidth) {
             return mWidth < rhs.mWidth;
         } else if (mHeight != rhs.mHeight) {
@@ -64,6 +67,7 @@ typedef struct PowerStatsPresentProfile {
         os << "mWidth = " << mWidth;
         os << " mHeight = " << mHeight;
         os << " mFps = " << mFps;
+        os << ", mRefreshSource = " << mRefreshSource;
         os << ", power mode = " << mPowerMode;
         os << ", brightness = " << static_cast<int>(mBrightnessMode);
         return os.str();
@@ -74,7 +78,7 @@ typedef struct PowerStatsPresentProfile {
     int mFps = -1;
     int mPowerMode = HWC_POWER_MODE_OFF;
     BrightnessMode mBrightnessMode = BrightnessMode::kInvalidBrightnessMode;
-
+    RefreshSource mRefreshSource = kRefreshSourceActivePresent;
 } PowerStatsPresentProfile;
 
 class PowerStatsPresentProfileTokenGenerator {
@@ -88,13 +92,15 @@ public:
     std::optional<std::string> generateToken(const std::string& tokenLabel);
 
 private:
-    std::string generateModeToken();
+    std::string generateRefreshSourceToken() const;
 
-    std::string generateWidthToken();
+    std::string generateModeToken() const;
 
-    std::string generateHeightToken();
+    std::string generateWidthToken() const;
 
-    std::string generateFpsToken();
+    std::string generateHeightToken() const;
+
+    std::string generateFpsToken() const;
 
     const PowerStatsPresentProfile* mPowerStatsProfile;
 };
