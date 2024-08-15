@@ -317,8 +317,6 @@ class ExynosDisplayDrmInterface :
                     }
                     mModeSetFence = fence;
                 }
-                void setVrrOn(const bool vrrOn) { mVrrOn = vrrOn; }
-                bool isVrrOn() const { return mVrrOn; }
 
             private:
                 bool mVsyncEnabled = false;
@@ -328,7 +326,6 @@ class ExynosDisplayDrmInterface :
                 int mModeSetFence = -1;
                 int mTransientDuration = 0;
                 std::mutex mFenceMutex;
-                bool mVrrOn = false;
         };
         void Callback(int display, int64_t timestamp) override;
 
