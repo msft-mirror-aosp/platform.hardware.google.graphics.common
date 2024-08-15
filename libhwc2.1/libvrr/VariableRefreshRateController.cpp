@@ -915,6 +915,11 @@ void VariableRefreshRateController::handlePresentTimeout() {
     if (mFrameRateReporter) {
         mFrameRateReporter->onPresent(getSteadyClockTimeNs(), 0);
     }
+    if (mVariableRefreshRateStatistic) {
+        mVariableRefreshRateStatistic
+                ->onNonPresentRefresh(getSteadyClockTimeNs(),
+                                      RefreshSource::kRefreshSourceFrameInsertion);
+    }
     mPendingVendorRenderingTimeoutTasks.scheduleNextTask();
 }
 
