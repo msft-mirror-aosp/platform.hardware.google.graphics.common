@@ -27,10 +27,14 @@ const std::set<Fraction<int>> DisplayStateResidencyProvider::kFpsMappingTable =
         {{240, 240}, {240, 120}, {240, 24}, {240, 10}, {240, 8}, {240, 7},
          {240, 6},   {240, 5},   {240, 4},  {240, 3},  {240, 2}};
 
-const std::unordered_set<int> DisplayStateResidencyProvider::kFpsLowPowerModeMappingTable = {1, 30};
+const std::vector<int> DisplayStateResidencyProvider::kFpsLowPowerModeMappingTable = {1, 30};
 
-const std::unordered_set<int> DisplayStateResidencyProvider::kActivePowerModes =
-        {HWC2_POWER_MODE_DOZE, HWC2_POWER_MODE_ON};
+const std::vector<int> DisplayStateResidencyProvider::kActivePowerModes = {HWC2_POWER_MODE_DOZE,
+                                                                           HWC2_POWER_MODE_ON};
+
+const std::vector<RefreshSource> DisplayStateResidencyProvider::kRefreshSource =
+        {kRefreshSourceActivePresent, kRefreshSourceIdlePresent, kRefreshSourceFrameInsertion,
+         kRefreshSourceBrightness};
 
 namespace {
 
@@ -107,6 +111,8 @@ void DisplayStateResidencyProvider::mapStatistics() {
                 displayPresentProfile.mCurrentDisplayConfig.mPowerMode;
         powerStatsPresentProfile.mBrightnessMode =
                 displayPresentProfile.mCurrentDisplayConfig.mBrightnessMode;
+        powerStatsPresentProfile.mRefreshSource = displayPresentProfile.mRefreshSource;
+
         auto teFrequency = mDisplayContextProvider->getTeFrequency(configId);
         Fraction fps(teFrequency, displayPresentProfile.mNumVsync);
         if ((kFpsMappingTable.count(fps) > 0)) {
@@ -130,6 +136,7 @@ void DisplayStateResidencyProvider::mapStatistics() {
 
 uint64_t DisplayStateResidencyProvider::aggregateStatistics() {
     uint64_t totalTimeNs = 0;
+    std::set<int> firstIteration;
     for (auto& statistic : mRemappedStatistics) {
         if (!statistic.second.mUpdated) {
             continue;
@@ -144,10 +151,21 @@ uint64_t DisplayStateResidencyProvider::aggregateStatistics() {
         const auto& displayPresentRecord = statistic.second;
 
         auto& stateResidency = mStateResidency[id];
-        stateResidency.totalStateEntryCount = displayPresentRecord.mCount;
-        stateResidency.lastEntryTimestampMs =
-                displayPresentRecord.mLastTimeStampInBootClockNs / MilliToNano;
-        stateResidency.totalTimeInStateMs = displayPresentRecord.mAccumulatedTimeNs / MilliToNano;
+        if (firstIteration.count(id) > 0) {
+            stateResidency.totalStateEntryCount += displayPresentRecord.mCount;
+            stateResidency.lastEntryTimestampMs =
+                    displayPresentRecord.mLastTimeStampInBootClockNs / MilliToNano;
+            stateResidency.totalTimeInStateMs +=
+                    displayPresentRecord.mAccumulatedTimeNs / MilliToNano;
+        } else {
+            stateResidency.totalStateEntryCount = displayPresentRecord.mCount;
+            stateResidency.lastEntryTimestampMs =
+                    displayPresentRecord.mLastTimeStampInBootClockNs / MilliToNano;
+            stateResidency.totalTimeInStateMs =
+                    displayPresentRecord.mAccumulatedTimeNs / MilliToNano;
+            firstIteration.insert(id);
+        }
+
         statistic.second.mUpdated = false;
         totalTimeNs += displayPresentRecord.mAccumulatedTimeNs;
     }
@@ -164,49 +182,58 @@ void DisplayStateResidencyProvider::generatePowerStatsStates() {
     // Include the special case 'OFF'.
     powerStatsPresentProfile.mPowerMode = HWC2_POWER_MODE_OFF;
     powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
-    for (auto powerMode : kActivePowerModes) {
-        powerStatsPresentProfile.mPowerMode = powerMode;
-        for (int brightnesrMode = static_cast<int>(BrightnessMode::kNormalBrightnessMode);
-             brightnesrMode < BrightnessMode::kInvalidBrightnessMode; ++brightnesrMode) {
-            powerStatsPresentProfile.mBrightnessMode = static_cast<BrightnessMode>(brightnesrMode);
-            for (const auto& config : *configs) {
-                powerStatsPresentProfile.mWidth = mDisplayContextProvider->getWidth(config.first);
-                powerStatsPresentProfile.mHeight = mDisplayContextProvider->getHeight(config.first);
-                // Handle the special case LPM(Low Power Mode).
-                if (powerMode == HWC_POWER_MODE_DOZE) {
-                    for (auto fps : kFpsLowPowerModeMappingTable) {
-                        powerStatsPresentProfile.mFps = fps;
+    for (auto refreshSource : kRefreshSource) {
+        powerStatsPresentProfile.mRefreshSource = refreshSource;
+        for (auto powerMode : kActivePowerModes) {
+            powerStatsPresentProfile.mPowerMode = powerMode;
+            if (!isPresentRefresh(refreshSource) && powerMode == HWC2_POWER_MODE_DOZE) {
+                continue;
+            }
+            for (int brightnesrMode = static_cast<int>(BrightnessMode::kNormalBrightnessMode);
+                 brightnesrMode < BrightnessMode::kInvalidBrightnessMode; ++brightnesrMode) {
+                powerStatsPresentProfile.mBrightnessMode =
+                        static_cast<BrightnessMode>(brightnesrMode);
+                for (const auto& config : *configs) {
+                    powerStatsPresentProfile.mWidth =
+                            mDisplayContextProvider->getWidth(config.first);
+                    powerStatsPresentProfile.mHeight =
+                            mDisplayContextProvider->getHeight(config.first);
+                    // Handle the special case LPM(Low Power Mode).
+                    if (powerMode == HWC_POWER_MODE_DOZE) {
+                        for (auto fps : kFpsLowPowerModeMappingTable) {
+                            powerStatsPresentProfile.mFps = fps;
+                            powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
+                        }
+                        continue;
+                    }
+                    // Include the special case: other fps.
+                    powerStatsPresentProfile.mFps = 0;
+                    powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
+                    for (auto fps : kFpsMappingTable) {
+                        powerStatsPresentProfile.mFps = fps.round();
                         powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
                     }
-                    continue;
-                }
-                // Include the special case: other fps.
-                powerStatsPresentProfile.mFps = 0;
-                powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
-                for (auto fps : kFpsMappingTable) {
-                    powerStatsPresentProfile.mFps = fps.round();
-                    powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
                 }
             }
         }
     }
 
-    auto uniqueComp = [](const std::pair<std::string, PowerStatsPresentProfile>& v1,
-                         const std::pair<std::string, PowerStatsPresentProfile>& v2) {
-        return v1.first < v2.first;
-    };
-
-    // Transform candidate DisplayConfigProfiles into a string and eliminate duplicates.
-    std::set<std::pair<std::string, PowerStatsPresentProfile>, decltype(uniqueComp)> uniqueStates;
+    // Transform candidate into stateName, powerStatsPresentProfile set
+    std::set<std::pair<PowerStatsPresentProfile, std::string>> uniqueStates;
     for (const auto& powerStatsPresentProfile : powerStatsPresentProfileCandidates) {
         std::string stateName;
         mPowerStatsPresentProfileTokenGenerator.setPowerStatsPresentProfile(
                 &powerStatsPresentProfile);
-        for (const auto& pattern : mDisplayStateResidencyPattern) {
+
+        const std::vector<std::pair<std::string, std::string>>& residencyPattern =
+                (!isPresentRefresh(powerStatsPresentProfile.mRefreshSource))
+                ? mNonPresentDisplayStateResidencyPattern
+                : mPresentDisplayStateResidencyPattern;
+
+        for (const auto& pattern : residencyPattern) {
             const auto token = mPowerStatsPresentProfileTokenGenerator.generateToken(pattern.first);
             if (token.has_value()) {
                 stateName += token.value();
-                // Handle special case when mode is 'OFF'.
                 if (pattern.first == "mode" && token.value() == "OFF") {
                     break;
                 }
@@ -217,29 +244,28 @@ void DisplayStateResidencyProvider::generatePowerStatsStates() {
             }
             stateName += pattern.second;
         }
-        uniqueStates.insert(std::make_pair(stateName, powerStatsPresentProfile));
+
+        uniqueStates.insert(std::make_pair(powerStatsPresentProfile, stateName));
     }
 
-    auto sortComp = [](const std::pair<std::string, PowerStatsPresentProfile>& v1,
-                       const std::pair<std::string, PowerStatsPresentProfile>& v2) {
-        return v1.second < v2.second;
-    };
-    std::set<std::pair<std::string, PowerStatsPresentProfile>, decltype(sortComp)> sortedStates;
-    // Sort power stats according to a predefined order.
-    std::for_each(uniqueStates.begin(), uniqueStates.end(),
-                  [&](const std::pair<std::string, PowerStatsPresentProfile>& item) {
-                      sortedStates.insert(item);
-                  });
-
     // Sort and assign a unique identifier to each state string.
-    mStateResidency.resize(sortedStates.size());
-    int id = 0;
+    std::map<std::string, int> stateNameIDMap;
     int index = 0;
-    for (const auto& state : sortedStates) {
-        mStates.push_back({id, state.first});
-        mPowerStatsPresentProfileToIdMap[state.second] = id;
-        mStateResidency[index++].id = id;
-        ++id;
+    for (const auto& state : uniqueStates) {
+        auto it = stateNameIDMap.find(state.second);
+        int id = index;
+        // If the stateName already exists, update  mPowerStatsPresentProfileToIdMap, and skip
+        // updating mStates/Residency
+        if (it != stateNameIDMap.end()) {
+            id = it->second;
+        } else {
+            stateNameIDMap.insert({state.second, id});
+            index++;
+            mStates.push_back({id, state.second});
+            mStateResidency.emplace_back();
+            mStateResidency.back().id = id;
+        }
+        mPowerStatsPresentProfileToIdMap[state.first] = id;
     }
 
 #ifdef DEBUG_VRR_POWERSTATS
@@ -250,35 +276,44 @@ void DisplayStateResidencyProvider::generatePowerStatsStates() {
 #endif
 }
 
-bool DisplayStateResidencyProvider::parseDisplayStateResidencyPattern() {
+bool DisplayStateResidencyProvider::parseResidencyPattern(
+        std::vector<std::pair<std::string, std::string>>& mResidencyPattern,
+        const std::string_view residencyPattern) {
     size_t start, end;
     start = 0;
     end = -1;
     while (true) {
-        start = kDisplayStateResidencyPattern.find_first_of(kTokenLabelStart, end + 1);
+        start = residencyPattern.find_first_of(kTokenLabelStart, end + 1);
         if (start == std::string::npos) {
             break;
         }
         ++start;
-        end = kDisplayStateResidencyPattern.find_first_of(kTokenLabelEnd, start);
+        end = residencyPattern.find_first_of(kTokenLabelEnd, start);
         if (end == std::string::npos) {
             break;
         }
-        std::string tokenLabel(kDisplayStateResidencyPattern.substr(start, end - start));
+        std::string tokenLabel(residencyPattern.substr(start, end - start));
 
-        start = kDisplayStateResidencyPattern.find_first_of(kDelimiterStart, end + 1);
+        start = residencyPattern.find_first_of(kDelimiterStart, end + 1);
         if (start == std::string::npos) {
             break;
         }
         ++start;
-        end = kDisplayStateResidencyPattern.find_first_of(kDelimiterEnd, start);
+        end = residencyPattern.find_first_of(kDelimiterEnd, start);
         if (end == std::string::npos) {
             break;
         }
-        std::string delimiter(kDisplayStateResidencyPattern.substr(start, end - start));
-        mDisplayStateResidencyPattern.emplace_back(std::make_pair(tokenLabel, delimiter));
+        std::string delimiter(residencyPattern.substr(start, end - start));
+        mResidencyPattern.emplace_back(std::make_pair(tokenLabel, delimiter));
     }
-    return (end == kDisplayStateResidencyPattern.length() - 1);
+    return (end == residencyPattern.length() - 1);
+}
+
+bool DisplayStateResidencyProvider::parseDisplayStateResidencyPattern() {
+    return parseResidencyPattern(mPresentDisplayStateResidencyPattern,
+                                 kPresentDisplayStateResidencyPattern) &&
+            parseResidencyPattern(mNonPresentDisplayStateResidencyPattern,
+                                  kNonPresentDisplayStateResidencyPattern);
 }
 
 } // namespace android::hardware::graphics::composer

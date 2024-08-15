@@ -41,7 +41,7 @@
 namespace android::hardware::graphics::composer {
 
 class VariableRefreshRateController : public VsyncListener,
-                                      public PresentListener,
+                                      public RefreshListener,
                                       public DisplayContextProvider,
                                       public DisplayConfigurationsOwner {
 public:
@@ -264,7 +264,7 @@ private:
 
     VariableRefreshRateController(ExynosDisplay* display, const std::string& panelName);
 
-    // Implement interface PresentListener.
+    // Implement interface RefreshListener.
     virtual void onPresent(int32_t fence) override;
     virtual void setExpectedPresentTime(int64_t timestampNanos, int frameIntervalNs) override;
 

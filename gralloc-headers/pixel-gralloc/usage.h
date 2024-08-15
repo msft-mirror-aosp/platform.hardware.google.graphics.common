@@ -56,7 +56,10 @@ enum Usage : uint64_t {
     BO = 1ULL << 51,
     BW = BO,
 
-    // Used for the camera ISP image heap of the dual PD buffer.
+    // Used to identify the remosaic sub-block of camera
+    REMOSAIC = 1ULL << 61,
+
+    // Used for the camera ISP image heap of the dual PD buffer
     TPU_INPUT = 1ULL << 62,
 
     // Used to select specific heap for faceauth raw images used for evaluation

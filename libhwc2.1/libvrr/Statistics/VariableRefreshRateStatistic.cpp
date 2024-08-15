@@ -44,12 +44,12 @@ VariableRefreshRateStatistic::VariableRefreshRateStatistic(
     mUpdateEvent.mWhenNs = getSteadyClockTimeNs() + mUpdatePeriodNs;
     mEventQueue->mPriorityQueue.emplace(mUpdateEvent);
 #endif
-    mStatistics[mDisplayPresentProfile] = DisplayPresentRecord();
+    mStatistics[mDisplayRefreshProfile] = DisplayRefreshRecord();
 }
 
 uint64_t VariableRefreshRateStatistic::getPowerOffDurationNs() const {
     if (isPowerModeOffNowLocked()) {
-        const auto& item = mStatistics.find(mDisplayPresentProfile);
+        const auto& item = mStatistics.find(mDisplayRefreshProfile);
         if (item == mStatistics.end()) {
             ALOGE("%s We should have inserted power-off item in constructor.", __func__);
             return 0;
@@ -65,16 +65,16 @@ uint64_t VariableRefreshRateStatistic::getStartStatisticTimeNs() const {
     return mStartStatisticTimeNs;
 }
 
-DisplayPresentStatistics VariableRefreshRateStatistic::getStatistics() {
+DisplayRefreshStatistics VariableRefreshRateStatistic::getStatistics() {
     updateIdleStats();
     std::scoped_lock lock(mMutex);
     return mStatistics;
 }
 
-DisplayPresentStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
+DisplayRefreshStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
     updateIdleStats();
     std::scoped_lock lock(mMutex);
-    DisplayPresentStatistics updatedStatistics;
+    DisplayRefreshStatistics updatedStatistics;
     for (auto& it : mStatistics) {
         if (it.second.mUpdated) {
             if (it.first.mNumVsync < 0) {
@@ -85,18 +85,42 @@ DisplayPresentStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
         }
     }
     if (isPowerModeOffNowLocked()) {
-        mStatistics[mDisplayPresentProfile].mUpdated = true;
+        mStatistics[mDisplayRefreshProfile].mUpdated = true;
     }
     return std::move(updatedStatistics);
+}
+
+std::string VariableRefreshRateStatistic::dumpStatistics(RefreshSource refreshSource,
+                                                         bool getUpdatedOnly,
+                                                         const std::string& delimiter) {
+    std::string res;
+    updateIdleStats();
+    std::scoped_lock lock(mMutex);
+    for (auto& it : mStatistics) {
+        if ((!getUpdatedOnly) || (it.second.mUpdated)) {
+            if (it.first.mRefreshSource & refreshSource) {
+                if (it.first.mNumVsync < 0) {
+                    it.second.mAccumulatedTimeNs = getPowerOffDurationNs();
+                }
+                res += "[";
+                res += it.first.toString();
+                res += " , ";
+                res += it.second.toString();
+                res += "]";
+                res += delimiter;
+            }
+        }
+    }
+    return res;
 }
 
 void VariableRefreshRateStatistic::onPowerStateChange(int from, int to) {
     if (from == to) {
         return;
     }
-    if (mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode != from) {
+    if (mDisplayRefreshProfile.mCurrentDisplayConfig.mPowerMode != from) {
         ALOGE("%s Power mode mismatch between storing state(%d) and actual mode(%d)", __func__,
-              mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode, from);
+              mDisplayRefreshProfile.mCurrentDisplayConfig.mPowerMode, from);
     }
     updateIdleStats();
     std::scoped_lock lock(mMutex);
@@ -104,24 +128,24 @@ void VariableRefreshRateStatistic::onPowerStateChange(int from, int to) {
         // Currently the for power stats both |HWC_POWER_MODE_OFF| and |HWC_POWER_MODE_DOZE_SUSPEND|
         // are classified as "off" states in power statistics. Consequently,we assign the value of
         // |HWC_POWER_MODE_OFF| to |mPowerMode| when it is |HWC_POWER_MODE_DOZE_SUSPEND|.
-        mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode = HWC_POWER_MODE_OFF;
+        mDisplayRefreshProfile.mCurrentDisplayConfig.mPowerMode = HWC_POWER_MODE_OFF;
 
-        auto& record = mStatistics[mDisplayPresentProfile];
+        auto& record = mStatistics[mDisplayRefreshProfile];
         ++record.mCount;
         record.mLastTimeStampInBootClockNs = getBootClockTimeNs();
         record.mUpdated = true;
 
-        mLastPresentTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
+        mLastRefreshTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
     } else {
         if (isPowerModeOff(from)) {
             mPowerOffDurationNs +=
                     (getBootClockTimeNs() -
-                     mStatistics[mDisplayPresentProfile].mLastTimeStampInBootClockNs);
+                     mStatistics[mDisplayRefreshProfile].mLastTimeStampInBootClockNs);
         }
-        mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode = to;
+        mDisplayRefreshProfile.mCurrentDisplayConfig.mPowerMode = to;
         if (to == HWC_POWER_MODE_DOZE) {
-            mDisplayPresentProfile.mNumVsync = mTeFrequency;
-            auto& record = mStatistics[mDisplayPresentProfile];
+            mDisplayRefreshProfile.mNumVsync = mTeFrequency;
+            auto& record = mStatistics[mDisplayRefreshProfile];
             ++record.mCount;
             record.mLastTimeStampInBootClockNs = getBootClockTimeNs();
             record.mUpdated = true;
@@ -130,41 +154,58 @@ void VariableRefreshRateStatistic::onPowerStateChange(int from, int to) {
 }
 
 void VariableRefreshRateStatistic::onPresent(int64_t presentTimeNs, int flag) {
-    int64_t presentTimeInBootClockNs = steadyClockTimeToBootClockTimeNs(presentTimeNs);
-    if (mLastPresentTimeInBootClockNs == kDefaultInvalidPresentTimeNs) {
-        mLastPresentTimeInBootClockNs = presentTimeInBootClockNs;
+    onRefreshInternal(presentTimeNs, flag, RefreshSource::kRefreshSourceActivePresent);
+}
+
+void VariableRefreshRateStatistic::onNonPresentRefresh(int64_t refreshTimeNs,
+                                                       RefreshSource refreshSource) {
+    onRefreshInternal(refreshTimeNs, 0, refreshSource);
+}
+
+void VariableRefreshRateStatistic::onRefreshInternal(int64_t refreshTimeNs, int flag,
+                                                     RefreshSource refreshSource) {
+    int64_t presentTimeInBootClockNs = steadyClockTimeToBootClockTimeNs(refreshTimeNs);
+    if (mLastRefreshTimeInBootClockNs == kDefaultInvalidPresentTimeNs) {
+        mLastRefreshTimeInBootClockNs = presentTimeInBootClockNs;
         updateCurrentDisplayStatus();
-        // Ignore first present after resume
+        // Ignore first refresh after resume
         return;
     }
     updateIdleStats(presentTimeInBootClockNs);
     updateCurrentDisplayStatus();
     if (hasPresentFrameFlag(flag, PresentFrameFlag::kPresentingWhenDoze)) {
         // In low power mode, panel boost to 30 Hz while presenting new frame.
-        mDisplayPresentProfile.mNumVsync = mTeFrequency / kFrameRateWhenPresentAtLpMode;
-        mLastPresentTimeInBootClockNs =
+        mDisplayRefreshProfile.mNumVsync = mTeFrequency / kFrameRateWhenPresentAtLpMode;
+        mLastRefreshTimeInBootClockNs =
                 presentTimeInBootClockNs + (std::nano::den / kFrameRateWhenPresentAtLpMode);
     } else {
-        int numVsync = roundDivide((presentTimeInBootClockNs - mLastPresentTimeInBootClockNs),
+        int numVsync = roundDivide((presentTimeInBootClockNs - mLastRefreshTimeInBootClockNs),
                                    mTeIntervalNs);
+        // TODO(b/353976456): Implement a scheduler to avoid conflicts between present and
+        // non-present refresh. Currently, If a conflict occurs, both present and non-present
+        // refresh may request to take effect simultaneously, resulting in a zero duration between
+        // them. To address this, we avoid including statistics with zero duration. This issue
+        // should be resolved once the scheduler is implemented.
+        if (numVsync == 0) return;
         numVsync = std::max(1, std::min(mTeFrequency, numVsync));
-        mDisplayPresentProfile.mNumVsync = numVsync;
-        mLastPresentTimeInBootClockNs = presentTimeInBootClockNs;
+        mDisplayRefreshProfile.mNumVsync = numVsync;
+        mLastRefreshTimeInBootClockNs = presentTimeInBootClockNs;
+        mDisplayRefreshProfile.mRefreshSource = refreshSource;
     }
     {
         std::scoped_lock lock(mMutex);
 
-        auto& record = mStatistics[mDisplayPresentProfile];
+        auto& record = mStatistics[mDisplayRefreshProfile];
         ++record.mCount;
-        record.mAccumulatedTimeNs += (mTeIntervalNs * mDisplayPresentProfile.mNumVsync);
+        record.mAccumulatedTimeNs += (mTeIntervalNs * mDisplayRefreshProfile.mNumVsync);
         record.mLastTimeStampInBootClockNs = presentTimeInBootClockNs;
         record.mUpdated = true;
         if (hasPresentFrameFlag(flag, PresentFrameFlag::kPresentingWhenDoze)) {
             // After presenting a frame in AOD, we revert back to 1 Hz operation.
-            mDisplayPresentProfile.mNumVsync = mTeFrequency;
-            auto& record = mStatistics[mDisplayPresentProfile];
+            mDisplayRefreshProfile.mNumVsync = mTeFrequency;
+            auto& record = mStatistics[mDisplayRefreshProfile];
             ++record.mCount;
-            record.mLastTimeStampInBootClockNs = mLastPresentTimeInBootClockNs;
+            record.mLastTimeStampInBootClockNs = mLastRefreshTimeInBootClockNs;
             record.mUpdated = true;
         }
     }
@@ -172,7 +213,7 @@ void VariableRefreshRateStatistic::onPresent(int64_t presentTimeNs, int flag) {
 
 void VariableRefreshRateStatistic::setActiveVrrConfiguration(int activeConfigId, int teFrequency) {
     updateIdleStats();
-    mDisplayPresentProfile.mCurrentDisplayConfig.mActiveConfigId = activeConfigId;
+    mDisplayRefreshProfile.mCurrentDisplayConfig.mActiveConfigId = activeConfigId;
     mTeFrequency = teFrequency;
     if (mTeFrequency % mMaxFrameRate != 0) {
         ALOGW("%s TE frequency does not align with the maximum frame rate as a multiplier.",
@@ -200,61 +241,70 @@ void VariableRefreshRateStatistic::setFixedRefreshRate(uint32_t rate) {
                       __func__);
             }
         } else {
-            mMaximumFrameIntervalNs = kMaxPresentIntervalNs;
+            mMaximumFrameIntervalNs = kMaxRefreshIntervalNs;
         }
     }
 }
 
 bool VariableRefreshRateStatistic::isPowerModeOffNowLocked() const {
-    return isPowerModeOff(mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode);
+    return isPowerModeOff(mDisplayRefreshProfile.mCurrentDisplayConfig.mPowerMode);
 }
 
 void VariableRefreshRateStatistic::updateCurrentDisplayStatus() {
-    mDisplayPresentProfile.mCurrentDisplayConfig.mBrightnessMode =
+    mDisplayRefreshProfile.mCurrentDisplayConfig.mBrightnessMode =
             mDisplayContextProvider->getBrightnessMode();
-    if (mDisplayPresentProfile.mCurrentDisplayConfig.mBrightnessMode ==
+    if (mDisplayRefreshProfile.mCurrentDisplayConfig.mBrightnessMode ==
         BrightnessMode::kInvalidBrightnessMode) {
-        mDisplayPresentProfile.mCurrentDisplayConfig.mBrightnessMode =
+        mDisplayRefreshProfile.mCurrentDisplayConfig.mBrightnessMode =
                 BrightnessMode::kNormalBrightnessMode;
     }
 }
 
 void VariableRefreshRateStatistic::updateIdleStats(int64_t endTimeStampInBootClockNs) {
-    if (mDisplayPresentProfile.isOff()) return;
-    if (mLastPresentTimeInBootClockNs == kDefaultInvalidPresentTimeNs) return;
+    if (mDisplayRefreshProfile.isOff()) return;
+    if (mLastRefreshTimeInBootClockNs == kDefaultInvalidPresentTimeNs) return;
 
     endTimeStampInBootClockNs =
             endTimeStampInBootClockNs < 0 ? getBootClockTimeNs() : endTimeStampInBootClockNs;
-    auto durationFromLastPresentNs = endTimeStampInBootClockNs - mLastPresentTimeInBootClockNs;
+    auto durationFromLastPresentNs = endTimeStampInBootClockNs - mLastRefreshTimeInBootClockNs;
     durationFromLastPresentNs = durationFromLastPresentNs < 0 ? 0 : durationFromLastPresentNs;
-    if (mDisplayPresentProfile.mCurrentDisplayConfig.mPowerMode == HWC_POWER_MODE_DOZE) {
-        mDisplayPresentProfile.mNumVsync = mTeFrequency;
+    if (mDisplayRefreshProfile.mCurrentDisplayConfig.mPowerMode == HWC_POWER_MODE_DOZE) {
+        mDisplayRefreshProfile.mNumVsync = mTeFrequency;
 
         std::scoped_lock lock(mMutex);
 
-        auto& record = mStatistics[mDisplayPresentProfile];
+        auto& record = mStatistics[mDisplayRefreshProfile];
         record.mAccumulatedTimeNs += durationFromLastPresentNs;
-        record.mLastTimeStampInBootClockNs = mLastPresentTimeInBootClockNs;
-        mLastPresentTimeInBootClockNs = endTimeStampInBootClockNs;
+        record.mLastTimeStampInBootClockNs = mLastRefreshTimeInBootClockNs;
+        mLastRefreshTimeInBootClockNs = endTimeStampInBootClockNs;
         record.mUpdated = true;
     } else {
+        if ((mMinimumRefreshRate > 1) &&
+            (!isPresentRefresh(mDisplayRefreshProfile.mRefreshSource))) {
+            ALOGE("%s We should not have non-present refresh when the minimum refresh rate is set, "
+                  "as it should use auto mode.",
+                  __func__);
+            return;
+        }
+        mDisplayRefreshProfile.mRefreshSource = RefreshSource::kRefreshSourceIdlePresent;
+
         int numVsync = roundDivide(durationFromLastPresentNs, mTeIntervalNs);
-        mDisplayPresentProfile.mNumVsync =
+        mDisplayRefreshProfile.mNumVsync =
                 (mMinimumRefreshRate > 1 ? (mTeFrequency / mMinimumRefreshRate) : mTeFrequency);
-        if (numVsync <= mDisplayPresentProfile.mNumVsync) return;
+        if (numVsync <= mDisplayRefreshProfile.mNumVsync) return;
 
         // Ensure that the last vsync should not be included now, since it would be processed for
         // next update or |onPresent|
-        auto count = (numVsync - 1) / mDisplayPresentProfile.mNumVsync;
+        auto count = (numVsync - 1) / mDisplayRefreshProfile.mNumVsync;
         auto alignedDurationNs = mMaximumFrameIntervalNs * count;
         {
             std::scoped_lock lock(mMutex);
 
-            auto& record = mStatistics[mDisplayPresentProfile];
+            auto& record = mStatistics[mDisplayRefreshProfile];
             record.mCount += count;
             record.mAccumulatedTimeNs += alignedDurationNs;
-            mLastPresentTimeInBootClockNs += alignedDurationNs;
-            record.mLastTimeStampInBootClockNs = mLastPresentTimeInBootClockNs;
+            mLastRefreshTimeInBootClockNs += alignedDurationNs;
+            record.mLastTimeStampInBootClockNs = mLastRefreshTimeInBootClockNs;
             record.mUpdated = true;
         }
     }

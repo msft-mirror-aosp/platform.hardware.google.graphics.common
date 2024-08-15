@@ -5,7 +5,7 @@ package {
 soong_config_module_type {
     name: "gralloc_defaults",
     module_type: "cc_defaults",
-    config_namespace: "arm_gralloc",
+    config_namespace: "pixel_gralloc",
     variables: [
         "mapper_version",
     ],

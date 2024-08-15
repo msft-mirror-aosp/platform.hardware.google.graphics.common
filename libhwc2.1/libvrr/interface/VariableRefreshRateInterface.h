@@ -18,16 +18,34 @@
 
 namespace android::hardware::graphics::composer {
 
-class PresentListener {
+enum RefreshSource {
+    // Refresh triggered by presentation.
+    kRefreshSourceActivePresent = (1 << 0),
+    kRefreshSourceIdlePresent = (1 << 1),
+    // Refresh NOT triggered by presentation.
+    kRefreshSourceFrameInsertion = (1 << 2),
+    kRefreshSourceBrightness = (1 << 3),
+};
+
+static constexpr int kRefreshSourcePresentMask =
+        kRefreshSourceActivePresent | kRefreshSourceIdlePresent;
+
+static constexpr int kRefreshSourceNonPresentMask =
+        kRefreshSourceFrameInsertion | kRefreshSourceBrightness;
+
+class RefreshListener {
 public:
-    virtual ~PresentListener() = default;
+    virtual ~RefreshListener() = default;
 
     virtual void setExpectedPresentTime(int64_t __unused timestampNanos,
                                         int __unused frameIntervalNs) {}
 
     virtual void onPresent(int32_t __unused fence) {}
 
-    virtual void onPresent(int64_t __unused presentTimeNs, __unused int flag) {}
+    virtual void onPresent(int64_t __unused presentTimeNs, int __unused flag) {}
+
+    virtual void onNonPresentRefresh(int64_t __unused refreshTimeNs,
+                                     RefreshSource __unused source) {}
 };
 
 class VsyncListener {
