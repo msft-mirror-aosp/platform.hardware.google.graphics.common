@@ -22,7 +22,7 @@
 #include "../libvrr/VariableRefreshRateController.h"
 #include <cutils/properties.h>
 
-using android::hardware::graphics::composer::PresentListener;
+using android::hardware::graphics::composer::RefreshListener;
 using android::hardware::graphics::composer::VariableRefreshRateController;
 using android::hardware::graphics::composer::VsyncListener;
 using namespace displaycolor;
@@ -81,6 +81,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual void onVsync(int64_t timestamp) override;
 
         virtual int32_t setFixedTe2Rate(const int rateHz) override;
+
+        virtual void onProximitySensorStateChanged(bool active) override;
 
         virtual int32_t setDisplayTemperature(const int temperatue) override;
 
@@ -228,7 +230,7 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         bool mDisplayNeedHandleIdleExit;
 
         // Function and variables related to Vrr.
-        PresentListener* getPresentListener();
+        RefreshListener* getRefreshListener();
         VsyncListener* getVsyncListener();
 
         XrrSettings_t mXrrSettings;
