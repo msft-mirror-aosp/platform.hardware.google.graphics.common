@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include "interface/Event.h"
+#include "interface/VariableRefreshRateInterface.h"
 
 inline void clearBit(uint32_t& data, uint32_t bit) {
     data &= ~(1L << (bit));
@@ -98,12 +99,14 @@ int64_t getSteadyClockTimeNs();
 int64_t getBootClockTimeMs();
 int64_t getBootClockTimeNs();
 
-int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs);
-
 bool hasPresentFrameFlag(int flag, PresentFrameFlag target);
 
 bool isPowerModeOff(int powerMode);
 
+bool isPresentRefresh(RefreshSource refreshSource);
+
 void setTimedEventWithAbsoluteTime(TimedEvent& event);
+
+int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs);
 
 } // namespace android::hardware::graphics::composer
