@@ -41,7 +41,7 @@
 namespace android::hardware::graphics::composer {
 
 class VariableRefreshRateController : public VsyncListener,
-                                      public PresentListener,
+                                      public RefreshListener,
                                       public DisplayContextProvider,
                                       public DisplayConfigurationsOwner {
 public:
@@ -140,16 +140,57 @@ private:
     static constexpr int64_t SIGNAL_TIME_PENDING = INT64_MAX;
     static constexpr int64_t SIGNAL_TIME_INVALID = -1;
 
+    static constexpr int64_t kDefaultSystemPresentTimeoutNs =
+            500 * (std::nano::den / std::milli::den); // 500 ms
+
     static constexpr int64_t kDefaultVendorPresentTimeoutNs =
             33 * (std::nano::den / std::milli::den); // 33 ms
 
     static constexpr std::string_view kVendorDisplayPanelLibrary = "libdisplaypanel.so";
+
+    static constexpr int64_t kDefaultAheadOfTimeNs = 1000000; // 1 ms;
 
     enum class VrrControllerState {
         kDisable = 0,
         kRendering,
         kHibernate,
     };
+
+    typedef struct PendingVendorRenderingTimeoutTasks {
+        PendingVendorRenderingTimeoutTasks(VariableRefreshRateController* controller)
+              : host(controller), taskExecutionTimeNs(kDefaultMaximumNumberOfTasks, 0) {}
+
+        void addTask(int64_t executionIntervalNs) {
+            taskExecutionTimeNs[numberOfTasks++] = baseTimeNs + executionIntervalNs;
+        }
+
+        void scheduleNextTask() {
+            if (!isDone()) {
+                host->postEvent(VrrControllerEventType::kVendorRenderingTimeoutPost,
+                                std::max(getSteadyClockTimeNs(),
+                                         taskExecutionTimeNs[nextTaskIndex++] -
+                                                 kDefaultAheadOfTimeNs));
+            }
+        }
+
+        bool isDone() const { return (numberOfTasks == nextTaskIndex); }
+
+        void reserveSpace(size_t size) {
+            if (size > taskExecutionTimeNs.size()) {
+                taskExecutionTimeNs.resize(size);
+            }
+        }
+
+        void reset() { numberOfTasks = nextTaskIndex = 0; }
+
+        static constexpr size_t kDefaultMaximumNumberOfTasks = 10;
+
+        VariableRefreshRateController* host;
+        int64_t baseTimeNs = 0;
+        int numberOfTasks = 0;
+        int nextTaskIndex = 0;
+        std::vector<int64_t> taskExecutionTimeNs;
+    } PendingVendorRenderingTimeoutTasks;
 
     typedef struct PresentEvent {
         hwc2_config_t config;
@@ -223,7 +264,7 @@ private:
 
     VariableRefreshRateController(ExynosDisplay* display, const std::string& panelName);
 
-    // Implement interface PresentListener.
+    // Implement interface RefreshListener.
     virtual void onPresent(int32_t fence) override;
     virtual void setExpectedPresentTime(int64_t timestampNanos, int frameIntervalNs) override;
 
@@ -276,10 +317,13 @@ private:
         }
     }
 
-    void handlePresentTimeout(const VrrControllerEvent& event);
+    void handlePresentTimeout();
 
     inline bool isMinimumRefreshRateActive() const { return (mMinimumRefreshRate > 1); }
 
+    // Report frame frequency changes to the kernel via the sysfs node.
+    void onFrameRateChangedForDBI(int refreshRate);
+    // Report refresh rate changes to the framework(SurfaceFlinger) or other display HWC components.
     void onRefreshRateChanged(int refreshRate);
     void onRefreshRateChangedInternal(int refreshRate);
     void reportRefreshRateIndicator();
@@ -328,6 +372,8 @@ private:
     int mLastRefreshRate = kDefaultInvalidRefreshRate;
     std::unordered_map<hwc2_config_t, std::vector<int>> mValidRefreshRates;
 
+    std::shared_ptr<RefreshRateCalculator> mFrameRateReporter;
+
     // Power stats.
     std::shared_ptr<DisplayStateResidencyWatcher> mResidencyWatcher;
     std::shared_ptr<VariableRefreshRateStatistic> mVariableRefreshRateStatistic;
@@ -352,6 +398,8 @@ private:
     MinimumRefreshRatePresentStates mMinimumRefreshRatePresentStates = kMinRefreshRateUnset;
 
     std::vector<std::shared_ptr<RefreshRateChangeListener>> mRefreshRateChangeListeners;
+
+    PendingVendorRenderingTimeoutTasks mPendingVendorRenderingTimeoutTasks;
 
     std::mutex mMutex;
     std::condition_variable mCondition;
