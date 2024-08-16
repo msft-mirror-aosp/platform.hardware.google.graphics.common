@@ -4626,6 +4626,8 @@ inline int32_t ExynosDisplay::getDisplayFrameScanoutPeriodFromConfig(hwc2_config
                 frameScanoutPeriodNs =
                         (frameScanoutPeriodNs <= opPeriodNs) ? frameScanoutPeriodNs : opPeriodNs;
             }
+        } else if (mDisplayConfigs[config].isBoost2xBts) {
+            frameScanoutPeriodNs = frameScanoutPeriodNs / 2;
         }
     }
 
@@ -6462,34 +6464,6 @@ nsecs_t ExynosDisplay::getPredictedPresentTime(nsecs_t startTime) {
         expectedPresentTime = startTime + mVsyncPeriod;
     }
     return expectedPresentTime;
-}
-
-nsecs_t ExynosDisplay::getSignalTime(int32_t fd) const {
-    if (fd == -1) {
-        return SIGNAL_TIME_INVALID;
-    }
-
-    struct sync_file_info *finfo = sync_file_info(fd);
-    if (finfo == nullptr) {
-        return SIGNAL_TIME_INVALID;
-    }
-
-    if (finfo->status != 1) {
-        const auto status = finfo->status;
-        sync_file_info_free(finfo);
-        return status < 0 ? SIGNAL_TIME_INVALID : SIGNAL_TIME_PENDING;
-    }
-
-    uint64_t timestamp = 0;
-    struct sync_fence_info *pinfo = sync_get_fence_info(finfo);
-    for (size_t i = 0; i < finfo->num_fences; i++) {
-        if (pinfo[i].timestamp_ns > timestamp) {
-            timestamp = pinfo[i].timestamp_ns;
-        }
-    }
-
-    sync_file_info_free(finfo);
-    return nsecs_t(timestamp);
 }
 
 std::optional<nsecs_t> ExynosDisplay::getPredictedDuration(bool duringValidation) {
