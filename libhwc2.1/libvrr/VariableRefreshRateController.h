@@ -383,6 +383,8 @@ private:
     bool mEnabled = false;
     bool mThreadExit = false;
 
+    PresentTimeoutControllerType mDefaultPresentTimeoutController =
+            PresentTimeoutControllerType::kSoftware;
     PresentTimeoutControllerType mPresentTimeoutController =
             PresentTimeoutControllerType::kSoftware;
 
