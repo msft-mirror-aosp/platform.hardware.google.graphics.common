@@ -21,7 +21,19 @@
 
 namespace android::hardware::graphics::composer {
 
-std::string PowerStatsPresentProfileTokenGenerator::generateModeToken() {
+std::string PowerStatsPresentProfileTokenGenerator::generateRefreshSourceToken() const {
+    if (mPowerStatsProfile->isOff()) {
+        return "";
+    }
+
+    if (isPresentRefresh(mPowerStatsProfile->mRefreshSource)) {
+        return "p";
+    } else {
+        return "np";
+    }
+}
+
+std::string PowerStatsPresentProfileTokenGenerator::generateModeToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "OFF";
     } else {
@@ -33,21 +45,21 @@ std::string PowerStatsPresentProfileTokenGenerator::generateModeToken() {
     }
 }
 
-std::string PowerStatsPresentProfileTokenGenerator::generateWidthToken() {
+std::string PowerStatsPresentProfileTokenGenerator::generateWidthToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "";
     }
     return std::to_string(mPowerStatsProfile->mWidth);
 }
 
-std::string PowerStatsPresentProfileTokenGenerator::generateHeightToken() {
+std::string PowerStatsPresentProfileTokenGenerator::generateHeightToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "";
     }
     return std::to_string(mPowerStatsProfile->mHeight);
 }
 
-std::string PowerStatsPresentProfileTokenGenerator::generateFpsToken() {
+std::string PowerStatsPresentProfileTokenGenerator::generateFpsToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "";
     }
@@ -60,7 +72,9 @@ std::string PowerStatsPresentProfileTokenGenerator::generateFpsToken() {
 std::optional<std::string> PowerStatsPresentProfileTokenGenerator::generateToken(
         const std::string& tokenLabel) {
     static std::unordered_map<std::string, std::function<std::string()>> functors =
-            {{"mode", std::bind(&PowerStatsPresentProfileTokenGenerator::generateModeToken, this)},
+            {{"refreshSource",
+              std::bind(&PowerStatsPresentProfileTokenGenerator::generateRefreshSourceToken, this)},
+             {"mode", std::bind(&PowerStatsPresentProfileTokenGenerator::generateModeToken, this)},
              {"width",
               std::bind(&PowerStatsPresentProfileTokenGenerator::generateWidthToken, this)},
              {"height",
