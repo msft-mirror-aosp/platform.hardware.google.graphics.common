@@ -853,9 +853,9 @@ int32_t ExynosPrimaryDisplay::getDisplayConfigs(uint32_t* outNumConfigs,
 int32_t ExynosPrimaryDisplay::presentDisplay(int32_t* outRetireFence) {
     auto res = ExynosDisplay::presentDisplay(outRetireFence);
     // Forward presentDisplay if there is a listener.
-    const auto presentListener = getPresentListener();
-    if (res == HWC2_ERROR_NONE && presentListener) {
-        presentListener->onPresent(*outRetireFence);
+    const auto refreshListener = getRefreshListener();
+    if (res == HWC2_ERROR_NONE && refreshListener) {
+        refreshListener->onPresent(*outRetireFence);
     }
     return res;
 }
@@ -1144,9 +1144,9 @@ void ExynosPrimaryDisplay::setEarlyWakeupDisplay() {
 void ExynosPrimaryDisplay::setExpectedPresentTime(uint64_t timestamp, int frameIntervalNs) {
     mExpectedPresentTimeAndInterval.store(std::make_tuple(timestamp, frameIntervalNs));
     // Forward presentDisplay if there is a listener.
-    const auto presentListener = getPresentListener();
-    if (presentListener) {
-        presentListener->setExpectedPresentTime(timestamp, frameIntervalNs);
+    const auto refreshListener = getRefreshListener();
+    if (refreshListener) {
+        refreshListener->setExpectedPresentTime(timestamp, frameIntervalNs);
     }
 }
 
@@ -1543,6 +1543,19 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
         result.appendFormat("Temperature : %d°C\n", mDisplayTemperature);
     }
     result.appendFormat("\n");
+
+    DisplayType displayType = getDcDisplayType();
+    std::string displayTypeIdentifier;
+    if (displayType == DisplayType::DISPLAY_PRIMARY) {
+        displayTypeIdentifier = "primarydisplay";
+    } else if (displayType == DisplayType::DISPLAY_EXTERNAL) {
+        displayTypeIdentifier = "externaldisplay";
+    }
+    if (!displayTypeIdentifier.empty()) {
+        auto xrrVersion =
+                android::hardware::graphics::composer::getDisplayXrrVersion(displayTypeIdentifier);
+        result.appendFormat("XRR version: %d.%d\n", xrrVersion.first, xrrVersion.second);
+    }
 }
 
 void ExynosPrimaryDisplay::calculateTimelineLocked(
@@ -1699,7 +1712,7 @@ int32_t ExynosPrimaryDisplay::setDbmState(bool enabled) {
     return NO_ERROR;
 }
 
-PresentListener* ExynosPrimaryDisplay::getPresentListener() {
+RefreshListener* ExynosPrimaryDisplay::getRefreshListener() {
     if (mVariableRefreshRateController) {
         return mVariableRefreshRateController.get();
     }
