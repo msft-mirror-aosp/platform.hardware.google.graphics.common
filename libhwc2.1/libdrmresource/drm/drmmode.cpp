@@ -175,6 +175,15 @@ bool DrmMode::is_operation_rate_to_bts() const {
   return false;
 }
 
+bool DrmMode::is_boost_2x_bts() const {
+  if (!is_vrr_mode()) {
+    auto vfp = v_sync_start() - v_display();
+    if (vfp > v_display())
+      return true;
+  }
+  return false;
+}
+
 uint32_t DrmMode::flags() const {
   return flags_;
 }
