@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
 #include "FileNode.h"
-
 #include <log/log.h>
+#include <utils/Trace.h>
 #include <sstream>
 
 namespace android {
@@ -37,17 +38,18 @@ std::string FileNode::dump() {
     std::ostringstream os;
     os << "FileNode: root path: " << mNodePath << std::endl;
     for (const auto& item : mFds) {
-        auto lastWrittenValue = getLastWrittenValue(item.first);
-        os << "FileNode: sysfs node = " << item.first << ", last written value = 0x" << std::setw(8)
-           << std::setfill('0') << std::hex << lastWrittenValue << std::endl;
+        auto lastWrittenString = getLastWrittenString(item.first);
+        if (lastWrittenString)
+            os << "FileNode: sysfs node = " << item.first
+               << ", last written value = " << *lastWrittenString << std::endl;
     }
     return os.str();
 }
 
-uint32_t FileNode::getLastWrittenValue(const std::string& nodeName) {
+std::optional<std::string> FileNode::getLastWrittenString(const std::string& nodeName) {
     int fd = getFileHandler(nodeName);
-    if ((fd < 0) || (mLastWrittenValue.count(fd) <= 0)) return 0;
-    return mLastWrittenValue[fd];
+    if ((fd < 0) || (mLastWrittenString.count(fd) <= 0)) return std::nullopt;
+    return mLastWrittenString[fd];
 }
 
 std::optional<std::string> FileNode::readString(const std::string& nodeName) {
@@ -59,24 +61,6 @@ std::optional<std::string> FileNode::readString(const std::string& nodeName) {
         return os.str();
     }
     return std::nullopt;
-}
-
-bool FileNode::WriteUint32(const std::string& nodeName, uint32_t value) {
-    int fd = getFileHandler(nodeName);
-    if (fd >= 0) {
-        std::string cmdString = std::to_string(value);
-        int ret = write(fd, cmdString.c_str(), std::strlen(cmdString.c_str()));
-        if (ret < 0) {
-            ALOGE("Write 0x%x to file node %s%s failed, ret = %d errno = %d", value,
-                  mNodePath.c_str(), nodeName.c_str(), ret, errno);
-            return false;
-        }
-    } else {
-        ALOGE("Write to invalid file node %s%s", mNodePath.c_str(), nodeName.c_str());
-        return false;
-    }
-    mLastWrittenValue[fd] = value;
-    return true;
 }
 
 int FileNode::getFileHandler(const std::string& nodeName) {
@@ -93,5 +77,23 @@ int FileNode::getFileHandler(const std::string& nodeName) {
     return fd;
 }
 
+bool FileNode::writeString(const std::string& nodeName, const std::string& str) {
+    int fd = getFileHandler(nodeName);
+    if (fd < 0) {
+        ALOGE("Write to invalid file node %s%s", mNodePath.c_str(), nodeName.c_str());
+        return false;
+    }
+    int ret = write(fd, str.c_str(), str.size());
+    if (ret < 0) {
+        ALOGE("Write %s to file node %s%s failed, ret = %d errno = %d", str.c_str(),
+              mNodePath.c_str(), nodeName.c_str(), ret, errno);
+        return false;
+    }
+    std::ostringstream oss;
+    oss << "Write " << str << " to file node " << mNodePath.c_str() << nodeName.c_str();
+    ATRACE_NAME(oss.str().c_str());
+    mLastWrittenString[fd] = str;
+    return true;
+}
 }; // namespace hardware::graphics::composer
 }; // namespace android

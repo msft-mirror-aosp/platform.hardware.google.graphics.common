@@ -664,6 +664,7 @@ int BrightnessController::processOperationRate(int32_t hz) {
 }
 
 void BrightnessController::onClearDisplay(bool needModeClear) {
+    ATRACE_CALL();
     resetLhbmState();
     mInstantHbmReq.reset(false);
 
