@@ -20,22 +20,6 @@
 
 namespace android::hardware::graphics::composer {
 
-// Currently, the FPS ranges from [1, |kMaxFrameRate| = 120], and the maximum TE
-// frequency(|kMaxTefrequency|) = 240. We express fps by dividing the maximum TE by the number of
-// vsync. Here, the numerator is set to |kMaxTefrequency|, fraction reduction is not needed here.
-const std::set<Fraction<int>> DisplayStateResidencyProvider::kFpsMappingTable =
-        {{240, 240}, {240, 120}, {240, 24}, {240, 10}, {240, 8}, {240, 7},
-         {240, 6},   {240, 5},   {240, 4},  {240, 3},  {240, 2}};
-
-const std::vector<int> DisplayStateResidencyProvider::kFpsLowPowerModeMappingTable = {1, 30};
-
-const std::vector<int> DisplayStateResidencyProvider::kActivePowerModes = {HWC2_POWER_MODE_DOZE,
-                                                                           HWC2_POWER_MODE_ON};
-
-const std::vector<RefreshSource> DisplayStateResidencyProvider::kRefreshSource =
-        {kRefreshSourceActivePresent, kRefreshSourceIdlePresent, kRefreshSourceFrameInsertion,
-         kRefreshSourceBrightness};
-
 namespace {
 
 static constexpr uint64_t MilliToNano = 1000000;
@@ -53,8 +37,6 @@ DisplayStateResidencyProvider::DisplayStateResidencyProvider(
 }
 
 void DisplayStateResidencyProvider::getStateResidency(std::vector<StateResidency>* stats) {
-    mapStatistics();
-
     int64_t powerStatsTotalTimeNs = aggregateStatistics();
 #ifdef DEBUG_VRR_POWERSTATS
     uint64_t statisticDurationNs = getBootClockTimeNs() - mStartStatisticTimeNs;
@@ -81,69 +63,15 @@ const std::vector<State>& DisplayStateResidencyProvider::getStates() {
     return mStates;
 }
 
-void DisplayStateResidencyProvider::mapStatistics() {
-    auto mUpdatedStatistics = mStatisticsProvider->getUpdatedStatistics();
-#ifdef DEBUG_VRR_POWERSTATS
-    for (const auto& item : mUpdatedStatistics) {
-        ALOGI("DisplayStateResidencyProvider : update key %s value %s",
-              item.first.toString().c_str(), item.second.toString().c_str());
-    }
-#endif
-    mRemappedStatistics.clear();
-    for (const auto& item : mUpdatedStatistics) {
-        mStatistics[item.first] = item.second;
-    }
-
-    for (const auto& item : mStatistics) {
-        const auto& displayPresentProfile = item.first;
-        PowerStatsProfile powerStatsProfile;
-        if (displayPresentProfile.mNumVsync <
-            0) { // To address the specific scenario of powering off.
-            powerStatsProfile.mFps = -1;
-            mRemappedStatistics[powerStatsProfile] += item.second;
-            mRemappedStatistics[powerStatsProfile].mUpdated = true;
-            continue;
-        }
-        const auto& configId = displayPresentProfile.mCurrentDisplayConfig.mActiveConfigId;
-        powerStatsProfile.mWidth = mDisplayContextProvider->getWidth(configId);
-        powerStatsProfile.mHeight = mDisplayContextProvider->getHeight(configId);
-        powerStatsProfile.mPowerMode = displayPresentProfile.mCurrentDisplayConfig.mPowerMode;
-        powerStatsProfile.mBrightnessMode =
-                displayPresentProfile.mCurrentDisplayConfig.mBrightnessMode;
-        powerStatsProfile.mRefreshSource = displayPresentProfile.mRefreshSource;
-
-        auto teFrequency = mDisplayContextProvider->getTeFrequency(configId);
-        Fraction fps(teFrequency, displayPresentProfile.mNumVsync);
-        if ((kFpsMappingTable.count(fps) > 0)) {
-            powerStatsProfile.mFps = fps.round();
-            mRemappedStatistics[powerStatsProfile] += item.second;
-            mRemappedStatistics[powerStatsProfile].mUpdated = true;
-        } else {
-            // Others.
-            auto key = powerStatsProfile;
-            const auto& value = item.second;
-            key.mFps = 0;
-            mRemappedStatistics[key].mUpdated = true;
-            mRemappedStatistics[key].mCount += value.mCount;
-            mRemappedStatistics[key].mAccumulatedTimeNs += value.mAccumulatedTimeNs;
-            mRemappedStatistics[key].mLastTimeStampInBootClockNs =
-                    std::max(mRemappedStatistics[key].mLastTimeStampInBootClockNs,
-                             value.mLastTimeStampInBootClockNs);
-        }
-    }
-}
-
 uint64_t DisplayStateResidencyProvider::aggregateStatistics() {
     uint64_t totalTimeNs = 0;
     std::set<int> firstIteration;
-    for (auto& statistic : mRemappedStatistics) {
-        if (!statistic.second.mUpdated) {
-            continue;
-        }
-        auto it = mPowerStatsProfileToIdMap.find(statistic.first);
+    auto updatedStatistics = mStatisticsProvider->getUpdatedStatistics();
+    for (auto& statistic : updatedStatistics) {
+        auto it = mPowerStatsProfileToIdMap.find(statistic.first.toPowerStatsProfile());
         if (it == mPowerStatsProfileToIdMap.end()) {
             ALOGE("DisplayStateResidencyProvider %s(): unregistered powerstats state [%s]",
-                  __func__, statistic.first.toString().c_str());
+                  __func__, statistic.first.toPowerStatsProfile().toString().c_str());
             continue;
         }
         int id = it->second;
@@ -153,7 +81,9 @@ uint64_t DisplayStateResidencyProvider::aggregateStatistics() {
         if (firstIteration.count(id) > 0) {
             stateResidency.totalStateEntryCount += displayPresentRecord.mCount;
             stateResidency.lastEntryTimestampMs =
-                    displayPresentRecord.mLastTimeStampInBootClockNs / MilliToNano;
+                    std::max<uint64_t>(stateResidency.lastEntryTimestampMs,
+                                       displayPresentRecord.mLastTimeStampInBootClockNs /
+                                               MilliToNano);
             stateResidency.totalTimeInStateMs +=
                     displayPresentRecord.mAccumulatedTimeNs / MilliToNano;
         } else {
@@ -205,8 +135,8 @@ void DisplayStateResidencyProvider::generateUniqueStates() {
     mUniqueStates.emplace(PowerStatsProfile{.mPowerMode = HWC2_POWER_MODE_OFF}, "OFF");
 
     // Iterate through all combinations
-    for (auto refreshSource : kRefreshSource) {
-        for (auto powerMode : kActivePowerModes) {
+    for (auto refreshSource : android::hardware::graphics::composer::kRefreshSource) {
+        for (auto powerMode : android::hardware::graphics::composer::kActivePowerModes) {
             // LPM and NP is not possible. skipping
             if (!isPresentRefresh(refreshSource) && powerMode == HWC2_POWER_MODE_DOZE) {
                 continue;
@@ -224,13 +154,14 @@ void DisplayStateResidencyProvider::generateUniqueStates() {
                                     .mRefreshSource = refreshSource};
 
                     if (powerMode == HWC_POWER_MODE_DOZE) {
-                        for (auto fps : kFpsLowPowerModeMappingTable) {
+                        for (auto fps :
+                             android::hardware::graphics::composer::kFpsLowPowerModeMappingTable) {
                             profile.mFps = fps;
                             mUniqueStates.emplace(profile, generateStateName(&profile));
                         }
                     } else {
                         mUniqueStates.emplace(profile, generateStateName(&profile));
-                        for (auto fps : kFpsMappingTable) {
+                        for (auto fps : android::hardware::graphics::composer::kFpsMappingTable) {
                             profile.mFps = fps.round();
                             mUniqueStates.emplace(profile, generateStateName(&profile));
                         }

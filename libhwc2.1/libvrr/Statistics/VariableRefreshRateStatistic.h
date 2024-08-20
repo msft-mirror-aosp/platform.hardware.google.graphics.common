@@ -22,9 +22,11 @@
 #include <string>
 #include <utility>
 
+#include "../Power/PowerStatsProfile.h"
 #include "EventQueue.h"
 #include "Utils.h"
 #include "display/common/CommonDisplayContextProvider.h"
+#include "display/common/Constants.h"
 #include "interface/DisplayContextProvider.h"
 #include "interface/VariableRefreshRateInterface.h"
 
@@ -80,6 +82,27 @@ typedef struct DisplayStatus {
 
 // |DisplayRefreshProfile| is the key to the statistics.
 typedef struct DisplayRefreshProfile {
+    PowerStatsProfile toPowerStatsProfile() const {
+        PowerStatsProfile powerStatsProfile;
+        if (mNumVsync < 0) { // To address the specific scenario of powering off
+            powerStatsProfile.mFps = -1;
+            return powerStatsProfile;
+        }
+        powerStatsProfile.mWidth = mWidth;
+        powerStatsProfile.mHeight = mHeight;
+        powerStatsProfile.mPowerMode = mCurrentDisplayConfig.mPowerMode;
+        powerStatsProfile.mBrightnessMode = mCurrentDisplayConfig.mBrightnessMode;
+        powerStatsProfile.mRefreshSource = mRefreshSource;
+
+        Fraction fps(mTeFrequency, mNumVsync);
+        if ((android::hardware::graphics::composer::kFpsMappingTable.count(fps) > 0)) {
+            powerStatsProfile.mFps = fps.round();
+        } else {
+            powerStatsProfile.mFps = 0;
+        }
+        return powerStatsProfile;
+    }
+
     inline bool isOff() const { return mCurrentDisplayConfig.isOff(); }
 
     bool operator<(const DisplayRefreshProfile& rhs) const {
@@ -106,6 +129,9 @@ typedef struct DisplayRefreshProfile {
     }
 
     DisplayStatus mCurrentDisplayConfig;
+    int mTeFrequency;
+    int mWidth = 0;
+    int mHeight = 0;
     // |mNumVsync| is the timing property of the key for statistics, representing the distribution
     // of refreshs. It represents the interval between a refresh and the previous refresh in
     // terms of the number of vsyncs.

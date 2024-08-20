@@ -80,9 +80,9 @@ DisplayRefreshStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
             if (it.first.mNumVsync < 0) {
                 it.second.mAccumulatedTimeNs = getPowerOffDurationNs();
             }
-            updatedStatistics[it.first] = it.second;
-            it.second.mUpdated = false;
         }
+        // need all mStatistics to be able to do aggregation and bucketing accurately
+        updatedStatistics[it.first] = it.second;
     }
     if (isPowerModeOffNowLocked()) {
         mStatistics[mDisplayRefreshProfile].mUpdated = true;
@@ -214,6 +214,9 @@ void VariableRefreshRateStatistic::onRefreshInternal(int64_t refreshTimeNs, int 
 void VariableRefreshRateStatistic::setActiveVrrConfiguration(int activeConfigId, int teFrequency) {
     updateIdleStats();
     mDisplayRefreshProfile.mCurrentDisplayConfig.mActiveConfigId = activeConfigId;
+    mDisplayRefreshProfile.mWidth = mDisplayContextProvider->getWidth(activeConfigId);
+    mDisplayRefreshProfile.mHeight = mDisplayContextProvider->getHeight(activeConfigId);
+    mDisplayRefreshProfile.mTeFrequency = mDisplayContextProvider->getTeFrequency(activeConfigId);
     mTeFrequency = teFrequency;
     if (mTeFrequency % mMaxFrameRate != 0) {
         ALOGW("%s TE frequency does not align with the maximum frame rate as a multiplier.",

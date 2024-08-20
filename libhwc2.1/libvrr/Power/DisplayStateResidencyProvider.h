@@ -22,6 +22,7 @@
 #include <aidl/android/hardware/power/stats/StateResidency.h>
 
 #include "../Statistics/VariableRefreshRateStatistic.h"
+#include "../display/common/Constants.h"
 #include "PowerStatsProfileTokenGenerator.h"
 
 // #define DEBUG_VRR_POWERSTATS 1
@@ -47,8 +48,6 @@ public:
     DisplayStateResidencyProvider& operator=(const DisplayStateResidencyProvider& other) = delete;
 
 private:
-    static const std::set<Fraction<int>> kFpsMappingTable;
-    static const std::vector<int> kFpsLowPowerModeMappingTable;
     static const std::vector<int> kActivePowerModes;
     static const std::vector<RefreshSource> kRefreshSource;
 
@@ -80,12 +79,6 @@ private:
     std::shared_ptr<CommonDisplayContextProvider> mDisplayContextProvider;
 
     std::shared_ptr<StatisticsProvider> mStatisticsProvider;
-
-    DisplayRefreshStatistics mStatistics;
-
-    typedef std::map<PowerStatsProfile, DisplayRefreshRecord> PowerStatsPresentStatistics;
-
-    PowerStatsPresentStatistics mRemappedStatistics;
 
     PowerStatsProfileTokenGenerator mPowerStatsProfileTokenGenerator;
     std::vector<std::pair<std::string, std::string>> mPresentDisplayStateResidencyPattern;
