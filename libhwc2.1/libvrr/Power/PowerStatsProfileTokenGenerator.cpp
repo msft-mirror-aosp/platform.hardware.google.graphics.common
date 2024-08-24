@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#include "PowerStatsPresentProfileTokenGenerator.h"
+#include "PowerStatsProfileTokenGenerator.h"
 
 #include <string>
 #include <unordered_map>
 
 namespace android::hardware::graphics::composer {
 
-std::string PowerStatsPresentProfileTokenGenerator::generateRefreshSourceToken() const {
+std::string PowerStatsProfileTokenGenerator::generateRefreshSourceToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "";
     }
@@ -33,7 +33,7 @@ std::string PowerStatsPresentProfileTokenGenerator::generateRefreshSourceToken()
     }
 }
 
-std::string PowerStatsPresentProfileTokenGenerator::generateModeToken() const {
+std::string PowerStatsProfileTokenGenerator::generateModeToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "OFF";
     } else {
@@ -45,21 +45,21 @@ std::string PowerStatsPresentProfileTokenGenerator::generateModeToken() const {
     }
 }
 
-std::string PowerStatsPresentProfileTokenGenerator::generateWidthToken() const {
+std::string PowerStatsProfileTokenGenerator::generateWidthToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "";
     }
     return std::to_string(mPowerStatsProfile->mWidth);
 }
 
-std::string PowerStatsPresentProfileTokenGenerator::generateHeightToken() const {
+std::string PowerStatsProfileTokenGenerator::generateHeightToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "";
     }
     return std::to_string(mPowerStatsProfile->mHeight);
 }
 
-std::string PowerStatsPresentProfileTokenGenerator::generateFpsToken() const {
+std::string PowerStatsProfileTokenGenerator::generateFpsToken() const {
     if (mPowerStatsProfile->isOff()) {
         return "";
     }
@@ -69,17 +69,15 @@ std::string PowerStatsPresentProfileTokenGenerator::generateFpsToken() const {
     return std::to_string(mPowerStatsProfile->mFps);
 }
 
-std::optional<std::string> PowerStatsPresentProfileTokenGenerator::generateToken(
+std::optional<std::string> PowerStatsProfileTokenGenerator::generateToken(
         const std::string& tokenLabel) {
     static std::unordered_map<std::string, std::function<std::string()>> functors =
             {{"refreshSource",
-              std::bind(&PowerStatsPresentProfileTokenGenerator::generateRefreshSourceToken, this)},
-             {"mode", std::bind(&PowerStatsPresentProfileTokenGenerator::generateModeToken, this)},
-             {"width",
-              std::bind(&PowerStatsPresentProfileTokenGenerator::generateWidthToken, this)},
-             {"height",
-              std::bind(&PowerStatsPresentProfileTokenGenerator::generateHeightToken, this)},
-             {"fps", std::bind(&PowerStatsPresentProfileTokenGenerator::generateFpsToken, this)}};
+              std::bind(&PowerStatsProfileTokenGenerator::generateRefreshSourceToken, this)},
+             {"mode", std::bind(&PowerStatsProfileTokenGenerator::generateModeToken, this)},
+             {"width", std::bind(&PowerStatsProfileTokenGenerator::generateWidthToken, this)},
+             {"height", std::bind(&PowerStatsProfileTokenGenerator::generateHeightToken, this)},
+             {"fps", std::bind(&PowerStatsProfileTokenGenerator::generateFpsToken, this)}};
 
     if (!mPowerStatsProfile) {
         ALOGE("%s: haven't set target mPowerStatsProfile", __func__);

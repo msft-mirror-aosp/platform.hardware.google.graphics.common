@@ -22,7 +22,7 @@
 #include <aidl/android/hardware/power/stats/StateResidency.h>
 
 #include "../Statistics/VariableRefreshRateStatistic.h"
-#include "PowerStatsPresentProfileTokenGenerator.h"
+#include "PowerStatsProfileTokenGenerator.h"
 
 // #define DEBUG_VRR_POWERSTATS 1
 
@@ -74,22 +74,26 @@ private:
     bool parseResidencyPattern(std::vector<std::pair<std::string, std::string>>& mResidencyPattern,
                                const std::string_view kResidencyPattern);
 
+    std::string generateStateName(PowerStatsProfile* profile);
+    void generateUniqueStates();
+
     std::shared_ptr<CommonDisplayContextProvider> mDisplayContextProvider;
 
     std::shared_ptr<StatisticsProvider> mStatisticsProvider;
 
     DisplayRefreshStatistics mStatistics;
 
-    typedef std::map<PowerStatsPresentProfile, DisplayRefreshRecord> PowerStatsPresentStatistics;
+    typedef std::map<PowerStatsProfile, DisplayRefreshRecord> PowerStatsPresentStatistics;
 
     PowerStatsPresentStatistics mRemappedStatistics;
 
-    PowerStatsPresentProfileTokenGenerator mPowerStatsPresentProfileTokenGenerator;
+    PowerStatsProfileTokenGenerator mPowerStatsProfileTokenGenerator;
     std::vector<std::pair<std::string, std::string>> mPresentDisplayStateResidencyPattern;
     std::vector<std::pair<std::string, std::string>> mNonPresentDisplayStateResidencyPattern;
 
+    std::set<std::pair<PowerStatsProfile, std::string>> mUniqueStates;
     std::vector<State> mStates;
-    std::map<PowerStatsPresentProfile, int> mPowerStatsPresentProfileToIdMap;
+    std::map<PowerStatsProfile, int> mPowerStatsProfileToIdMap;
 
 #ifdef DEBUG_VRR_POWERSTATS
     int64_t mLastGetStateResidencyTimeNs = -1;
