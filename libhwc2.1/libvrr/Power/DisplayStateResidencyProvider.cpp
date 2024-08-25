@@ -96,32 +96,31 @@ void DisplayStateResidencyProvider::mapStatistics() {
 
     for (const auto& item : mStatistics) {
         const auto& displayPresentProfile = item.first;
-        PowerStatsPresentProfile powerStatsPresentProfile;
+        PowerStatsProfile powerStatsProfile;
         if (displayPresentProfile.mNumVsync <
             0) { // To address the specific scenario of powering off.
-            powerStatsPresentProfile.mFps = -1;
-            mRemappedStatistics[powerStatsPresentProfile] += item.second;
-            mRemappedStatistics[powerStatsPresentProfile].mUpdated = true;
+            powerStatsProfile.mFps = -1;
+            mRemappedStatistics[powerStatsProfile] += item.second;
+            mRemappedStatistics[powerStatsProfile].mUpdated = true;
             continue;
         }
         const auto& configId = displayPresentProfile.mCurrentDisplayConfig.mActiveConfigId;
-        powerStatsPresentProfile.mWidth = mDisplayContextProvider->getWidth(configId);
-        powerStatsPresentProfile.mHeight = mDisplayContextProvider->getHeight(configId);
-        powerStatsPresentProfile.mPowerMode =
-                displayPresentProfile.mCurrentDisplayConfig.mPowerMode;
-        powerStatsPresentProfile.mBrightnessMode =
+        powerStatsProfile.mWidth = mDisplayContextProvider->getWidth(configId);
+        powerStatsProfile.mHeight = mDisplayContextProvider->getHeight(configId);
+        powerStatsProfile.mPowerMode = displayPresentProfile.mCurrentDisplayConfig.mPowerMode;
+        powerStatsProfile.mBrightnessMode =
                 displayPresentProfile.mCurrentDisplayConfig.mBrightnessMode;
-        powerStatsPresentProfile.mRefreshSource = displayPresentProfile.mRefreshSource;
+        powerStatsProfile.mRefreshSource = displayPresentProfile.mRefreshSource;
 
         auto teFrequency = mDisplayContextProvider->getTeFrequency(configId);
         Fraction fps(teFrequency, displayPresentProfile.mNumVsync);
         if ((kFpsMappingTable.count(fps) > 0)) {
-            powerStatsPresentProfile.mFps = fps.round();
-            mRemappedStatistics[powerStatsPresentProfile] += item.second;
-            mRemappedStatistics[powerStatsPresentProfile].mUpdated = true;
+            powerStatsProfile.mFps = fps.round();
+            mRemappedStatistics[powerStatsProfile] += item.second;
+            mRemappedStatistics[powerStatsProfile].mUpdated = true;
         } else {
             // Others.
-            auto key = powerStatsPresentProfile;
+            auto key = powerStatsProfile;
             const auto& value = item.second;
             key.mFps = 0;
             mRemappedStatistics[key].mUpdated = true;
@@ -141,8 +140,8 @@ uint64_t DisplayStateResidencyProvider::aggregateStatistics() {
         if (!statistic.second.mUpdated) {
             continue;
         }
-        auto it = mPowerStatsPresentProfileToIdMap.find(statistic.first);
-        if (it == mPowerStatsPresentProfileToIdMap.end()) {
+        auto it = mPowerStatsProfileToIdMap.find(statistic.first);
+        if (it == mPowerStatsProfileToIdMap.end()) {
             ALOGE("DisplayStateResidencyProvider %s(): unregistered powerstats state [%s]",
                   __func__, statistic.first.toString().c_str());
             continue;
@@ -172,89 +171,86 @@ uint64_t DisplayStateResidencyProvider::aggregateStatistics() {
     return totalTimeNs;
 }
 
-void DisplayStateResidencyProvider::generatePowerStatsStates() {
-    auto configs = mDisplayContextProvider->getDisplayConfigs();
-    if (!configs) return;
-    std::set<PowerStatsPresentProfile> powerStatsPresentProfileCandidates;
-    PowerStatsPresentProfile powerStatsPresentProfile;
+std::string DisplayStateResidencyProvider::generateStateName(PowerStatsProfile* profile) {
+    mPowerStatsProfileTokenGenerator.setPowerStatsProfile(profile);
+    std::string stateName;
 
-    // Generate a list of potential DisplayConfigProfiles.
-    // Include the special case 'OFF'.
-    powerStatsPresentProfile.mPowerMode = HWC2_POWER_MODE_OFF;
-    powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
+    const std::vector<std::pair<std::string, std::string>>& residencyPattern =
+            (!isPresentRefresh(profile->mRefreshSource)) ? mNonPresentDisplayStateResidencyPattern
+                                                         : mPresentDisplayStateResidencyPattern;
+
+    for (const auto& pattern : residencyPattern) {
+        const auto token = mPowerStatsProfileTokenGenerator.generateToken(pattern.first);
+        if (token.has_value()) {
+            stateName += token.value();
+            if (pattern.first == "mode" && token.value() == "OFF") {
+                break;
+            }
+        } else {
+            ALOGE("DisplayStateResidencyProvider %s(): cannot find token with label %s", __func__,
+                  pattern.first.c_str());
+            continue;
+        }
+        stateName += pattern.second;
+    }
+
+    return stateName;
+}
+
+void DisplayStateResidencyProvider::generateUniqueStates() {
+    auto configs = mDisplayContextProvider->getDisplayConfigs();
+    if (!configs) return; // Early return if no configs
+
+    // Special case: Power mode OFF
+    mUniqueStates.emplace(PowerStatsProfile{.mPowerMode = HWC2_POWER_MODE_OFF}, "OFF");
+
+    // Iterate through all combinations
     for (auto refreshSource : kRefreshSource) {
-        powerStatsPresentProfile.mRefreshSource = refreshSource;
         for (auto powerMode : kActivePowerModes) {
-            powerStatsPresentProfile.mPowerMode = powerMode;
+            // LPM and NP is not possible. skipping
             if (!isPresentRefresh(refreshSource) && powerMode == HWC2_POWER_MODE_DOZE) {
                 continue;
             }
-            for (int brightnesrMode = static_cast<int>(BrightnessMode::kNormalBrightnessMode);
-                 brightnesrMode < BrightnessMode::kInvalidBrightnessMode; ++brightnesrMode) {
-                powerStatsPresentProfile.mBrightnessMode =
-                        static_cast<BrightnessMode>(brightnesrMode);
-                for (const auto& config : *configs) {
-                    powerStatsPresentProfile.mWidth =
-                            mDisplayContextProvider->getWidth(config.first);
-                    powerStatsPresentProfile.mHeight =
-                            mDisplayContextProvider->getHeight(config.first);
-                    // Handle the special case LPM(Low Power Mode).
+            for (const auto& config : *configs) {
+                for (int brightnessMode = static_cast<int>(BrightnessMode::kNormalBrightnessMode);
+                     brightnessMode < static_cast<int>(BrightnessMode::kInvalidBrightnessMode);
+                     ++brightnessMode) {
+                    PowerStatsProfile
+                            profile{.mWidth = mDisplayContextProvider->getWidth(config.first),
+                                    .mHeight = mDisplayContextProvider->getHeight(config.first),
+                                    .mFps = 0, // Initially set to 0
+                                    .mPowerMode = powerMode,
+                                    .mBrightnessMode = static_cast<BrightnessMode>(brightnessMode),
+                                    .mRefreshSource = refreshSource};
+
                     if (powerMode == HWC_POWER_MODE_DOZE) {
                         for (auto fps : kFpsLowPowerModeMappingTable) {
-                            powerStatsPresentProfile.mFps = fps;
-                            powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
+                            profile.mFps = fps;
+                            mUniqueStates.emplace(profile, generateStateName(&profile));
                         }
-                        continue;
-                    }
-                    // Include the special case: other fps.
-                    powerStatsPresentProfile.mFps = 0;
-                    powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
-                    for (auto fps : kFpsMappingTable) {
-                        powerStatsPresentProfile.mFps = fps.round();
-                        powerStatsPresentProfileCandidates.insert(powerStatsPresentProfile);
+                    } else {
+                        mUniqueStates.emplace(profile, generateStateName(&profile));
+                        for (auto fps : kFpsMappingTable) {
+                            profile.mFps = fps.round();
+                            mUniqueStates.emplace(profile, generateStateName(&profile));
+                        }
                     }
                 }
             }
         }
     }
+}
 
-    // Transform candidate into stateName, powerStatsPresentProfile set
-    std::set<std::pair<PowerStatsPresentProfile, std::string>> uniqueStates;
-    for (const auto& powerStatsPresentProfile : powerStatsPresentProfileCandidates) {
-        std::string stateName;
-        mPowerStatsPresentProfileTokenGenerator.setPowerStatsPresentProfile(
-                &powerStatsPresentProfile);
-
-        const std::vector<std::pair<std::string, std::string>>& residencyPattern =
-                (!isPresentRefresh(powerStatsPresentProfile.mRefreshSource))
-                ? mNonPresentDisplayStateResidencyPattern
-                : mPresentDisplayStateResidencyPattern;
-
-        for (const auto& pattern : residencyPattern) {
-            const auto token = mPowerStatsPresentProfileTokenGenerator.generateToken(pattern.first);
-            if (token.has_value()) {
-                stateName += token.value();
-                if (pattern.first == "mode" && token.value() == "OFF") {
-                    break;
-                }
-            } else {
-                ALOGE("DisplayStateResidencyProvider %s(): cannot find token with label %s",
-                      __func__, pattern.first.c_str());
-                continue;
-            }
-            stateName += pattern.second;
-        }
-
-        uniqueStates.insert(std::make_pair(powerStatsPresentProfile, stateName));
-    }
+void DisplayStateResidencyProvider::generatePowerStatsStates() {
+    generateUniqueStates();
 
     // Sort and assign a unique identifier to each state string.
     std::map<std::string, int> stateNameIDMap;
     int index = 0;
-    for (const auto& state : uniqueStates) {
+    for (const auto& state : mUniqueStates) {
         auto it = stateNameIDMap.find(state.second);
         int id = index;
-        // If the stateName already exists, update  mPowerStatsPresentProfileToIdMap, and skip
+        // If the stateName already exists, update mPowerStatsProfileToIdMap, and skip
         // updating mStates/Residency
         if (it != stateNameIDMap.end()) {
             id = it->second;
@@ -265,7 +261,7 @@ void DisplayStateResidencyProvider::generatePowerStatsStates() {
             mStateResidency.emplace_back();
             mStateResidency.back().id = id;
         }
-        mPowerStatsPresentProfileToIdMap[state.first] = id;
+        mPowerStatsProfileToIdMap[state.first] = id;
     }
 
 #ifdef DEBUG_VRR_POWERSTATS
