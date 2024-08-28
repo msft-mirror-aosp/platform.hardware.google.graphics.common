@@ -90,8 +90,8 @@ DisplayRefreshStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
     return std::move(updatedStatistics);
 }
 
-std::string VariableRefreshRateStatistic::dumpStatistics(RefreshSource refreshSource,
-                                                         bool getUpdatedOnly,
+std::string VariableRefreshRateStatistic::dumpStatistics(bool getUpdatedOnly,
+                                                         RefreshSource refreshSource,
                                                          const std::string& delimiter) {
     std::string res;
     updateIdleStats();
@@ -112,6 +112,38 @@ std::string VariableRefreshRateStatistic::dumpStatistics(RefreshSource refreshSo
         }
     }
     return res;
+}
+
+std::string VariableRefreshRateStatistic::normalizeString(const std::string& input) {
+    static constexpr int kDesiredLength = 21;
+    static constexpr int kTabWidth = 7;
+    int extraTabsNeeded =
+            std::max(0, (kDesiredLength - static_cast<int>(input.length())) / kTabWidth);
+    return input + std::string(extraTabsNeeded, '\t');
+}
+
+void VariableRefreshRateStatistic::dump(String8& result) {
+    std::map<std::string, DisplayRefreshRecord> aggregatedStats;
+
+    for (const auto& it : mStatistics) {
+        PowerStatsProfile profile = it.first.toPowerStatsProfile(false);
+        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile);
+        aggregatedStats[stateName] += it.second;
+    }
+
+    result.appendFormat("%s \t %s \t %s \t %s \n", normalizeString("StateName").c_str(),
+                        normalizeString("Total Time (ms)").c_str(),
+                        normalizeString("Total Entries").c_str(),
+                        normalizeString("Last Entry TStamp (ms)").c_str());
+    for (const auto& it : aggregatedStats) {
+        result.appendFormat("%s \t %s \t %s \t %s \n", normalizeString(it.first).c_str(),
+                            normalizeString(std::to_string(it.second.mAccumulatedTimeNs / 1000000))
+                                    .c_str(),
+                            normalizeString(std::to_string(it.second.mCount)).c_str(),
+                            normalizeString(
+                                    std::to_string(it.second.mLastTimeStampInBootClockNs / 1000000))
+                                    .c_str());
+    }
 }
 
 void VariableRefreshRateStatistic::onPowerStateChange(int from, int to) {

@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "../Power/PowerStatsProfile.h"
+#include "../Power/PowerStatsProfileTokenGenerator.h"
 #include "EventQueue.h"
 #include "Utils.h"
 #include "display/common/CommonDisplayContextProvider.h"
@@ -82,7 +83,7 @@ typedef struct DisplayStatus {
 
 // |DisplayRefreshProfile| is the key to the statistics.
 typedef struct DisplayRefreshProfile {
-    PowerStatsProfile toPowerStatsProfile() const {
+    PowerStatsProfile toPowerStatsProfile(bool enableMapping = true) const {
         PowerStatsProfile powerStatsProfile;
         if (mNumVsync < 0) { // To address the specific scenario of powering off
             powerStatsProfile.mFps = -1;
@@ -93,13 +94,17 @@ typedef struct DisplayRefreshProfile {
         powerStatsProfile.mPowerMode = mCurrentDisplayConfig.mPowerMode;
         powerStatsProfile.mBrightnessMode = mCurrentDisplayConfig.mBrightnessMode;
         powerStatsProfile.mRefreshSource = mRefreshSource;
-
         Fraction fps(mTeFrequency, mNumVsync);
-        if ((android::hardware::graphics::composer::kFpsMappingTable.count(fps) > 0)) {
-            powerStatsProfile.mFps = fps.round();
+        if (enableMapping) {
+            if ((android::hardware::graphics::composer::kFpsMappingTable.count(fps) > 0)) {
+                powerStatsProfile.mFps = fps.round();
+            } else {
+                powerStatsProfile.mFps = 0;
+            }
         } else {
-            powerStatsProfile.mFps = 0;
+            powerStatsProfile.mFps = fps.round();
         }
+
         return powerStatsProfile;
     }
 
@@ -124,7 +129,7 @@ typedef struct DisplayRefreshProfile {
     std::string toString() const {
         std::string res = mCurrentDisplayConfig.toString();
         res += ", mNumVsync = " + std::to_string(mNumVsync) + ", refresh source = " +
-                (isPresentRefresh(mRefreshSource) ? "present" : "non-present refresh");
+                (isPresentRefresh(mRefreshSource) ? "present" : "nonpresent");
         return res;
     }
 
@@ -209,14 +214,17 @@ public:
     VariableRefreshRateStatistic(const VariableRefreshRateStatistic& other) = delete;
     VariableRefreshRateStatistic& operator=(const VariableRefreshRateStatistic& other) = delete;
 
-    std::string dumpStatistics(RefreshSource refreshSource, bool getUpdatedOnly,
+    std::string dumpStatistics(bool getUpdatedOnly, RefreshSource refreshSource,
                                const std::string& delimiter = ";");
+    void dump(String8& result);
 
 private:
     static constexpr int64_t kMaxRefreshIntervalNs = std::nano::den;
     static constexpr uint32_t kFrameRateWhenPresentAtLpMode = 30;
 
     bool isPowerModeOffNowLocked() const;
+
+    std::string normalizeString(const std::string& input);
 
     void onRefreshInternal(int64_t refreshTimeNs, int flag, RefreshSource refreshSource);
 
@@ -227,6 +235,8 @@ private:
 #ifdef DEBUG_VRR_STATISTICS
     int updateStatistic();
 #endif
+
+    PowerStatsProfileTokenGenerator mPowerStatsProfileTokenGenerator;
 
     CommonDisplayContextProvider* mDisplayContextProvider;
     EventQueue* mEventQueue;
