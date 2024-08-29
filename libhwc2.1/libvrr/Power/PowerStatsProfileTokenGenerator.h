@@ -26,26 +26,45 @@ namespace android::hardware::graphics::composer {
 
 class PowerStatsProfileTokenGenerator {
 public:
-    PowerStatsProfileTokenGenerator() = default;
+    PowerStatsProfileTokenGenerator();
 
-    void setPowerStatsProfile(const PowerStatsProfile* powerStatsProfile) {
-        mPowerStatsProfile = powerStatsProfile;
-    }
+    std::optional<std::string> generateToken(const std::string& tokenLabel,
+                                             PowerStatsProfile* profile);
 
-    std::optional<std::string> generateToken(const std::string& tokenLabel);
+    std::string generateStateName(PowerStatsProfile* profile);
 
 private:
-    std::string generateRefreshSourceToken() const;
+    // The format of pattern is: ([token label]'delimiter'?)*
+    static constexpr std::string_view kPresentDisplayStateResidencyPattern =
+            "[mode](:)[width](x)[height](@)[fps]()";
 
-    std::string generateModeToken() const;
+    // The format of pattern is: ([token label]'delimiter'?)*
+    static constexpr std::string_view kNonPresentDisplayStateResidencyPattern =
+            "[mode](:)[width](x)[height](@)[refreshSource]()";
 
-    std::string generateWidthToken() const;
+    static constexpr char kTokenLabelStart = '[';
+    static constexpr char kTokenLabelEnd = ']';
+    static constexpr char kDelimiterStart = '(';
+    static constexpr char kDelimiterEnd = ')';
 
-    std::string generateHeightToken() const;
+    bool parseDisplayStateResidencyPattern();
 
-    std::string generateFpsToken() const;
+    bool parseResidencyPattern(
+            std::vector<std::pair<std::string, std::string>>& residencyPatternMap,
+            const std::string_view residencyPattern);
 
-    const PowerStatsProfile* mPowerStatsProfile;
+    std::string generateRefreshSourceToken(PowerStatsProfile* profile) const;
+
+    std::string generateModeToken(PowerStatsProfile* profile) const;
+
+    std::string generateWidthToken(PowerStatsProfile* profile) const;
+
+    std::string generateHeightToken(PowerStatsProfile* profile) const;
+
+    std::string generateFpsToken(PowerStatsProfile* profile) const;
+
+    std::vector<std::pair<std::string, std::string>> mNonPresentDisplayStateResidencyPatternList;
+    std::vector<std::pair<std::string, std::string>> mPresentDisplayStateResidencyPatternList;
 };
 
 } // namespace android::hardware::graphics::composer

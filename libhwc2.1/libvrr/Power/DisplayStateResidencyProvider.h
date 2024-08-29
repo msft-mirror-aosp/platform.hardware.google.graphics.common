@@ -51,29 +51,11 @@ private:
     static const std::vector<int> kActivePowerModes;
     static const std::vector<RefreshSource> kRefreshSource;
 
-    // The format of pattern is: ([token label]'delimiter'?)*
-    static constexpr std::string_view kPresentDisplayStateResidencyPattern =
-            "[mode](:)[width](x)[height](@)[fps]()";
-
-    // The format of pattern is: ([token label]'delimiter'?)*
-    static constexpr std::string_view kNonPresentDisplayStateResidencyPattern =
-            "[mode](:)[width](x)[height](@)[refreshSource]()";
-
-    static constexpr char kTokenLabelStart = '[';
-    static constexpr char kTokenLabelEnd = ']';
-    static constexpr char kDelimiterStart = '(';
-    static constexpr char kDelimiterEnd = ')';
-
     void mapStatistics();
     uint64_t aggregateStatistics();
 
     void generatePowerStatsStates();
 
-    bool parseDisplayStateResidencyPattern();
-    bool parseResidencyPattern(std::vector<std::pair<std::string, std::string>>& mResidencyPattern,
-                               const std::string_view kResidencyPattern);
-
-    std::string generateStateName(PowerStatsProfile* profile);
     void generateUniqueStates();
 
     std::shared_ptr<CommonDisplayContextProvider> mDisplayContextProvider;
@@ -81,8 +63,6 @@ private:
     std::shared_ptr<StatisticsProvider> mStatisticsProvider;
 
     PowerStatsProfileTokenGenerator mPowerStatsProfileTokenGenerator;
-    std::vector<std::pair<std::string, std::string>> mPresentDisplayStateResidencyPattern;
-    std::vector<std::pair<std::string, std::string>> mNonPresentDisplayStateResidencyPattern;
 
     std::set<std::pair<PowerStatsProfile, std::string>> mUniqueStates;
     std::vector<State> mStates;

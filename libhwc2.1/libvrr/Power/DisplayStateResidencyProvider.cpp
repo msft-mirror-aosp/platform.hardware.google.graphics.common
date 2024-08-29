@@ -30,9 +30,7 @@ DisplayStateResidencyProvider::DisplayStateResidencyProvider(
         std::shared_ptr<CommonDisplayContextProvider> displayContextProvider,
         std::shared_ptr<StatisticsProvider> statisticsProvider)
       : mDisplayContextProvider(displayContextProvider), mStatisticsProvider(statisticsProvider) {
-    if (parseDisplayStateResidencyPattern()) {
-        generatePowerStatsStates();
-    }
+    generatePowerStatsStates();
     mStartStatisticTimeNs = mStatisticsProvider->getStartStatisticTimeNs();
 }
 
@@ -101,32 +99,6 @@ uint64_t DisplayStateResidencyProvider::aggregateStatistics() {
     return totalTimeNs;
 }
 
-std::string DisplayStateResidencyProvider::generateStateName(PowerStatsProfile* profile) {
-    mPowerStatsProfileTokenGenerator.setPowerStatsProfile(profile);
-    std::string stateName;
-
-    const std::vector<std::pair<std::string, std::string>>& residencyPattern =
-            (!isPresentRefresh(profile->mRefreshSource)) ? mNonPresentDisplayStateResidencyPattern
-                                                         : mPresentDisplayStateResidencyPattern;
-
-    for (const auto& pattern : residencyPattern) {
-        const auto token = mPowerStatsProfileTokenGenerator.generateToken(pattern.first);
-        if (token.has_value()) {
-            stateName += token.value();
-            if (pattern.first == "mode" && token.value() == "OFF") {
-                break;
-            }
-        } else {
-            ALOGE("DisplayStateResidencyProvider %s(): cannot find token with label %s", __func__,
-                  pattern.first.c_str());
-            continue;
-        }
-        stateName += pattern.second;
-    }
-
-    return stateName;
-}
-
 void DisplayStateResidencyProvider::generateUniqueStates() {
     auto configs = mDisplayContextProvider->getDisplayConfigs();
     if (!configs) return; // Early return if no configs
@@ -157,13 +129,19 @@ void DisplayStateResidencyProvider::generateUniqueStates() {
                         for (auto fps :
                              android::hardware::graphics::composer::kFpsLowPowerModeMappingTable) {
                             profile.mFps = fps;
-                            mUniqueStates.emplace(profile, generateStateName(&profile));
+                            mUniqueStates.emplace(profile,
+                                                  mPowerStatsProfileTokenGenerator
+                                                          .generateStateName(&profile));
                         }
                     } else {
-                        mUniqueStates.emplace(profile, generateStateName(&profile));
+                        mUniqueStates.emplace(profile,
+                                              mPowerStatsProfileTokenGenerator.generateStateName(
+                                                      &profile));
                         for (auto fps : android::hardware::graphics::composer::kFpsMappingTable) {
                             profile.mFps = fps.round();
-                            mUniqueStates.emplace(profile, generateStateName(&profile));
+                            mUniqueStates.emplace(profile,
+                                                  mPowerStatsProfileTokenGenerator
+                                                          .generateStateName(&profile));
                         }
                     }
                 }
@@ -201,46 +179,6 @@ void DisplayStateResidencyProvider::generatePowerStatsStates() {
               state.name.c_str(), state.name.length());
     }
 #endif
-}
-
-bool DisplayStateResidencyProvider::parseResidencyPattern(
-        std::vector<std::pair<std::string, std::string>>& mResidencyPattern,
-        const std::string_view residencyPattern) {
-    size_t start, end;
-    start = 0;
-    end = -1;
-    while (true) {
-        start = residencyPattern.find_first_of(kTokenLabelStart, end + 1);
-        if (start == std::string::npos) {
-            break;
-        }
-        ++start;
-        end = residencyPattern.find_first_of(kTokenLabelEnd, start);
-        if (end == std::string::npos) {
-            break;
-        }
-        std::string tokenLabel(residencyPattern.substr(start, end - start));
-
-        start = residencyPattern.find_first_of(kDelimiterStart, end + 1);
-        if (start == std::string::npos) {
-            break;
-        }
-        ++start;
-        end = residencyPattern.find_first_of(kDelimiterEnd, start);
-        if (end == std::string::npos) {
-            break;
-        }
-        std::string delimiter(residencyPattern.substr(start, end - start));
-        mResidencyPattern.emplace_back(std::make_pair(tokenLabel, delimiter));
-    }
-    return (end == residencyPattern.length() - 1);
-}
-
-bool DisplayStateResidencyProvider::parseDisplayStateResidencyPattern() {
-    return parseResidencyPattern(mPresentDisplayStateResidencyPattern,
-                                 kPresentDisplayStateResidencyPattern) &&
-            parseResidencyPattern(mNonPresentDisplayStateResidencyPattern,
-                                  kNonPresentDisplayStateResidencyPattern);
 }
 
 } // namespace android::hardware::graphics::composer
