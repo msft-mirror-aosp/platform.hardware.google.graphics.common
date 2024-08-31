@@ -25,7 +25,10 @@ DisplayTe2Manager::DisplayTe2Manager(ExynosDisplay* display, int32_t panelIndex,
         mIsOptionFixedTe2(true),
         mRefreshRateChangeListenerRegistered(false),
         mPendingOptionChangeableTe2(false),
-        mPendingFixedTe2Rate(0) {}
+        mPendingFixedTe2Rate(0) {
+    mProximitySensorStateNotifierWorker =
+            std::make_unique<ProximitySensorStateNotifierWorker>(this);
+}
 
 void DisplayTe2Manager::setTe2Option(bool fixedTe2) {
     int32_t ret = writeIntToFile(getPanelTe2OptionPath(), fixedTe2);
@@ -143,6 +146,14 @@ void DisplayTe2Manager::onRefreshRateChange(int refreshRate) {
     if (!mIsOptionFixedTe2 && refreshRate) setChangeableTe2Rate(refreshRate);
 }
 
+void DisplayTe2Manager::handleProximitySensorStateChange(bool active) {
+    if (mProximitySensorStateNotifierWorker) {
+        mProximitySensorStateNotifierWorker->onStateChanged(active);
+    } else {
+        ALOGW("DisplayTe2Manager::%s unable to handle the state change", __func__);
+    }
+}
+
 void DisplayTe2Manager::dump(String8& result) const {
     result.appendFormat("DisplayTe2Manager:\n");
     result.appendFormat("\tmin refresh rate for fixed TE2: %d\n", mMinRefreshRateForFixedTe2);
@@ -152,4 +163,65 @@ void DisplayTe2Manager::dump(String8& result) const {
         result.appendFormat("\tcurrent TE2: fixed %d Hz\n", mFixedTe2RateHz);
     }
     result.appendFormat("\n");
+}
+
+DisplayTe2Manager::ProximitySensorStateNotifierWorker::ProximitySensorStateNotifierWorker(
+        DisplayTe2Manager* te2Manager)
+      : Worker("ProximitySensorStateNotifierWorker", HAL_PRIORITY_URGENT_DISPLAY),
+        mTe2Manager(te2Manager),
+        mIsStateActive(false),
+        mReceivedFirstStateAfterTimeout(false),
+        mPendingState(ProximitySensorState::NONE) {
+    InitWorker();
+}
+
+DisplayTe2Manager::ProximitySensorStateNotifierWorker::~ProximitySensorStateNotifierWorker() {
+    Exit();
+}
+
+void DisplayTe2Manager::ProximitySensorStateNotifierWorker::onStateChanged(bool active) {
+    Lock();
+    mIsStateActive = active;
+    Unlock();
+    Signal();
+}
+
+void DisplayTe2Manager::ProximitySensorStateNotifierWorker::Routine() {
+    int ret;
+    Lock();
+    ret = WaitForSignalOrExitLocked(ms2ns(kDebounceTimeMs));
+    if (ret == -EINTR) {
+        ALOGE("ProximitySensorStateNotifierWorker: failed to wait for signal");
+        mReceivedFirstStateAfterTimeout = false;
+        Unlock();
+        return;
+    }
+
+    if (!mReceivedFirstStateAfterTimeout) {
+        if (ret != -ETIMEDOUT) {
+            // the 1st signal after timeout, send the notification immediately
+            ALOGI("ProximitySensorStateNotifierWorker: %s: notify state (%d)", __func__,
+                  mIsStateActive);
+            mTe2Manager->mDisplay->onProximitySensorStateChanged(mIsStateActive);
+            mReceivedFirstStateAfterTimeout = true;
+        }
+    } else {
+        if (ret != -ETIMEDOUT) {
+            // receive the signal within kDebounceTimeMs, update the pending state
+            mPendingState =
+                    mIsStateActive ? ProximitySensorState::ACTIVE : ProximitySensorState::INACTIVE;
+        } else {
+            // no signal within kDebounceTimeMs, notify the pending state if it exists
+            if (mPendingState != ProximitySensorState::NONE) {
+                mIsStateActive = (mPendingState == ProximitySensorState::ACTIVE);
+                ALOGI("ProximitySensorStateNotifierWorker: %s: notify pending state (%d)", __func__,
+                      mIsStateActive);
+                mTe2Manager->mDisplay->onProximitySensorStateChanged(mIsStateActive);
+                mPendingState = ProximitySensorState::NONE;
+            } else {
+                mReceivedFirstStateAfterTimeout = false;
+            }
+        }
+    }
+    Unlock();
 }

@@ -20,6 +20,12 @@
 #include "ExynosDisplay.h"
 #include "ExynosHWCHelper.h"
 
+enum class ProximitySensorState : uint32_t {
+    NONE = 0,
+    ACTIVE,
+    INACTIVE,
+};
+
 // TODO: Rename this and integrate with refresh rate throttler related features into this class.
 class DisplayTe2Manager : public RefreshRateChangeListener {
 public:
@@ -48,9 +54,17 @@ public:
     // restore the previous settings to keep the request from ALSP.
     void restoreTe2FromDozeMode();
 
+    // Handle the notifications while the proximity sensor state is changed.
+    void handleProximitySensorStateChange(bool active);
+
     void dump(String8& result) const;
 
 private:
+    static constexpr const char* kTe2RateFileNode =
+            "/sys/devices/platform/exynos-drm/%s-panel/te2_rate_hz";
+    static constexpr const char* kTe2OptionFileNode =
+            "/sys/devices/platform/exynos-drm/%s-panel/te2_option";
+
     const char* getPanelString() {
         return (mPanelIndex == 0 ? "primary" : mPanelIndex == 1 ? "secondary" : "unknown");
     }
@@ -94,10 +108,26 @@ private:
 
     Mutex mTe2Mutex;
 
-    static constexpr const char* kTe2RateFileNode =
-            "/sys/devices/platform/exynos-drm/%s-panel/te2_rate_hz";
-    static constexpr const char* kTe2OptionFileNode =
-            "/sys/devices/platform/exynos-drm/%s-panel/te2_option";
+    class ProximitySensorStateNotifierWorker : public Worker {
+    public:
+        explicit ProximitySensorStateNotifierWorker(DisplayTe2Manager* te2Manager);
+        ~ProximitySensorStateNotifierWorker();
+
+        void onStateChanged(bool active);
+
+    protected:
+        void Routine() override;
+
+    private:
+        static constexpr uint32_t kDebounceTimeMs = 100U;
+
+        DisplayTe2Manager* mTe2Manager;
+        bool mIsStateActive;
+        bool mReceivedFirstStateAfterTimeout;
+        enum ProximitySensorState mPendingState;
+    };
+
+    std::unique_ptr<ProximitySensorStateNotifierWorker> mProximitySensorStateNotifierWorker;
 };
 
 #endif // _DISPLAY_TE2_MANAGER_H_
