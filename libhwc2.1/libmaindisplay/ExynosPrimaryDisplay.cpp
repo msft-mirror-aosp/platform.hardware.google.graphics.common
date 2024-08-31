@@ -1415,7 +1415,7 @@ int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
                   proximityActive ? "active" : "inactive", targetFps, dozeMode);
             mDisplayTe2Manager->updateTe2OptionForProximity(proximityActive, targetFps, dozeMode);
             if (!dozeMode) {
-                onProximitySensorStateChanged(proximityActive);
+                mDisplayTe2Manager->handleProximitySensorStateChange(proximityActive);
             }
         }
 
