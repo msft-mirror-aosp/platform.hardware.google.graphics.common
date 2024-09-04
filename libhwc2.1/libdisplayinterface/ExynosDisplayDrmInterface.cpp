@@ -830,8 +830,6 @@ int32_t ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
     }
 
     mVsyncCallback.setTransientDuration(getConfigChangeDuration());
-
-    mVsyncCallback.setVrrOn(mXrrSettings.versionInfo.needVrrParameters());
     return NO_ERROR;
 }
 
@@ -931,25 +929,23 @@ bool ExynosDisplayDrmInterface::ExynosVsyncCallback::Callback(
         return true;
     }
     bool isModeSwitchTimeReached = false;
-    if (isVrrOn()) {
-        nsecs_t signalTime = 0;
-        {
-            std::lock_guard<std::mutex> lock(mFenceMutex);
-            signalTime = getSignalTime(mModeSetFence);
-            if (signalTime != SIGNAL_TIME_INVALID && signalTime != SIGNAL_TIME_PENDING &&
-                timestamp > (signalTime + mVsyncPeriod * mTransientDuration - error)) {
-                close(mModeSetFence);
-                mModeSetFence = -1;
-                isModeSwitchTimeReached = true;
-            }
+    nsecs_t signalTime = 0;
+    {
+        std::lock_guard<std::mutex> lock(mFenceMutex);
+        signalTime = getSignalTime(mModeSetFence);
+        if (signalTime != SIGNAL_TIME_INVALID && signalTime != SIGNAL_TIME_PENDING &&
+            timestamp > (signalTime + mVsyncPeriod * mTransientDuration - error)) {
+            close(mModeSetFence);
+            mModeSetFence = -1;
+            isModeSwitchTimeReached = true;
         }
-        if (isModeSwitchTimeReached && ATRACE_ENABLED()) {
-            std::stringstream str;
-            str << "Over the RR duration: timestamp:" << timestamp << ",signalTime:" << signalTime
-                << ",VSyncPeriod:" << mVsyncPeriod << ",desiredVsyncPeriod:" << mDesiredVsyncPeriod
-                << ",transientDuration:" << mTransientDuration;
-            ATRACE_NAME(str.str().c_str());
-        }
+    }
+    if (isModeSwitchTimeReached && ATRACE_ENABLED()) {
+        std::stringstream str;
+        str << "Over the RR duration: timestamp:" << timestamp << ",signalTime:" << signalTime
+            << ",VSyncPeriod:" << mVsyncPeriod << ",desiredVsyncPeriod:" << mDesiredVsyncPeriod
+            << ",transientDuration:" << mTransientDuration;
+        ATRACE_NAME(str.str().c_str());
     }
 
     return isModeSwitchTimeReached;
@@ -1181,6 +1177,7 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
                 return HWC2_ERROR_BAD_DISPLAY;
             }
             configs.isOperationRateToBts = mode.is_operation_rate_to_bts();
+            configs.isBoost2xBts = mode.is_boost_2x_bts();
             configs.width = mode.h_display();
             configs.height = mode.v_display();
             // Dots per 1000 inches
@@ -2243,6 +2240,18 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
                          __func__, ret);
             }
         }
+
+        if (mXrrSettings.versionInfo.needVrrParameters()) {
+            auto frameInterval = mExynosDisplay->getPendingFrameInterval();
+            if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(),
+                                                mDrmConnector->frame_interval(),
+                                                frameInterval)) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to set frameInterval property (%d)",
+                         __func__,
+                         ret);
+            }
+        }
+
         mExynosDisplay->applyExpectedPresentTime();
     }
 
@@ -2273,9 +2282,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
             getLowPowerDrmModeModeInfo();
         }
         mVsyncCallback.setDesiredVsyncPeriod(mActiveModeState.mode.te_period());
-
-        if (mVsyncCallback.isVrrOn())
-            mVsyncCallback.setModeSetFence(dup(mExynosDisplay->mDpuData.retire_fence));
+        mVsyncCallback.setModeSetFence(dup(mExynosDisplay->mDpuData.retire_fence));
         /* Enable vsync to check vsync period */
         mDrmVSyncWorker.VSyncControl(true);
     }
