@@ -148,7 +148,7 @@ LOCAL_SRC_FILES := \
 	libdisplayinterface/ExynosDisplayDrmInterface.cpp \
 	libvrr/display/common/CommonDisplayContextProvider.cpp \
 	libvrr/display/exynos/ExynosDisplayContextProvider.cpp \
-	libvrr/Power/PowerStatsPresentProfileTokenGenerator.cpp \
+	libvrr/Power/PowerStatsProfileTokenGenerator.cpp \
 	libvrr/Power/DisplayStateResidencyProvider.cpp \
 	libvrr/Power/DisplayStateResidencyWatcher.cpp \
 	libvrr/FileNode.cpp \

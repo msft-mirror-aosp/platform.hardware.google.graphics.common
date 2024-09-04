@@ -235,7 +235,7 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice* device,
             if (content.has_value() &&
                 !(content.value().compare(0, kRefreshControlNodeEnabled.length(),
                                           kRefreshControlNodeEnabled))) {
-                bool ret = fileNode->WriteUint32(kRefreshControlNodeName, refreshControlCommand);
+                bool ret = fileNode->writeValue(kRefreshControlNodeName, refreshControlCommand);
                 if (!ret) {
                     ALOGE("%s(): write command to file node %s%s failed.", __func__,
                           displayFileNodePath.c_str(), kRefreshControlNodeName.c_str());
@@ -868,6 +868,8 @@ void ExynosPrimaryDisplay::onVsync(int64_t timestamp) {
 }
 
 int32_t ExynosPrimaryDisplay::notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) {
+    DISPLAY_ATRACE_INT64("expectedPresentTimeDelta", timestamp - systemTime());
+    DISPLAY_ATRACE_INT("frameInterval", frameIntervalNs);
     if (mVariableRefreshRateController) {
         mVariableRefreshRateController->notifyExpectedPresent(timestamp, frameIntervalNs);
     }
@@ -1142,6 +1144,9 @@ void ExynosPrimaryDisplay::setEarlyWakeupDisplay() {
 }
 
 void ExynosPrimaryDisplay::setExpectedPresentTime(uint64_t timestamp, int frameIntervalNs) {
+    DISPLAY_ATRACE_INT64("expectedPresentTimeDelta", timestamp - systemTime());
+    DISPLAY_ATRACE_INT("frameInterval", frameIntervalNs);
+
     mExpectedPresentTimeAndInterval.store(std::make_tuple(timestamp, frameIntervalNs));
     // Forward presentDisplay if there is a listener.
     const auto refreshListener = getRefreshListener();
@@ -1410,7 +1415,7 @@ int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
                   proximityActive ? "active" : "inactive", targetFps, dozeMode);
             mDisplayTe2Manager->updateTe2OptionForProximity(proximityActive, targetFps, dozeMode);
             if (!dozeMode) {
-                onProximitySensorStateChanged(proximityActive);
+                mDisplayTe2Manager->handleProximitySensorStateChange(proximityActive);
             }
         }
 
