@@ -130,6 +130,8 @@ public:
     int setFixedRefreshRateRange(uint32_t minimumRefreshRate,
                                  uint64_t minLockTimeForPeakRefreshRate);
 
+    void dump(String8& result);
+
 private:
     static constexpr int kMaxFrameRate = 120;
     static constexpr int kMaxTefrequency = 240;
