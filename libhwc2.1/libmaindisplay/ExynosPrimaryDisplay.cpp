@@ -1561,6 +1561,9 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
                 android::hardware::graphics::composer::getDisplayXrrVersion(displayTypeIdentifier);
         result.appendFormat("XRR version: %d.%d\n", xrrVersion.first, xrrVersion.second);
     }
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->dump(result);
+    }
 }
 
 void ExynosPrimaryDisplay::calculateTimelineLocked(
