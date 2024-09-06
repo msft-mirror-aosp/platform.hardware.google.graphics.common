@@ -87,6 +87,7 @@ DisplayRefreshStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
     if (isPowerModeOffNowLocked()) {
         mStatistics[mDisplayRefreshProfile].mUpdated = true;
     }
+
     return std::move(updatedStatistics);
 }
 
@@ -115,19 +116,19 @@ std::string VariableRefreshRateStatistic::dumpStatistics(bool getUpdatedOnly,
 }
 
 std::string VariableRefreshRateStatistic::normalizeString(const std::string& input) {
-    static constexpr int kDesiredLength = 21;
-    static constexpr int kTabWidth = 7;
-    int extraTabsNeeded =
-            std::max(0, (kDesiredLength - static_cast<int>(input.length())) / kTabWidth);
-    return input + std::string(extraTabsNeeded, '\t');
+    static constexpr int kDesiredLength = 30;
+    static constexpr int kSpaceWidth = 1;
+    int extraSpacesNeeded = std::max(0, (kDesiredLength - static_cast<int>(input.length())));
+    return input + std::string(extraSpacesNeeded, ' ');
 }
 
 void VariableRefreshRateStatistic::dump(String8& result) {
-    std::map<std::string, DisplayRefreshRecord> aggregatedStats;
+    auto updatedStatistics = getUpdatedStatistics();
+    std::map<std::string, DisplayRefreshRecord, StateNameComparator> aggregatedStats;
 
-    for (const auto& it : mStatistics) {
+    for (const auto& it : updatedStatistics) {
         PowerStatsProfile profile = it.first.toPowerStatsProfile(false);
-        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile);
+        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile, false);
         aggregatedStats[stateName] += it.second;
     }
 
