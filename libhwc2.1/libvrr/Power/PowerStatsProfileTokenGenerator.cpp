@@ -21,75 +21,147 @@
 
 namespace android::hardware::graphics::composer {
 
-std::string PowerStatsProfileTokenGenerator::generateRefreshSourceToken() const {
-    if (mPowerStatsProfile->isOff()) {
+PowerStatsProfileTokenGenerator::PowerStatsProfileTokenGenerator() {
+    parseDisplayStateResidencyPattern();
+}
+
+std::string PowerStatsProfileTokenGenerator::generateRefreshSourceToken(
+        PowerStatsProfile* profile) const {
+    if (profile->isOff()) {
         return "";
     }
 
-    if (isPresentRefresh(mPowerStatsProfile->mRefreshSource)) {
+    if (isPresentRefresh(profile->mRefreshSource)) {
         return "p";
     } else {
         return "np";
     }
 }
 
-std::string PowerStatsProfileTokenGenerator::generateModeToken() const {
-    if (mPowerStatsProfile->isOff()) {
+std::string PowerStatsProfileTokenGenerator::generateModeToken(PowerStatsProfile* profile) const {
+    if (profile->isOff()) {
         return "OFF";
     } else {
-        if (mPowerStatsProfile->mPowerMode == HWC_POWER_MODE_DOZE) {
+        if (profile->mPowerMode == HWC_POWER_MODE_DOZE) {
             return "LPM";
         }
-        return (mPowerStatsProfile->mBrightnessMode == BrightnessMode::kHighBrightnessMode) ? "HBM"
-                                                                                            : "NBM";
+        return (profile->mBrightnessMode == BrightnessMode::kHighBrightnessMode) ? "HBM" : "NBM";
     }
 }
 
-std::string PowerStatsProfileTokenGenerator::generateWidthToken() const {
-    if (mPowerStatsProfile->isOff()) {
+std::string PowerStatsProfileTokenGenerator::generateWidthToken(PowerStatsProfile* profile) const {
+    if (profile->isOff()) {
         return "";
     }
-    return std::to_string(mPowerStatsProfile->mWidth);
+    return std::to_string(profile->mWidth);
 }
 
-std::string PowerStatsProfileTokenGenerator::generateHeightToken() const {
-    if (mPowerStatsProfile->isOff()) {
+std::string PowerStatsProfileTokenGenerator::generateHeightToken(PowerStatsProfile* profile) const {
+    if (profile->isOff()) {
         return "";
     }
-    return std::to_string(mPowerStatsProfile->mHeight);
+    return std::to_string(profile->mHeight);
 }
 
-std::string PowerStatsProfileTokenGenerator::generateFpsToken() const {
-    if (mPowerStatsProfile->isOff()) {
+std::string PowerStatsProfileTokenGenerator::generateFpsToken(PowerStatsProfile* profile) const {
+    if (profile->isOff()) {
         return "";
     }
-    if (mPowerStatsProfile->mFps == 0) {
+    if (profile->mFps == 0) {
         return "oth";
     }
-    return std::to_string(mPowerStatsProfile->mFps);
+    return std::to_string(profile->mFps);
 }
 
 std::optional<std::string> PowerStatsProfileTokenGenerator::generateToken(
-        const std::string& tokenLabel) {
-    static std::unordered_map<std::string, std::function<std::string()>> functors =
-            {{"refreshSource",
-              std::bind(&PowerStatsProfileTokenGenerator::generateRefreshSourceToken, this)},
-             {"mode", std::bind(&PowerStatsProfileTokenGenerator::generateModeToken, this)},
-             {"width", std::bind(&PowerStatsProfileTokenGenerator::generateWidthToken, this)},
-             {"height", std::bind(&PowerStatsProfileTokenGenerator::generateHeightToken, this)},
-             {"fps", std::bind(&PowerStatsProfileTokenGenerator::generateFpsToken, this)}};
-
-    if (!mPowerStatsProfile) {
-        ALOGE("%s: haven't set target mPowerStatsProfile", __func__);
-        return std::nullopt;
-    }
+        const std::string& tokenLabel, PowerStatsProfile* profile) {
+    static std::unordered_map<std::string, std::function<std::string(PowerStatsProfile*)>>
+            functors = {{"refreshSource",
+                         std::bind(&PowerStatsProfileTokenGenerator::generateRefreshSourceToken,
+                                   this, std::placeholders::_1)},
+                        {"mode",
+                         std::bind(&PowerStatsProfileTokenGenerator::generateModeToken, this,
+                                   std::placeholders::_1)},
+                        {"width",
+                         std::bind(&PowerStatsProfileTokenGenerator::generateWidthToken, this,
+                                   std::placeholders::_1)},
+                        {"height",
+                         std::bind(&PowerStatsProfileTokenGenerator::generateHeightToken, this,
+                                   std::placeholders::_1)},
+                        {"fps",
+                         std::bind(&PowerStatsProfileTokenGenerator::generateFpsToken, this,
+                                   std::placeholders::_1)}};
 
     if (functors.find(tokenLabel) != functors.end()) {
-        return (functors[tokenLabel])();
+        return (functors[tokenLabel])(profile);
     } else {
         ALOGE("%s syntax error: unable to find token label = %s", __func__, tokenLabel.c_str());
         return std::nullopt;
     }
+}
+
+std::string PowerStatsProfileTokenGenerator::generateStateName(PowerStatsProfile* profile) {
+    std::string stateName;
+    const std::vector<std::pair<std::string, std::string>>& residencyPattern =
+            (!isPresentRefresh(profile->mRefreshSource))
+            ? mNonPresentDisplayStateResidencyPatternList
+            : mPresentDisplayStateResidencyPatternList;
+
+    for (const auto& pattern : residencyPattern) {
+        const auto token = generateToken(pattern.first, profile);
+        if (token.has_value()) {
+            stateName += token.value();
+            if (pattern.first == "mode" && token.value() == "OFF") {
+                break;
+            }
+        } else {
+            ALOGE("DisplayStateResidencyProvider %s(): cannot find token with label %s", __func__,
+                  pattern.first.c_str());
+            continue;
+        }
+        stateName += pattern.second;
+    }
+    return stateName;
+}
+
+bool PowerStatsProfileTokenGenerator::parseResidencyPattern(
+        std::vector<std::pair<std::string, std::string>>& residencyPatternMap,
+        const std::string_view residencyPattern) {
+    size_t start, end;
+    start = 0;
+    end = -1;
+    while (true) {
+        start = residencyPattern.find_first_of(kTokenLabelStart, end + 1);
+        if (start == std::string::npos) {
+            break;
+        }
+        ++start;
+        end = residencyPattern.find_first_of(kTokenLabelEnd, start);
+        if (end == std::string::npos) {
+            break;
+        }
+        std::string tokenLabel(residencyPattern.substr(start, end - start));
+
+        start = residencyPattern.find_first_of(kDelimiterStart, end + 1);
+        if (start == std::string::npos) {
+            break;
+        }
+        ++start;
+        end = residencyPattern.find_first_of(kDelimiterEnd, start);
+        if (end == std::string::npos) {
+            break;
+        }
+        std::string delimiter(residencyPattern.substr(start, end - start));
+        residencyPatternMap.emplace_back(std::make_pair(tokenLabel, delimiter));
+    }
+    return (end == residencyPattern.length() - 1);
+}
+
+bool PowerStatsProfileTokenGenerator::parseDisplayStateResidencyPattern() {
+    return parseResidencyPattern(mPresentDisplayStateResidencyPatternList,
+                                 kPresentDisplayStateResidencyPattern) &&
+            parseResidencyPattern(mNonPresentDisplayStateResidencyPatternList,
+                                  kNonPresentDisplayStateResidencyPattern);
 }
 
 } // namespace android::hardware::graphics::composer
