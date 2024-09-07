@@ -855,11 +855,6 @@ std::string VariableRefreshRateController::dumpEventQueueLocked() {
     return content;
 }
 
-void VariableRefreshRateController::dump(String8& result) {
-    result.appendFormat("\nVariableRefreshRateStatistic: \n");
-    mVariableRefreshRateStatistic->dump(result);
-}
-
 uint32_t VariableRefreshRateController::getCurrentRefreshControlStateLocked() const {
     uint32_t state = 0;
     return (mFileNode->getLastWrittenValue(kRefreshControlNodeName, state) == NO_ERROR)
