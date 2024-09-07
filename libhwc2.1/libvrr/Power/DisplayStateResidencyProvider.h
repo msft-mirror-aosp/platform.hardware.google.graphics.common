@@ -22,6 +22,7 @@
 #include <aidl/android/hardware/power/stats/StateResidency.h>
 
 #include "../Statistics/VariableRefreshRateStatistic.h"
+#include "../display/common/Constants.h"
 #include "PowerStatsProfileTokenGenerator.h"
 
 // #define DEBUG_VRR_POWERSTATS 1
@@ -47,49 +48,21 @@ public:
     DisplayStateResidencyProvider& operator=(const DisplayStateResidencyProvider& other) = delete;
 
 private:
-    static const std::set<Fraction<int>> kFpsMappingTable;
-    static const std::vector<int> kFpsLowPowerModeMappingTable;
     static const std::vector<int> kActivePowerModes;
     static const std::vector<RefreshSource> kRefreshSource;
-
-    // The format of pattern is: ([token label]'delimiter'?)*
-    static constexpr std::string_view kPresentDisplayStateResidencyPattern =
-            "[mode](:)[width](x)[height](@)[fps]()";
-
-    // The format of pattern is: ([token label]'delimiter'?)*
-    static constexpr std::string_view kNonPresentDisplayStateResidencyPattern =
-            "[mode](:)[width](x)[height](@)[refreshSource]()";
-
-    static constexpr char kTokenLabelStart = '[';
-    static constexpr char kTokenLabelEnd = ']';
-    static constexpr char kDelimiterStart = '(';
-    static constexpr char kDelimiterEnd = ')';
 
     void mapStatistics();
     uint64_t aggregateStatistics();
 
     void generatePowerStatsStates();
 
-    bool parseDisplayStateResidencyPattern();
-    bool parseResidencyPattern(std::vector<std::pair<std::string, std::string>>& mResidencyPattern,
-                               const std::string_view kResidencyPattern);
-
-    std::string generateStateName(PowerStatsProfile* profile);
     void generateUniqueStates();
 
     std::shared_ptr<CommonDisplayContextProvider> mDisplayContextProvider;
 
     std::shared_ptr<StatisticsProvider> mStatisticsProvider;
 
-    DisplayRefreshStatistics mStatistics;
-
-    typedef std::map<PowerStatsProfile, DisplayRefreshRecord> PowerStatsPresentStatistics;
-
-    PowerStatsPresentStatistics mRemappedStatistics;
-
     PowerStatsProfileTokenGenerator mPowerStatsProfileTokenGenerator;
-    std::vector<std::pair<std::string, std::string>> mPresentDisplayStateResidencyPattern;
-    std::vector<std::pair<std::string, std::string>> mNonPresentDisplayStateResidencyPattern;
 
     std::set<std::pair<PowerStatsProfile, std::string>> mUniqueStates;
     std::vector<State> mStates;

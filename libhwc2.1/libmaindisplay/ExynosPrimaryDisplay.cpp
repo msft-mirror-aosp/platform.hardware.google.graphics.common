@@ -1415,7 +1415,7 @@ int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
                   proximityActive ? "active" : "inactive", targetFps, dozeMode);
             mDisplayTe2Manager->updateTe2OptionForProximity(proximityActive, targetFps, dozeMode);
             if (!dozeMode) {
-                onProximitySensorStateChanged(proximityActive);
+                mDisplayTe2Manager->handleProximitySensorStateChange(proximityActive);
             }
         }
 
@@ -1560,6 +1560,9 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
         auto xrrVersion =
                 android::hardware::graphics::composer::getDisplayXrrVersion(displayTypeIdentifier);
         result.appendFormat("XRR version: %d.%d\n", xrrVersion.first, xrrVersion.second);
+    }
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->dump(result);
     }
 }
 
