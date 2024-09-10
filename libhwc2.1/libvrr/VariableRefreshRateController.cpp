@@ -855,9 +855,9 @@ std::string VariableRefreshRateController::dumpEventQueueLocked() {
     return content;
 }
 
-void VariableRefreshRateController::dump(String8& result) {
+void VariableRefreshRateController::dump(String8& result, const std::vector<std::string>& args) {
     result.appendFormat("\nVariableRefreshRateStatistic: \n");
-    mVariableRefreshRateStatistic->dump(result);
+    mVariableRefreshRateStatistic->dump(result, args);
 }
 
 uint32_t VariableRefreshRateController::getCurrentRefreshControlStateLocked() const {

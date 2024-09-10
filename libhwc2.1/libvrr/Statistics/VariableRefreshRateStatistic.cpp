@@ -87,6 +87,7 @@ DisplayRefreshStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
     if (isPowerModeOffNowLocked()) {
         mStatistics[mDisplayRefreshProfile].mUpdated = true;
     }
+
     return std::move(updatedStatistics);
 }
 
@@ -115,35 +116,95 @@ std::string VariableRefreshRateStatistic::dumpStatistics(bool getUpdatedOnly,
 }
 
 std::string VariableRefreshRateStatistic::normalizeString(const std::string& input) {
-    static constexpr int kDesiredLength = 21;
-    static constexpr int kTabWidth = 7;
-    int extraTabsNeeded =
-            std::max(0, (kDesiredLength - static_cast<int>(input.length())) / kTabWidth);
-    return input + std::string(extraTabsNeeded, '\t');
+    static constexpr int kDesiredLength = 30;
+    static constexpr int kSpaceWidth = 1;
+    int extraSpacesNeeded = std::max(0, (kDesiredLength - static_cast<int>(input.length())));
+    return input + std::string(extraSpacesNeeded, ' ');
 }
 
-void VariableRefreshRateStatistic::dump(String8& result) {
-    std::map<std::string, DisplayRefreshRecord> aggregatedStats;
+void VariableRefreshRateStatistic::dump(String8& result, const std::vector<std::string>& args) {
+    bool hasDelta = false;
 
-    for (const auto& it : mStatistics) {
+    if (!args.empty()) {
+        for (const auto& arg : args) {
+            std::string lowercaseArg = arg;
+            std::transform(lowercaseArg.begin(), lowercaseArg.end(), lowercaseArg.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+
+            if (lowercaseArg.find("delta") != std::string::npos) {
+                hasDelta = true;
+            }
+        }
+    }
+
+    auto updatedStatistics = getUpdatedStatistics();
+    auto curTime = getSteadyClockTimeNs();
+    std::map<std::string, DisplayRefreshRecord, StateNameComparator> aggregatedStats;
+    std::map<std::string, DisplayRefreshRecord> aggregatedStatsSnapshot;
+    // Aggregating lastSnapshot dumpsys to calculate delta
+    for (const auto& it : mStatisticsSnapshot) {
         PowerStatsProfile profile = it.first.toPowerStatsProfile(false);
-        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile);
+        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile, false);
+        aggregatedStatsSnapshot[stateName] += it.second;
+    }
+
+    for (const auto& it : updatedStatistics) {
+        PowerStatsProfile profile = it.first.toPowerStatsProfile(false);
+        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile, false);
         aggregatedStats[stateName] += it.second;
     }
 
-    result.appendFormat("%s \t %s \t %s \t %s \n", normalizeString("StateName").c_str(),
-                        normalizeString("Total Time (ms)").c_str(),
-                        normalizeString("Total Entries").c_str(),
-                        normalizeString("Last Entry TStamp (ms)").c_str());
-    for (const auto& it : aggregatedStats) {
-        result.appendFormat("%s \t %s \t %s \t %s \n", normalizeString(it.first).c_str(),
-                            normalizeString(std::to_string(it.second.mAccumulatedTimeNs / 1000000))
-                                    .c_str(),
-                            normalizeString(std::to_string(it.second.mCount)).c_str(),
-                            normalizeString(
-                                    std::to_string(it.second.mLastTimeStampInBootClockNs / 1000000))
-                                    .c_str());
+    if (hasDelta) {
+        result.appendFormat("Elapsed Time: %lu \n", (curTime - mLastDumpsysTime) / 1000000);
     }
+
+    std::string headerString = hasDelta ? normalizeString("StateName") + "\t" +
+                    normalizeString("Total Time (ms)") + "\t" + normalizeString("Delta") + "\t" +
+                    normalizeString("Total Entries") + "\t" + normalizeString("Delta") + "\t" +
+                    normalizeString("Last Entry TStamp (ms)") + "\t" + normalizeString("Delta")
+                                        : normalizeString("StateName") + "\t" +
+                    normalizeString("Total Time (ms)") + "\t" + normalizeString("Total Entries") +
+                    "\t" + normalizeString("Last Entry TStamp (ms)");
+
+    result.appendFormat("%s \n", headerString.c_str());
+
+    for (const auto& it : aggregatedStats) {
+        uint64_t countDelta = 0;
+        uint64_t accumulatedTimeNsDelta = 0;
+        uint64_t lastTimeStampInBootClockNsDelta = 0;
+
+        auto agIt = aggregatedStatsSnapshot.find(it.first);
+        if (agIt != aggregatedStatsSnapshot.end()) {
+            countDelta = it.second.mCount - agIt->second.mCount;
+            accumulatedTimeNsDelta = it.second.mAccumulatedTimeNs - agIt->second.mAccumulatedTimeNs;
+            lastTimeStampInBootClockNsDelta = it.second.mLastTimeStampInBootClockNs -
+                    agIt->second.mLastTimeStampInBootClockNs;
+        }
+
+        std::string statsString = hasDelta
+                ? normalizeString(it.first) + "\t" +
+                        normalizeString(std::to_string(it.second.mAccumulatedTimeNs / 1000000)) +
+                        "\t" + normalizeString(std::to_string(accumulatedTimeNsDelta / 1000000)) +
+                        "\t" + normalizeString(std::to_string(it.second.mCount)) + "\t" +
+                        normalizeString(std::to_string(countDelta)) + "\t" +
+                        normalizeString(
+                                std::to_string(it.second.mLastTimeStampInBootClockNs / 1000000)) +
+                        "\t" +
+                        normalizeString(std::to_string(lastTimeStampInBootClockNsDelta / 1000000))
+                :
+
+                normalizeString(it.first) + "\t" +
+                        normalizeString(std::to_string(it.second.mAccumulatedTimeNs / 1000000)) +
+                        "\t" + normalizeString(std::to_string(it.second.mCount)) + "\t" +
+                        normalizeString(
+                                std::to_string(it.second.mLastTimeStampInBootClockNs / 1000000));
+
+        result.appendFormat("%s \n", statsString.c_str());
+    }
+
+    // Take a snapshot of updatedStatistics and time
+    mLastDumpsysTime = curTime;
+    mStatisticsSnapshot = DisplayRefreshStatistics(updatedStatistics);
 }
 
 void VariableRefreshRateStatistic::onPowerStateChange(int from, int to) {
