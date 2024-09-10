@@ -40,7 +40,7 @@ class HalImpl : public IComposerHal {
       virtual ~HalImpl() = default;
 
       void getCapabilities(std::vector<Capability>* caps) override;
-      void dumpDebugInfo(std::string* output) override;
+      void dumpDebugInfo(std::string* output, const std::vector<std::string>& args) override;
       bool hasCapability(Capability cap) override;
 
       void registerEventCallback(EventCallback* callback) override;

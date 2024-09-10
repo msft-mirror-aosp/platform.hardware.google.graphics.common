@@ -417,7 +417,7 @@ void ExynosDevice::dump(uint32_t *outSize, char *outBuffer) {
     }
 }
 
-void ExynosDevice::dump(String8 &result) {
+void ExynosDevice::dump(String8& result, const std::vector<std::string>& args) {
     result.append("\n\n");
 
     struct tm* localTime = (struct tm*)localtime((time_t*)&updateTimeInfo.lastUeventTime.tv_sec);
@@ -462,8 +462,7 @@ void ExynosDevice::dump(String8 &result) {
 
     for (size_t i = 0;i < mDisplays.size(); i++) {
         ExynosDisplay *display = mDisplays[i];
-        if (display->mPlugState == true)
-            display->dump(result);
+        if (display->mPlugState == true) display->dump(result, args);
     }
 }
 
