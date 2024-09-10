@@ -19,15 +19,28 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-
 #include "interface/Event.h"
+
+inline void clearBit(uint32_t& data, uint32_t bit) {
+    data &= ~(1L << (bit));
+}
+
+inline void setBit(uint32_t& data, uint32_t bit) {
+    data |= (1L << (bit));
+}
+
+inline void setBitField(uint32_t& data, uint32_t value, uint32_t offset, uint32_t fieldMask) {
+    data = (data & ~fieldMask) | (((value << offset) & fieldMask));
+}
 
 namespace android::hardware::graphics::composer {
 
 struct TimedEvent;
 
+constexpr int64_t kMillisecondToNanoSecond = 1000000;
+
 enum PresentFrameFlag {
-    kHasRefreshRateIndicatorLayer = (1 << 0),
+    kUpdateRefreshRateIndicatorLayerOnly = (1 << 0),
     kIsYuv = (1 << 1),
     kPresentingWhenDoze = (1 << 2),
 };
@@ -38,6 +51,33 @@ T roundDivide(T divident, T divisor) {
         return 0;
     }
     return (divident + (divisor / 2)) / divisor;
+}
+
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
+struct Fraction {
+    T mNum;
+    T mDen;
+
+    Fraction(T num = 0, T denom = 1) : mNum(num), mDen(denom) {
+        if (mDen < 0) {
+            mNum = -mNum;
+            mDen = -mDen;
+        }
+    }
+
+    T round() { return roundDivide(mNum, mDen); }
+
+    bool operator<(const Fraction<T>& other) const { return mNum * other.mDen < other.mNum * mDen; }
+
+    bool operator==(const Fraction<T>& other) const {
+        return mNum * other.mDen == other.mNum * mDen;
+    }
+};
+
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
+int64_t freqToDurationNs(Fraction<T> freq) {
+    return roundDivide(std::nano::den * static_cast<int64_t>(freq.mDen),
+                       static_cast<int64_t>(freq.mNum));
 }
 
 template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
@@ -52,10 +92,17 @@ T freqToDurationNs(T freq) {
     return static_cast<T>(res);
 }
 
-int64_t getNowMs();
-int64_t getNowNs();
+int64_t getSteadyClockTimeMs();
+int64_t getSteadyClockTimeNs();
+
+int64_t getBootClockTimeMs();
+int64_t getBootClockTimeNs();
+
+int64_t steadyClockTimeToBootClockTimeNs(int64_t steadyClockTimeNs);
 
 bool hasPresentFrameFlag(int flag, PresentFrameFlag target);
+
+bool isPowerModeOff(int powerMode);
 
 void setTimedEventWithAbsoluteTime(TimedEvent& event);
 

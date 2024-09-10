@@ -20,7 +20,6 @@
 
 #include "../libdevice/ExynosDisplay.h"
 #include "../libvrr/VariableRefreshRateController.h"
-#include "../libvrr/interface/VariableRefreshRateInterface.h"
 
 using android::hardware::graphics::composer::PresentListener;
 using android::hardware::graphics::composer::VariableRefreshRateController;
@@ -80,6 +79,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
 
         virtual void onVsync(int64_t timestamp) override;
 
+        virtual int32_t setFixedTe2Rate(const int rateHz) override;
+
         const std::string& getPanelName() final;
 
         int32_t notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) override;
@@ -88,6 +89,11 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
                 int timeoutNs, const std::vector<std::pair<uint32_t, uint32_t>>& settings) override;
 
         int32_t setPresentTimeoutController(uint32_t controllerType) override;
+
+        int32_t registerRefreshRateChangeListener(
+                std::shared_ptr<RefreshRateChangeListener> listener) override;
+
+        virtual int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled) final;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -110,6 +116,8 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
             return getPanelSysfsPath(getDcDisplayType());
         }
         std::string getPanelSysfsPath(const displaycolor::DisplayType& type) const;
+
+        virtual bool isVrrSupported() const override { return mXrrSettings.versionInfo.isVrr(); }
 
         uint32_t mRcdId = -1;
 
@@ -171,14 +179,10 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
                 hwc_vsync_period_change_timeline_t* outTimeline) override;
         void recalculateTimelineLocked(int64_t refreshRateDelayNanos);
 
-        // min idle refresh rate
-        int mDefaultMinIdleRefreshRate;
-        // the min refresh rate in the blocking zone, e.g. 10 means 10Hz in the zone
-        int mMinIdleRefreshRateForBlockingZone;
-        // blocking zone threshold, e.g. 492 means entering the zone if DBV < 492
-        uint32_t mDbvThresholdForBlockingZone;
-        bool mUseBlockingZoneForMinIdleRefreshRate;
+        std::map<int, int> mBrightnessBlockingZonesLookupTable;
+
         int mMinIdleRefreshRate;
+        const int kMinIdleRefreshRateForDozeMode = 1;
         int mRrThrottleFps[toUnderlying(RrThrottleRequester::MAX)];
         std::mutex mMinIdleRefreshRateMutex;
 
@@ -201,7 +205,7 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         PresentListener* getPresentListener();
         VsyncListener* getVsyncListener();
 
-        VrrSettings_t mVrrSettings;
+        XrrSettings_t mXrrSettings;
         std::shared_ptr<VariableRefreshRateController> mVariableRefreshRateController;
 };
 

@@ -18,6 +18,7 @@
 
 #include <utils/Errors.h>
 #include <utils/Log.h>
+#include <utils/Trace.h>
 #include <chrono>
 #include <functional>
 #include <string>
@@ -33,6 +34,7 @@ enum class RefreshRateCalculatorType : int {
     kInvalid = -1,
     kAod = 0,
     kInstant,
+    kExitIdle,
     kPeriodical,
     kVideoPlayback,
     kCombined,
@@ -48,7 +50,8 @@ constexpr int64_t kDefaultInvalidRefreshRate = -1;
 class RefreshRateCalculator : public PowerModeListener {
 public:
     RefreshRateCalculator()
-          : mMinFrameIntervalNs(roundDivide(std::nano::den, static_cast<int64_t>(mMaxFrameRate))) {}
+          : mVsyncIntervalNs(freqToDurationNs(mVsyncRate)),
+            mMinFrameIntervalNs(freqToDurationNs(mMaxFrameRate)) {}
 
     virtual ~RefreshRateCalculator() = default;
 
@@ -56,9 +59,16 @@ public:
 
     virtual int getRefreshRate() const = 0;
 
-    virtual void onPowerStateChange(int __unused from, int to) override { mPowerMode = to; }
+    virtual void onPowerStateChange(int __unused from, int __unused to) override {}
 
-    virtual void onPresent(int64_t presentTimeNs, int flag) = 0;
+    void onPresent(int64_t presentTimeNs, int flag) {
+        if (hasPresentFrameFlag(flag, PresentFrameFlag::kUpdateRefreshRateIndicatorLayerOnly)) {
+            return;
+        }
+        onPresentInternal(presentTimeNs, flag);
+    }
+
+    virtual void onPresentInternal(int64_t presentTimeNs, int flag) = 0;
 
     virtual void reset() = 0;
 
@@ -68,10 +78,13 @@ public:
 
     virtual void setEnabled(bool __unused isEnabled){};
 
-    // Should be invoked during the transition from HS to NS or vice versa.
-    void setMinFrameInterval(int64_t minFrameIntervalNs) {
+    // Should be invoked when configuration changed.
+    virtual void setVrrConfigAttributes(int64_t vsyncPeriodNs, int64_t minFrameIntervalNs) {
+        mVsyncIntervalNs = vsyncPeriodNs;
         mMinFrameIntervalNs = minFrameIntervalNs;
-        mMaxFrameRate = durationToVsync(mMinFrameIntervalNs);
+        mMaxFrameRate = durationNsToFreq(minFrameIntervalNs);
+        mVsyncRate = durationNsToFreq(vsyncPeriodNs);
+        mMinVsyncNum = roundDivide(minFrameIntervalNs, vsyncPeriodNs);
     }
 
     void setName(const std::string& name) { mName = name; }
@@ -79,18 +92,17 @@ public:
 protected:
     static constexpr int64_t kDefaultMaxFrameRate = 120;
 
-    int durationToVsync(int64_t duration) const {
-        return roundDivide(duration, mMinFrameIntervalNs);
-    }
+    int durationToVsync(int64_t duration) const { return roundDivide(duration, mVsyncIntervalNs); }
 
     std::function<void(int)> mRefreshRateChangeCallback;
 
+    int mVsyncRate = kDefaultMaxFrameRate;
     int mMaxFrameRate = kDefaultMaxFrameRate;
-
+    int64_t mVsyncIntervalNs;
     int64_t mMinFrameIntervalNs;
+    int mMinVsyncNum = 1;
 
     std::string mName;
-    int32_t mPowerMode = -1;
 };
 
 } // namespace android::hardware::graphics::composer

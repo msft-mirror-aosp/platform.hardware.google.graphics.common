@@ -18,6 +18,7 @@
 
 #include <hardware/hwcomposer2.h>
 
+#include <map>
 #include <set>
 
 #include "Util.h"
@@ -93,12 +94,47 @@ int32_t ComposerCommandEngine::execute(const std::vector<DisplayCommand>& comman
     return ::android::NO_ERROR;
 }
 
+void ComposerCommandEngine::dispatchBatchCreateDestroyLayerCommand(int64_t display,
+                                                                   const LayerCommand& layerCmd) {
+    auto cmdType = layerCmd.layerLifecycleBatchCommandType;
+    if ((cmdType != LayerLifecycleBatchCommandType::CREATE) &&
+        (cmdType != LayerLifecycleBatchCommandType::DESTROY)) {
+        return;
+    }
+    auto err = mHal->batchedCreateDestroyLayer(display, layerCmd.layer, cmdType);
+    if (err) {
+        mWriter->setError(mCommandIndex, err);
+        return;
+    }
+
+    if (cmdType == LayerLifecycleBatchCommandType::CREATE) {
+        err = mResources->addLayer(display, layerCmd.layer, layerCmd.newBufferSlotCount);
+    } else {
+        err = mResources->removeLayer(display, layerCmd.layer);
+    }
+
+    if (err) {
+        mWriter->setError(mCommandIndex, err);
+    }
+}
+
 void ComposerCommandEngine::dispatchDisplayCommand(const DisplayCommand& command) {
+    // place batched createLayer and destroyLayer commands before any other commands, so layers are
+    // properly created to operate on.
+    for (const auto& layerCmd : command.layers) {
+        if (layerCmd.layerLifecycleBatchCommandType == LayerLifecycleBatchCommandType::CREATE ||
+            layerCmd.layerLifecycleBatchCommandType == LayerLifecycleBatchCommandType::DESTROY) {
+            dispatchBatchCreateDestroyLayerCommand(command.display, layerCmd);
+        }
+    }
     //  place SetDisplayBrightness before SetLayerWhitePointNits since current
     //  display brightness is used to validate the layer white point nits.
     DISPATCH_DISPLAY_COMMAND(command, brightness, SetDisplayBrightness);
     for (const auto& layerCmd : command.layers) {
-        dispatchLayerCommand(command.display, layerCmd);
+        // ignore layer data update if command is DESTROY
+        if (layerCmd.layerLifecycleBatchCommandType != LayerLifecycleBatchCommandType::DESTROY) {
+            dispatchLayerCommand(command.display, layerCmd);
+        }
     }
 
     DISPATCH_DISPLAY_COMMAND(command, colorTransformMatrix, SetColorTransform);
@@ -132,6 +168,7 @@ void ComposerCommandEngine::dispatchLayerCommand(int64_t display, const LayerCom
     DISPATCH_LAYER_COMMAND(display, command, perFrameMetadata, PerFrameMetadata);
     DISPATCH_LAYER_COMMAND(display, command, perFrameMetadataBlob, PerFrameMetadataBlobs);
     DISPATCH_LAYER_COMMAND_SIMPLE(display, command, blockingRegion, BlockingRegion);
+    DISPATCH_LAYER_COMMAND(display, command, bufferSlotsToClear, BufferSlotsToClear);
 }
 
 int32_t ComposerCommandEngine::executeValidateDisplayInternal(int64_t display) {
@@ -468,6 +505,53 @@ void ComposerCommandEngine::executeSetLayerPerFrameMetadataBlobs(int64_t display
     if (err) {
         LOG(ERROR) << __func__ << ": err " << err;
         mWriter->setError(mCommandIndex, err);
+    }
+}
+
+void ComposerCommandEngine::executeSetLayerBufferSlotsToClear(
+        int64_t display, int64_t layer, const std::vector<int32_t>& bufferSlotsToClear) {
+    std::optional<PowerMode> powerMode;
+    mHal->getPowerMode(display, powerMode);
+    if (!powerMode.has_value() || powerMode.value() != PowerMode::OFF) {
+        return;
+    }
+
+    buffer_handle_t cachedBuffer = nullptr;
+    std::unique_ptr<IBufferReleaser> bufferReleaser = mResources->createReleaser(true);
+
+    // get all cached buffers
+    std::vector<buffer_handle_t> cachedBuffers;
+    std::map<buffer_handle_t, int32_t> handle2Slots;
+    for (int32_t slot : bufferSlotsToClear) {
+        auto err = mResources->getLayerBuffer(display, layer, slot, /*fromCache=*/true, nullptr,
+                                              cachedBuffer, bufferReleaser.get());
+        if (cachedBuffer) {
+            cachedBuffers.push_back(cachedBuffer);
+            handle2Slots[cachedBuffer] = slot;
+        } else {
+            LOG(ERROR) << __func__ << ": Buffer slot " << slot << " is null";
+        }
+        if (err) {
+            LOG(ERROR) << __func__ << ": failed to getLayerBuffer err " << err;
+            mWriter->setError(mCommandIndex, err);
+            return;
+        }
+    }
+
+    // clear any other cache in composer
+    std::vector<buffer_handle_t> clearableBuffers;
+    mHal->uncacheLayerBuffers(display, layer, cachedBuffers, clearableBuffers);
+
+    for (auto buffer : clearableBuffers) {
+        auto slot = handle2Slots[buffer];
+        // replace the slot with nullptr and release the buffer by bufferReleaser
+        auto err = mResources->getLayerBuffer(display, layer, slot, /*fromCache=*/false, nullptr,
+                                              cachedBuffer, bufferReleaser.get());
+        if (err) {
+            LOG(ERROR) << __func__ << ": failed to clear buffer cache err " << err;
+            mWriter->setError(mCommandIndex, err);
+            return;
+        }
     }
 }
 

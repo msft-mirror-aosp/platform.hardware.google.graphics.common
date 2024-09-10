@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
+
 #include "VideoFrameRateCalculator.h"
 
 #include <numeric>
@@ -25,14 +27,14 @@ namespace android::hardware::graphics::composer {
 VideoFrameRateCalculator::VideoFrameRateCalculator(EventQueue* eventQueue,
                                                    const VideoFrameRateCalculatorParameters& params)
       : mEventQueue(eventQueue), mParams(params) {
-    mName = "VideoFrameRateCalculator";
+    mName = "RefreshRateCalculator-Video";
 
     mParams.mMaxInterestedFrameRate = std::min(mMaxFrameRate, mParams.mMaxInterestedFrameRate);
     mParams.mMinInterestedFrameRate = std::max(1, mParams.mMinInterestedFrameRate);
 
     mRefreshRateCalculator =
             std::make_unique<PeriodRefreshRateCalculator>(mEventQueue, params.mPeriodParams);
-    mRefreshRateCalculator->setName("PeriodRefreshRateCalculator-Worker");
+    mRefreshRateCalculator->setName("RefreshRateCalculator-Period-Worker");
     mRefreshRateCalculator->registerRefreshRateChangeCallback(
             std::bind(&VideoFrameRateCalculator::onReportRefreshRate, this, std::placeholders::_1));
 }
@@ -55,14 +57,17 @@ void VideoFrameRateCalculator::onPowerStateChange(int from, int to) {
         }
         setEnabled(true);
     }
-    mPowerMode = to;
 }
 
-void VideoFrameRateCalculator::onPresent(int64_t presentTimeNs, int flag) {
+void VideoFrameRateCalculator::onPresentInternal(int64_t presentTimeNs, int flag) {
     if (hasPresentFrameFlag(flag, PresentFrameFlag::kPresentingWhenDoze)) {
         return;
     }
-    mRefreshRateCalculator->onPresent(presentTimeNs, flag);
+    if (hasPresentFrameFlag(flag, PresentFrameFlag::kIsYuv)) {
+        mRefreshRateCalculator->onPresentInternal(presentTimeNs, flag);
+    } else {
+        reset();
+    }
 }
 
 void VideoFrameRateCalculator::reset() {
@@ -74,6 +79,13 @@ void VideoFrameRateCalculator::reset() {
 
 void VideoFrameRateCalculator::setEnabled(bool isEnabled) {
     mRefreshRateCalculator->setEnabled(isEnabled);
+}
+
+void VideoFrameRateCalculator::setVrrConfigAttributes(int64_t vsyncPeriodNs,
+                                                      int64_t minFrameIntervalNs) {
+    RefreshRateCalculator::setVrrConfigAttributes(vsyncPeriodNs, minFrameIntervalNs);
+
+    mRefreshRateCalculator->setVrrConfigAttributes(vsyncPeriodNs, minFrameIntervalNs);
 }
 
 int VideoFrameRateCalculator::onReportRefreshRate(int refreshRate) {
@@ -104,6 +116,7 @@ int VideoFrameRateCalculator::onReportRefreshRate(int refreshRate) {
 void VideoFrameRateCalculator::setNewRefreshRate(int newRefreshRate) {
     if (newRefreshRate != mLastVideoFrameRate) {
         mLastVideoFrameRate = newRefreshRate;
+        ATRACE_INT(mName.c_str(), newRefreshRate);
         if (mRefreshRateChangeCallback) {
             if ((mLastVideoFrameRate >= mParams.mMinInterestedFrameRate) &&
                 (mLastVideoFrameRate <= mParams.mMaxInterestedFrameRate)) {
