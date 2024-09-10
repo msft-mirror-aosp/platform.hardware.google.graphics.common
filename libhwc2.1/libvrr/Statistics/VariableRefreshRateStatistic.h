@@ -216,7 +216,7 @@ public:
 
     std::string dumpStatistics(bool getUpdatedOnly, RefreshSource refreshSource,
                                const std::string& delimiter = ";");
-    void dump(String8& result);
+    void dump(String8& result, const std::vector<std::string>& args = {});
 
 private:
     static constexpr int64_t kMaxRefreshIntervalNs = std::nano::den;
@@ -250,9 +250,11 @@ private:
 
     const int64_t mUpdatePeriodNs;
 
+    int64_t mLastDumpsysTime = 0;
     int64_t mLastRefreshTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
 
     DisplayRefreshStatistics mStatistics;
+    DisplayRefreshStatistics mStatisticsSnapshot;
     DisplayRefreshProfile mDisplayRefreshProfile;
 
     uint64_t mPowerOffDurationNs = 0;
