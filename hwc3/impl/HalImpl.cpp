@@ -216,11 +216,11 @@ void HalImpl::getCapabilities(std::vector<Capability>* caps) {
     caps->insert(caps->begin(), mCaps.begin(), mCaps.end());
 }
 
-void HalImpl::dumpDebugInfo(std::string* output) {
+void HalImpl::dumpDebugInfo(std::string* output, const std::vector<std::string>& args /* = {} */) {
     if (output == nullptr) return;
 
     String8 result;
-    mDevice->dump(result);
+    mDevice->dump(result, args);
 
     output->resize(result.size());
     output->assign(result.c_str());

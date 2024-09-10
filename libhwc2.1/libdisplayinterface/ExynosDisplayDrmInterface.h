@@ -302,11 +302,30 @@ class ExynosDisplayDrmInterface :
                 bool Callback(int display, int64_t timestamp);
                 void resetVsyncTimeStamp() { mVsyncTimeStamp = 0; };
                 void resetDesiredVsyncPeriod() { mDesiredVsyncPeriod = 0;};
+
+                // Sets the vsync period to sync with ExynosDisplay::setActiveConfig.
+                // Note: Vsync period updates should typically be done through Callback.
+                void setVsyncPeriod(const uint64_t& period) { mVsyncPeriod = period; }
+                void setTransientDuration(const int& transientDuration) {
+                    mTransientDuration = transientDuration;
+                }
+                void setModeSetFence(const int fence) {
+                    std::lock_guard<std::mutex> lock(mFenceMutex);
+                    if (mModeSetFence != -1) {
+                        close(mModeSetFence);
+                        mModeSetFence = -1;
+                    }
+                    mModeSetFence = fence;
+                }
+
             private:
                 bool mVsyncEnabled = false;
                 uint64_t mVsyncTimeStamp = 0;
                 uint64_t mVsyncPeriod = 0;
                 uint64_t mDesiredVsyncPeriod = 0;
+                int mModeSetFence = -1;
+                int mTransientDuration = 0;
+                std::mutex mFenceMutex;
         };
         void Callback(int display, int64_t timestamp) override;
 

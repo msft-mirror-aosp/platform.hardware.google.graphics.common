@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
 #include "FileNode.h"
-
 #include <log/log.h>
-#include <sched.h>
+#include <utils/Trace.h>
 #include <sstream>
 
 namespace android {
@@ -26,50 +26,33 @@ ANDROID_SINGLETON_STATIC_INSTANCE(hardware::graphics::composer::FileNodeManager)
 
 namespace hardware::graphics::composer {
 
-FileNode::FileNode(const std::string& nodePath) : mNodePath(nodePath) {
-    std::thread thread = std::thread(&FileNode::threadBody, this);
-    thread.detach();
-}
+FileNode::FileNode(const std::string& nodePath) : mNodePath(nodePath) {}
 
 FileNode::~FileNode() {
-    std::unique_lock<std::shared_mutex> lock(mMutex);
-
-    mThreadExit = true;
-    // Clear pending comamnds.
-    mPendingValues = std::queue<std::pair<int, int>>();
     for (auto& fd : mFds) {
         close(fd.second);
     }
-    mCondition.notify_all();
 }
 
 std::string FileNode::dump() {
     std::ostringstream os;
     os << "FileNode: root path: " << mNodePath << std::endl;
-    std::unique_lock<std::shared_mutex> lock(mMutex);
     for (const auto& item : mFds) {
-        auto lastWrittenValue = getLastWrittenValueLocked(item.first);
-        os << "FileNode: sysfs node = " << item.first << ", last written value = 0x" << std::setw(8)
-           << std::setfill('0') << std::hex << lastWrittenValue << std::endl;
+        auto lastWrittenString = getLastWrittenString(item.first);
+        if (lastWrittenString)
+            os << "FileNode: sysfs node = " << item.first
+               << ", last written value = " << *lastWrittenString << std::endl;
     }
     return os.str();
 }
 
-int FileNode::getFileHandler(const std::string& nodeName) {
-    std::unique_lock<std::shared_mutex> lock(mMutex);
-
-    return getFileHandlerLocked(nodeName);
-}
-
-uint32_t FileNode::getLastWrittenValue(const std::string& nodeName) {
-    std::unique_lock<std::shared_mutex> lock(mMutex);
-
-    return getLastWrittenValueLocked(nodeName);
+std::optional<std::string> FileNode::getLastWrittenString(const std::string& nodeName) {
+    int fd = getFileHandler(nodeName);
+    if ((fd < 0) || (mLastWrittenString.count(fd) <= 0)) return std::nullopt;
+    return mLastWrittenString[fd];
 }
 
 std::optional<std::string> FileNode::readString(const std::string& nodeName) {
-    std::unique_lock<std::shared_mutex> lock(mMutex);
-
     std::string fullPath = mNodePath + nodeName;
     std::ifstream ifs(fullPath);
     if (ifs) {
@@ -80,22 +63,7 @@ std::optional<std::string> FileNode::readString(const std::string& nodeName) {
     return std::nullopt;
 }
 
-bool FileNode::WriteUint32(const std::string& nodeName, uint32_t value) {
-    {
-        std::unique_lock<std::shared_mutex> lock(mMutex);
-        int fd = getFileHandlerLocked(nodeName);
-        if (fd >= 0) {
-            mPendingValues.emplace(std::make_pair(fd, value));
-        } else {
-            ALOGE("Write to invalid file node %s%s", mNodePath.c_str(), nodeName.c_str());
-            return false;
-        }
-    }
-    mCondition.notify_all();
-    return true;
-}
-
-int FileNode::getFileHandlerLocked(const std::string& nodeName) {
+int FileNode::getFileHandler(const std::string& nodeName) {
     if (mFds.count(nodeName) > 0) {
         return mFds[nodeName];
     }
@@ -109,47 +77,23 @@ int FileNode::getFileHandlerLocked(const std::string& nodeName) {
     return fd;
 }
 
-uint32_t FileNode::getLastWrittenValueLocked(const std::string& nodeName) {
-    int fd = getFileHandlerLocked(nodeName);
-    if ((fd < 0) || (mLastWrittenValue.count(fd) <= 0)) return 0;
-    return mLastWrittenValue[fd];
-}
-
-void FileNode::threadBody() {
-    struct sched_param param = {.sched_priority = sched_get_priority_max(SCHED_FIFO)};
-    if (sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
-        ALOGE("FileNode %s: fail to set scheduler to SCHED_FIFO.", __func__);
-    }
-    while (true) {
-        {
-            std::unique_lock<std::shared_mutex> lock(mMutex);
-            if (mThreadExit) break;
-            if (mPendingValues.empty()) {
-                mCondition.wait(lock);
-            }
-            if (!mPendingValues.empty()) {
-                mPendingValue = mPendingValues.front();
-                mPendingValues.pop();
-            }
-        }
-        if (mPendingValue) {
-            if (!writeUint32InternalLocked(mPendingValue->first, mPendingValue->second)) {
-                ALOGE("%s Write file node failed, fd = %d", __func__, mPendingValue->first);
-            }
-            mPendingValue = std::nullopt;
-        }
-    }
-}
-
-bool FileNode::writeUint32InternalLocked(int fd, uint32_t value) {
-    std::string cmdString = std::to_string(value);
-    int ret = write(fd, cmdString.c_str(), std::strlen(cmdString.c_str()));
-    if (ret < 0) {
+bool FileNode::writeString(const std::string& nodeName, const std::string& str) {
+    int fd = getFileHandler(nodeName);
+    if (fd < 0) {
+        ALOGE("Write to invalid file node %s%s", mNodePath.c_str(), nodeName.c_str());
         return false;
     }
-    mLastWrittenValue[fd] = value;
+    int ret = write(fd, str.c_str(), str.size());
+    if (ret < 0) {
+        ALOGE("Write %s to file node %s%s failed, ret = %d errno = %d", str.c_str(),
+              mNodePath.c_str(), nodeName.c_str(), ret, errno);
+        return false;
+    }
+    std::ostringstream oss;
+    oss << "Write " << str << " to file node " << mNodePath.c_str() << nodeName.c_str();
+    ATRACE_NAME(oss.str().c_str());
+    mLastWrittenString[fd] = str;
     return true;
 }
-
 }; // namespace hardware::graphics::composer
 }; // namespace android

@@ -16,17 +16,11 @@
 
 #pragma once
 
-#include <android-base/thread_annotations.h>
-
 #include <utils/Singleton.h>
 
-#include <condition_variable>
 #include <fstream>
 #include <optional>
-#include <queue>
-#include <shared_mutex>
 #include <sstream>
-#include <thread>
 #include <unordered_map>
 
 #include <log/log.h>
@@ -40,33 +34,35 @@ public:
 
     std::string dump();
 
-    int getFileHandler(const std::string& nodeName);
+    std::optional<std::string> getLastWrittenString(const std::string& nodeName);
 
-    uint32_t getLastWrittenValue(const std::string& nodeName);
+    template <typename T>
+    status_t getLastWrittenValue(const std::string& nodeName, T& value) {
+        int fd = getFileHandler(nodeName);
+        if (fd < 0) return BAD_VALUE;
+
+        auto iter = mLastWrittenString.find(fd);
+        if (iter == mLastWrittenString.end()) return BAD_VALUE;
+
+        std::istringstream iss(iter->second);
+        iss >> value;
+        return NO_ERROR;
+    }
 
     std::optional<std::string> readString(const std::string& nodeName);
 
-    bool WriteUint32(const std::string& nodeName, uint32_t value);
+    template <typename T>
+    bool writeValue(const std::string& nodeName, const T value) {
+        return writeString(nodeName, std::to_string(value));
+    }
+
+    int getFileHandler(const std::string& nodeName);
 
 private:
-    int getFileHandlerLocked(const std::string& nodeName);
-
-    uint32_t getLastWrittenValueLocked(const std::string& nodeName);
-
-    void threadBody();
-
-    bool writeUint32InternalLocked(int fd, uint32_t value);
-
-    const std::string mNodePath;
+    std::string mNodePath;
     std::unordered_map<std::string, int> mFds;
-    std::unordered_map<int, uint32_t> mLastWrittenValue;
-
-    std::queue<std::pair<int, int>> mPendingValues;
-    std::optional<std::pair<int, int>> mPendingValue = std::nullopt;
-
-    std::shared_mutex mMutex;
-    std::condition_variable_any mCondition;
-    bool mThreadExit = false;
+    std::unordered_map<int, std::string> mLastWrittenString;
+    bool writeString(const std::string& nodeName, const std::string& str);
 };
 
 class FileNodeManager : public Singleton<FileNodeManager> {
