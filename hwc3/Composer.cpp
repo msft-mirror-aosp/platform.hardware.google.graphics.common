@@ -61,9 +61,14 @@ ndk::ScopedAStatus Composer::createClient(std::shared_ptr<IComposerClient>* outC
     return ndk::ScopedAStatus::ok();
 }
 
-binder_status_t Composer::dump(int fd, const char** /*args*/, uint32_t /*numArgs*/) {
+binder_status_t Composer::dump(int fd, const char** args, uint32_t numArgs) {
+    std::vector<std::string> argsVector(numArgs);
+    for (uint32_t i = 0; i < numArgs; ++i) {
+        argsVector[i] = args[i];
+    }
+
     std::string output;
-    mHal->dumpDebugInfo(&output);
+    mHal->dumpDebugInfo(&output, argsVector);
     write(fd, output.c_str(), output.size());
     return STATUS_OK;
 }

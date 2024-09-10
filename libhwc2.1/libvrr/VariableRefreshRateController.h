@@ -130,7 +130,7 @@ public:
     int setFixedRefreshRateRange(uint32_t minimumRefreshRate,
                                  uint64_t minLockTimeForPeakRefreshRate);
 
-    void dump(String8& result);
+    void dump(String8& result, const std::vector<std::string>& args = {});
 
 private:
     static constexpr int kMaxFrameRate = 120;

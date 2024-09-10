@@ -1270,7 +1270,8 @@ class ExynosDisplay {
                                     std::vector<buffer_handle_t>& outClearableBuffers);
 
         virtual void miniDump(String8& result);
-        virtual void dump(String8& result);
+        virtual void dump(String8& result, const std::vector<std::string>& args = {});
+
         void dumpLocked(String8& result) REQUIRES(mDisplayMutex);
         void dumpAllBuffers() REQUIRES(mDisplayMutex);
 

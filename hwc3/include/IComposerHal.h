@@ -98,7 +98,7 @@ class IComposerHal {
      virtual ~IComposerHal() = default;
 
      virtual void getCapabilities(std::vector<Capability>* caps) = 0;
-     virtual void dumpDebugInfo(std::string* output) = 0;
+     virtual void dumpDebugInfo(std::string* output, const std::vector<std::string>& args = {}) = 0;
      virtual bool hasCapability(Capability cap) = 0;
 
      class EventCallback {

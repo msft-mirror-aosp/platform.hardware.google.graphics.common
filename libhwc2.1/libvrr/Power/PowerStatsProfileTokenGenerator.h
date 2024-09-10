@@ -24,6 +24,60 @@
 
 namespace android::hardware::graphics::composer {
 
+struct StateNameComparator {
+    bool operator()(const std::string& a, const std::string& b) const {
+        // 1. Find the last '@' in both strings
+        size_t posA = a.rfind('@');
+        size_t posB = b.rfind('@');
+
+        // 2. Extract the parts before and after the '@'
+        std::string prefixA = (posA != std::string::npos) ? a.substr(0, posA) : a;
+        std::string suffixA = (posA != std::string::npos) ? a.substr(posA + 1) : "";
+        std::string prefixB = (posB != std::string::npos) ? b.substr(0, posB) : b;
+        std::string suffixB = (posB != std::string::npos) ? b.substr(posB + 1) : "";
+
+        // 3. Compare prefixes first
+        if (prefixA != prefixB) {
+            return prefixA < prefixB;
+        }
+
+        // 4. If prefixes are the same, check for "np" and extract numeric parts
+        bool hasNpA = suffixA.find("np") == 0;
+        bool hasNpB = suffixB.find("np") == 0;
+        std::string numPartA = hasNpA ? suffixA.substr(2) : suffixA;
+        std::string numPartB = hasNpB ? suffixB.substr(2) : suffixB;
+
+        // 5. Compare based on "np" presence
+        if (hasNpA != hasNpB) {
+            return !hasNpA; // "np" prefixes come after non-"np" prefixes
+        }
+
+        // 6. If both have "np" or neither has it, compare numeric parts
+        bool isNumA = std::all_of(numPartA.begin(), numPartA.end(), ::isdigit);
+        bool isNumB = std::all_of(numPartB.begin(), numPartB.end(), ::isdigit);
+
+        if (isNumA && isNumB) {
+            char* endPtrA;
+            char* endPtrB;
+
+            long numA = strtol(numPartA.c_str(), &endPtrA, 10);
+            long numB = strtol(numPartB.c_str(), &endPtrB, 10);
+
+            if (*endPtrA != '\0' || *endPtrB != '\0' || numA < std::numeric_limits<int>::min() ||
+                numA > std::numeric_limits<int>::max() || numB < std::numeric_limits<int>::min() ||
+                numB > std::numeric_limits<int>::max()) {
+                ALOGE("Error parsing numeric parts in KeyComparator");
+
+                return false;
+            }
+
+            return numA < numB;
+        } else {
+            return suffixA < suffixB;
+        }
+    }
+};
+
 class PowerStatsProfileTokenGenerator {
 public:
     PowerStatsProfileTokenGenerator();
@@ -31,7 +85,7 @@ public:
     std::optional<std::string> generateToken(const std::string& tokenLabel,
                                              PowerStatsProfile* profile);
 
-    std::string generateStateName(PowerStatsProfile* profile);
+    std::string generateStateName(PowerStatsProfile* profile, bool enableMapping = true);
 
 private:
     // The format of pattern is: ([token label]'delimiter'?)*

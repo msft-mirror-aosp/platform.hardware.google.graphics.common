@@ -62,7 +62,7 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual bool isDbmSupported() override;
         virtual int32_t setDbmState(bool enabled) override;
 
-        virtual void dump(String8& result) override;
+        virtual void dump(String8& result, const std::vector<std::string>& args = {}) override;
         virtual void updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                const int64_t ts) override;
         virtual void checkBtsReassignResource(const int32_t vsyncPeriod,

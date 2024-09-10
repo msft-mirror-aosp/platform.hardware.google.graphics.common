@@ -1509,7 +1509,7 @@ int32_t ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNan
     return ret;
 }
 
-void ExynosPrimaryDisplay::dump(String8 &result) {
+void ExynosPrimaryDisplay::dump(String8& result, const std::vector<std::string>& args) {
     ExynosDisplay::dump(result);
     result.appendFormat("Display idle timer: %s\n",
                         (mDisplayIdleTimerEnabled) ? "enabled" : "disabled");
@@ -1562,7 +1562,7 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
         result.appendFormat("XRR version: %d.%d\n", xrrVersion.first, xrrVersion.second);
     }
     if (mVariableRefreshRateController) {
-        mVariableRefreshRateController->dump(result);
+        mVariableRefreshRateController->dump(result, args);
     }
 }
 
