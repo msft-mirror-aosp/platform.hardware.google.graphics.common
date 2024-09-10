@@ -4626,6 +4626,8 @@ inline int32_t ExynosDisplay::getDisplayFrameScanoutPeriodFromConfig(hwc2_config
                 frameScanoutPeriodNs =
                         (frameScanoutPeriodNs <= opPeriodNs) ? frameScanoutPeriodNs : opPeriodNs;
             }
+        } else if (mDisplayConfigs[config].isBoost2xBts) {
+            frameScanoutPeriodNs = frameScanoutPeriodNs / 2;
         }
     }
 
@@ -5121,7 +5123,7 @@ void ExynosDisplay::miniDump(String8& result)
     result.appendFormat("%s", tb.buildForMiniDump().c_str());
 }
 
-void ExynosDisplay::dump(String8& result) {
+void ExynosDisplay::dump(String8 &result, const std::vector<std::string>& args) {
     Mutex::Autolock lock(mDisplayMutex);
     dumpLocked(result);
 }

@@ -94,6 +94,22 @@ class WorkDuration;
 } // namespace android
 } // namespace aidl
 
+namespace aidl {
+namespace com {
+namespace google {
+namespace hardware {
+namespace pixel {
+namespace display {
+
+class IDisplayProximitySensorCallback;
+
+} // namespace display
+} // namespace pixel
+} // namespace hardware
+} // namespace google
+} // namespace com
+} // namespace aidl
+
 using WorkDuration = aidl::android::hardware::power::WorkDuration;
 
 enum dynamic_recomp_mode {
@@ -412,6 +428,7 @@ typedef struct displayConfigs {
     /* internal use */
     bool isNsMode = false;
     bool isOperationRateToBts;
+    bool isBoost2xBts;
     int32_t refreshRate;
 } displayConfigs_t;
 
@@ -594,6 +611,10 @@ class ExynosDisplay {
         std::unique_ptr<HistogramController> mHistogramController;
 
         std::unique_ptr<DisplayTe2Manager> mDisplayTe2Manager;
+
+        std::shared_ptr<
+                aidl::com::google::hardware::pixel::display::IDisplayProximitySensorCallback>
+                mProximitySensorStateChangeCallback;
 
         /* For debugging */
         hwc_display_contents_1_t *mHWC1LayerList;
@@ -1249,7 +1270,8 @@ class ExynosDisplay {
                                     std::vector<buffer_handle_t>& outClearableBuffers);
 
         virtual void miniDump(String8& result);
-        virtual void dump(String8& result);
+        virtual void dump(String8& result, const std::vector<std::string>& args = {});
+
         void dumpLocked(String8& result) REQUIRES(mDisplayMutex);
         void dumpAllBuffers() REQUIRES(mDisplayMutex);
 
@@ -1377,6 +1399,8 @@ class ExynosDisplay {
         }
 
         virtual int32_t setFixedTe2Rate(const int __unused rateHz) { return NO_ERROR; }
+        virtual void onProximitySensorStateChanged(bool __unused active) { return; }
+        bool isProximitySensorStateCallbackSupported() { return mDisplayTe2Manager != nullptr; }
 
         virtual int32_t setDisplayTemperature(const int __unused temperature) { return NO_ERROR; }
 
