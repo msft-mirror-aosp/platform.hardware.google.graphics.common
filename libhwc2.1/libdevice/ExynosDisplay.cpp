@@ -5123,7 +5123,7 @@ void ExynosDisplay::miniDump(String8& result)
     result.appendFormat("%s", tb.buildForMiniDump().c_str());
 }
 
-void ExynosDisplay::dump(String8& result) {
+void ExynosDisplay::dump(String8 &result, const std::vector<std::string>& args) {
     Mutex::Autolock lock(mDisplayMutex);
     dumpLocked(result);
 }
