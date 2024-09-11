@@ -100,12 +100,12 @@ std::optional<std::string> PowerStatsProfileTokenGenerator::generateToken(
     }
 }
 
-std::string PowerStatsProfileTokenGenerator::generateStateName(PowerStatsProfile* profile) {
+std::string PowerStatsProfileTokenGenerator::generateStateName(PowerStatsProfile* profile,
+                                                               bool enableMapping) {
     std::string stateName;
     const std::vector<std::pair<std::string, std::string>>& residencyPattern =
-            (!isPresentRefresh(profile->mRefreshSource))
-            ? mNonPresentDisplayStateResidencyPatternList
-            : mPresentDisplayStateResidencyPatternList;
+            !isPresentRefresh(profile->mRefreshSource) ? mNonPresentDisplayStateResidencyPatternList
+                                                       : mPresentDisplayStateResidencyPatternList;
 
     for (const auto& pattern : residencyPattern) {
         const auto token = generateToken(pattern.first, profile);
@@ -120,6 +120,9 @@ std::string PowerStatsProfileTokenGenerator::generateStateName(PowerStatsProfile
             continue;
         }
         stateName += pattern.second;
+    }
+    if (!enableMapping && !isPresentRefresh(profile->mRefreshSource)) {
+        stateName += generateFpsToken(profile);
     }
     return stateName;
 }
