@@ -51,6 +51,7 @@ public:
           void onSeamlessPossible(int64_t display) override;
           void onRefreshRateChangedDebug(const RefreshRateChangedDebugData& data) override;
           void onHotplugEvent(int64_t display, common::DisplayHotplugEvent event) override;
+          void onHdcpLevelsChanged(int64_t display, drm::HdcpLevels event) override;
 
       private:
         void processDisplayResources(int64_t display, bool connected);

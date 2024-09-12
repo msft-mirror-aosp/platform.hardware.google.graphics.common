@@ -527,6 +527,15 @@ void ComposerClient::HalEventCallback::onHotplugEvent(int64_t display,
     }
 }
 
+void ComposerClient::HalEventCallback::onHdcpLevelsChanged(int64_t display,
+                                                           drm::HdcpLevels levels) {
+    DEBUG_DISPLAY_FUNC(display);
+    auto ret = mCallback->onHdcpLevelsChanged(display, levels);
+    if (!ret.isOk()) {
+        LOG(ERROR) << "failed to send onHdcpLevelsChanged:" << ret.getDescription();
+    }
+}
+
 void ComposerClient::HalEventCallback::processDisplayResources(int64_t display, bool connected) {
     if (connected) {
         if (mResources->hasDisplay(display)) {
