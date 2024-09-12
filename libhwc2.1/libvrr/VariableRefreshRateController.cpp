@@ -168,18 +168,6 @@ VariableRefreshRateController::VariableRefreshRateController(ExynosDisplay* disp
 
     mPowerModeListeners.push_back(mRefreshRateCalculator.get());
 
-    std::string fullPath = displayFileNodePath + kFrameRateNodeName;
-    int fd = open(fullPath.c_str(), O_WRONLY, 0);
-    if (fd >= 0) {
-        mFrameRateReporter =
-                refreshRateCalculatorFactory
-                        .BuildRefreshRateCalculator(&mEventQueue,
-                                                    RefreshRateCalculatorType::kInstant);
-        mFrameRateReporter->registerRefreshRateChangeCallback(
-                std::bind(&VariableRefreshRateController::onFrameRateChangedForDBI, this,
-                          std::placeholders::_1));
-    }
-
     DisplayContextProviderFactory displayContextProviderFactory(mDisplay, this, &mEventQueue);
     mDisplayContextProvider =
             displayContextProviderFactory
@@ -257,9 +245,6 @@ void VariableRefreshRateController::setActiveVrrConfiguration(hwc2_config_t conf
         const auto oldMaxFrameRate =
                 durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
         mVrrActiveConfig = config;
-        if (mFrameRateReporter) {
-            mFrameRateReporter->onPresent(getSteadyClockTimeNs(), 0);
-        }
         // If the minimum refresh rate is active and the maximum refresh rate timeout is set,
         // also we are stay at the maximum refresh rate, any change in the active configuration
         // needs to reconfigure the maximum refresh rate according to the newly activated
@@ -303,11 +288,6 @@ void VariableRefreshRateController::setActiveVrrConfiguration(hwc2_config_t conf
         }
         if (mRefreshRateCalculator) {
             mRefreshRateCalculator
-                    ->setVrrConfigAttributes(mVrrConfigs[mVrrActiveConfig].vsyncPeriodNs,
-                                             mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
-        }
-        if (mFrameRateReporter) {
-            mFrameRateReporter
                     ->setVrrConfigAttributes(mVrrConfigs[mVrrActiveConfig].vsyncPeriodNs,
                                              mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
         }
@@ -627,9 +607,6 @@ void VariableRefreshRateController::onPresent(int fence) {
                 mRefreshRateCalculator->onPresent(mRecord.mPendingCurrentPresentTime.value().mTime,
                                                   getPresentFrameFlag());
             }
-            if (mFrameRateReporter) {
-                mFrameRateReporter->onPresent(mRecord.mPendingCurrentPresentTime.value().mTime, 0);
-            }
             if (mVariableRefreshRateStatistic) {
                 mVariableRefreshRateStatistic
                         ->onPresent(mRecord.mPendingCurrentPresentTime.value().mTime,
@@ -713,15 +690,11 @@ void VariableRefreshRateController::onPresent(int fence) {
         dropEventLocked(VrrControllerEventType::kSystemRenderingTimeout);
         cancelPresentTimeoutHandlingLocked();
         // Post next rendering timeout.
-        int64_t timeoutNs;
         if (mVrrConfigs[mVrrActiveConfig].isFullySupported) {
-            timeoutNs = getSteadyClockTimeNs() +
-                    mVrrConfigs[mVrrActiveConfig].notifyExpectedPresentConfig->TimeoutNs;
-        } else {
-            timeoutNs = kDefaultSystemPresentTimeoutNs;
+            postEvent(VrrControllerEventType::kSystemRenderingTimeout,
+                      getSteadyClockTimeNs() +
+                              mVrrConfigs[mVrrActiveConfig].notifyExpectedPresentConfig->TimeoutNs);
         }
-        postEvent(VrrControllerEventType::kSystemRenderingTimeout,
-                  getSteadyClockTimeNs() + timeoutNs);
         if (shouldHandleVendorRenderingTimeout()) {
             auto presentTimeoutNs = mVendorPresentTimeoutOverride
                     ? mVendorPresentTimeoutOverride.value().mTimeoutNs
@@ -879,9 +852,6 @@ void VariableRefreshRateController::handleResume() {
 
 void VariableRefreshRateController::handleHibernate() {
     ATRACE_CALL();
-    if (mFrameRateReporter) {
-        mFrameRateReporter->reset();
-    }
     // TODO(b/305311206): handle entering panel hibernate.
     postEvent(VrrControllerEventType::kHibernateTimeout,
               getSteadyClockTimeNs() + kDefaultWakeUpTimeInPowerSaving);
@@ -906,19 +876,6 @@ void VariableRefreshRateController::handlePresentTimeout(const VrrControllerEven
     setBitField(command, 1, kPanelRefreshCtrlFrameInsertionFrameCountOffset,
                 kPanelRefreshCtrlFrameInsertionFrameCountMask);
     mFileNode->WriteUint32(composer::kRefreshControlNodeName, command);
-    if (mFrameRateReporter) {
-        mFrameRateReporter->onPresent(getSteadyClockTimeNs(), 0);
-    }
-}
-
-void VariableRefreshRateController::onFrameRateChangedForDBI(int refreshRate) {
-    // By default, if the refresh rate calculator cannot lock onto a specific frame rate, it may
-    // return -1 to reflect this. To avoid reporting a negative frame frequency, return 1 instead in
-    // this case.
-    auto maxFrameRate = durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
-    refreshRate = std::max(1, refreshRate);
-    refreshRate = std::min(maxFrameRate, refreshRate);
-    mFileNode->WriteUint32(kFrameRateNodeName, refreshRate);
 }
 
 void VariableRefreshRateController::onRefreshRateChanged(int refreshRate) {
@@ -1073,12 +1030,9 @@ void VariableRefreshRateController::threadBody() {
                                 }
                             } else {
                                 auto handleEvents = mPresentTimeoutEventHandler->getHandleEvents();
-                                if (!handleEvents.empty()) {
-                                    for (auto& event : handleEvents) {
-                                        postEvent(VrrControllerEventType::
-                                                          kHandleVendorRenderingTimeout,
-                                                  event);
-                                    }
+                                for (auto& event : handleEvents) {
+                                    postEvent(VrrControllerEventType::kHandleVendorRenderingTimeout,
+                                              event);
                                 }
                             }
                         }
@@ -1086,9 +1040,6 @@ void VariableRefreshRateController::threadBody() {
                     }
                     case VrrControllerEventType::kHandleVendorRenderingTimeout: {
                         handlePresentTimeout(event);
-                        if (event.mFunctor) {
-                            event.mFunctor();
-                        }
                         break;
                     }
                     default: {

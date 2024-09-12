@@ -241,7 +241,6 @@ typedef struct exynos_mpp_img_info {
     AcrylicLayer *mppLayer;
     int acrylicAcquireFenceFd;
     int acrylicReleaseFenceFd;
-    ExynosDisplay *assignedDisplay;
 } exynos_mpp_img_info_t;
 
 typedef enum {
