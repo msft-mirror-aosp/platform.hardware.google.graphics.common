@@ -133,6 +133,15 @@ void hotplugEvent(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
     hal->getEventCallback()->onHotplugEvent(display, hotplugEvent);
 }
 
+void hdcpLevelsChanged(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
+                       HdcpLevels levels) {
+    auto hal = static_cast<HalImpl*>(callbackData);
+    int64_t display;
+
+    h2a::translate(hwcDisplay, display);
+    hal->getEventCallback()->onHdcpLevelsChanged(display, levels);
+}
+
 } // nampesapce hook
 
 HalImpl::HalImpl(std::unique_ptr<ExynosDevice> device, bool batchingSupported)
@@ -249,6 +258,9 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
     // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
     // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this,
     //                             reinterpret_cast<hwc2_function_pointer_t>(hook::hotplugEvent));
+    // Don't register onHdcpLevelsChanged until it's available in nextfood
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
+    //                             reinterpret_cast<hwc2_function_pointer_t>(hook::hdcpLevelsChanged));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -264,6 +276,9 @@ void HalImpl::unregisterEventCallback() {
                                   nullptr);
     // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
     // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this, nullptr);
+    // Don't register onHdcpLevelsChanged until it's available in nextfood
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
+    // nullptr);
 
     mEventCallback = nullptr;
 }
