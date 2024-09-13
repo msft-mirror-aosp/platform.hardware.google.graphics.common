@@ -22,9 +22,12 @@
 #include <string>
 #include <utility>
 
+#include "../Power/PowerStatsProfile.h"
+#include "../Power/PowerStatsProfileTokenGenerator.h"
 #include "EventQueue.h"
 #include "Utils.h"
 #include "display/common/CommonDisplayContextProvider.h"
+#include "display/common/Constants.h"
 #include "interface/DisplayContextProvider.h"
 #include "interface/VariableRefreshRateInterface.h"
 
@@ -78,11 +81,36 @@ typedef struct DisplayStatus {
     BrightnessMode mBrightnessMode = BrightnessMode::kInvalidBrightnessMode;
 } DisplayStatus;
 
-// |DisplayPresentProfile| is the key to the statistics.
-typedef struct DisplayPresentProfile {
+// |DisplayRefreshProfile| is the key to the statistics.
+typedef struct DisplayRefreshProfile {
+    PowerStatsProfile toPowerStatsProfile(bool enableMapping = true) const {
+        PowerStatsProfile powerStatsProfile;
+        if (mNumVsync < 0) { // To address the specific scenario of powering off
+            powerStatsProfile.mFps = -1;
+            return powerStatsProfile;
+        }
+        powerStatsProfile.mWidth = mWidth;
+        powerStatsProfile.mHeight = mHeight;
+        powerStatsProfile.mPowerMode = mCurrentDisplayConfig.mPowerMode;
+        powerStatsProfile.mBrightnessMode = mCurrentDisplayConfig.mBrightnessMode;
+        powerStatsProfile.mRefreshSource = mRefreshSource;
+        Fraction fps(mTeFrequency, mNumVsync);
+        if (enableMapping) {
+            if ((android::hardware::graphics::composer::kFpsMappingTable.count(fps) > 0)) {
+                powerStatsProfile.mFps = fps.round();
+            } else {
+                powerStatsProfile.mFps = 0;
+            }
+        } else {
+            powerStatsProfile.mFps = fps.round();
+        }
+
+        return powerStatsProfile;
+    }
+
     inline bool isOff() const { return mCurrentDisplayConfig.isOff(); }
 
-    bool operator<(const DisplayPresentProfile& rhs) const {
+    bool operator<(const DisplayRefreshProfile& rhs) const {
         if (isOff() || rhs.isOff()) {
             if (isOff() == rhs.isOff()) {
                 return false;
@@ -91,28 +119,35 @@ typedef struct DisplayPresentProfile {
 
         if (mCurrentDisplayConfig != rhs.mCurrentDisplayConfig) {
             return (mCurrentDisplayConfig < rhs.mCurrentDisplayConfig);
-        } else {
+        } else if (mNumVsync != rhs.mNumVsync) {
             return (mNumVsync < rhs.mNumVsync);
+        } else {
+            return (mRefreshSource < rhs.mRefreshSource);
         }
     }
 
     std::string toString() const {
         std::string res = mCurrentDisplayConfig.toString();
-        res += ", mNumVsync = " + std::to_string(mNumVsync);
+        res += ", mNumVsync = " + std::to_string(mNumVsync) + ", refresh source = " +
+                (isPresentRefresh(mRefreshSource) ? "present" : "nonpresent");
         return res;
     }
 
     DisplayStatus mCurrentDisplayConfig;
+    int mTeFrequency;
+    int mWidth = 0;
+    int mHeight = 0;
     // |mNumVsync| is the timing property of the key for statistics, representing the distribution
-    // of presentations. It represents the interval between a present and the previous present in
+    // of refreshs. It represents the interval between a refresh and the previous refresh in
     // terms of the number of vsyncs.
     int mNumVsync = -1;
-} DisplayPresentProfile;
+    RefreshSource mRefreshSource = kRefreshSourceActivePresent;
+} DisplayRefreshProfile;
 
-// |DisplayPresentRecord| is the value to the statistics.
-typedef struct DisplayPresentRecord {
-    DisplayPresentRecord() = default;
-    DisplayPresentRecord& operator+=(const DisplayPresentRecord& other) {
+// |DisplayRefreshRecord| is the value to the statistics.
+typedef struct DisplayRefreshRecord {
+    DisplayRefreshRecord() = default;
+    DisplayRefreshRecord& operator+=(const DisplayRefreshRecord& other) {
         this->mCount += other.mCount;
         this->mAccumulatedTimeNs += other.mAccumulatedTimeNs;
         this->mLastTimeStampInBootClockNs =
@@ -123,7 +158,7 @@ typedef struct DisplayPresentRecord {
     std::string toString() const {
         std::ostringstream os;
         os << "Count = " << mCount;
-        os << ", AccumulatedTimeNs = " << mAccumulatedTimeNs / 1000000;
+        os << ", AccumulatedTime Ms = " << mAccumulatedTimeNs / 1000000;
         os << ", LastTimeStampInBootClockNs = " << mLastTimeStampInBootClockNs;
         return os.str();
     }
@@ -131,11 +166,11 @@ typedef struct DisplayPresentRecord {
     uint64_t mAccumulatedTimeNs = 0;
     uint64_t mLastTimeStampInBootClockNs = 0;
     bool mUpdated = false;
-} DisplayPresentRecord;
+} DisplayRefreshRecord;
 
-// |DisplayPresentStatistics| is a map consisting of key-value pairs for statistics.
+// |DisplayRefreshStatistics| is a map consisting of key-value pairs for statistics.
 // The key consists of two parts: display configuration and refresh frequency (in terms of vsync).
-typedef std::map<DisplayPresentProfile, DisplayPresentRecord> DisplayPresentStatistics;
+typedef std::map<DisplayRefreshProfile, DisplayRefreshRecord> DisplayRefreshStatistics;
 
 class StatisticsProvider {
 public:
@@ -143,13 +178,13 @@ public:
 
     virtual uint64_t getStartStatisticTimeNs() const = 0;
 
-    virtual DisplayPresentStatistics getStatistics() = 0;
+    virtual DisplayRefreshStatistics getStatistics() = 0;
 
-    virtual DisplayPresentStatistics getUpdatedStatistics() = 0;
+    virtual DisplayRefreshStatistics getUpdatedStatistics() = 0;
 };
 
 class VariableRefreshRateStatistic : public PowerModeListener,
-                                     public PresentListener,
+                                     public RefreshListener,
                                      public StatisticsProvider {
 public:
     VariableRefreshRateStatistic(CommonDisplayContextProvider* displayContextProvider,
@@ -160,13 +195,15 @@ public:
 
     uint64_t getStartStatisticTimeNs() const override;
 
-    DisplayPresentStatistics getStatistics() override;
+    DisplayRefreshStatistics getStatistics() override;
 
-    DisplayPresentStatistics getUpdatedStatistics() override;
+    DisplayRefreshStatistics getUpdatedStatistics() override;
 
     void onPowerStateChange(int from, int to) final;
 
     void onPresent(int64_t presentTimeNs, int flag) override;
+
+    void onNonPresentRefresh(int64_t refreshTimeNs, RefreshSource refreshSource) override;
 
     void setActiveVrrConfiguration(int activeConfigId, int teFrequency);
 
@@ -177,11 +214,19 @@ public:
     VariableRefreshRateStatistic(const VariableRefreshRateStatistic& other) = delete;
     VariableRefreshRateStatistic& operator=(const VariableRefreshRateStatistic& other) = delete;
 
+    std::string dumpStatistics(bool getUpdatedOnly, RefreshSource refreshSource,
+                               const std::string& delimiter = ";");
+    void dump(String8& result, const std::vector<std::string>& args = {});
+
 private:
-    static constexpr int64_t kMaxPresentIntervalNs = std::nano::den;
+    static constexpr int64_t kMaxRefreshIntervalNs = std::nano::den;
     static constexpr uint32_t kFrameRateWhenPresentAtLpMode = 30;
 
     bool isPowerModeOffNowLocked() const;
+
+    std::string normalizeString(const std::string& input);
+
+    void onRefreshInternal(int64_t refreshTimeNs, int flag, RefreshSource refreshSource);
 
     void updateCurrentDisplayStatus();
 
@@ -190,6 +235,8 @@ private:
 #ifdef DEBUG_VRR_STATISTICS
     int updateStatistic();
 #endif
+
+    PowerStatsProfileTokenGenerator mPowerStatsProfileTokenGenerator;
 
     CommonDisplayContextProvider* mDisplayContextProvider;
     EventQueue* mEventQueue;
@@ -203,15 +250,17 @@ private:
 
     const int64_t mUpdatePeriodNs;
 
-    int64_t mLastPresentTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
+    int64_t mLastDumpsysTime = 0;
+    int64_t mLastRefreshTimeInBootClockNs = kDefaultInvalidPresentTimeNs;
 
-    DisplayPresentStatistics mStatistics;
-    DisplayPresentProfile mDisplayPresentProfile;
+    DisplayRefreshStatistics mStatistics;
+    DisplayRefreshStatistics mStatisticsSnapshot;
+    DisplayRefreshProfile mDisplayRefreshProfile;
 
     uint64_t mPowerOffDurationNs = 0;
 
     uint32_t mMinimumRefreshRate = 1;
-    uint64_t mMaximumFrameIntervalNs = kMaxPresentIntervalNs; // 1 second.
+    uint64_t mMaximumFrameIntervalNs = kMaxRefreshIntervalNs; // 1 second.
 
     uint64_t mStartStatisticTimeNs;
 

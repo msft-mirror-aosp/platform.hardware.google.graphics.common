@@ -16,13 +16,14 @@
 
 #pragma once
 
-#include <unordered_set>
+#include <vector>
 
 #include <aidl/android/hardware/power/stats/State.h>
 #include <aidl/android/hardware/power/stats/StateResidency.h>
 
 #include "../Statistics/VariableRefreshRateStatistic.h"
-#include "PowerStatsPresentProfileTokenGenerator.h"
+#include "../display/common/Constants.h"
+#include "PowerStatsProfileTokenGenerator.h"
 
 // #define DEBUG_VRR_POWERSTATS 1
 
@@ -47,41 +48,25 @@ public:
     DisplayStateResidencyProvider& operator=(const DisplayStateResidencyProvider& other) = delete;
 
 private:
-    static const std::set<Fraction<int>> kFpsMappingTable;
-    static const std::unordered_set<int> kFpsLowPowerModeMappingTable;
-    static const std::unordered_set<int> kActivePowerModes;
-
-    // The format of pattern is: ([token label]'delimiter'?)*
-    static constexpr std::string_view kDisplayStateResidencyPattern =
-            "[mode](:)[width](x)[height](@)[fps]()";
-
-    static constexpr char kTokenLabelStart = '[';
-    static constexpr char kTokenLabelEnd = ']';
-    static constexpr char kDelimiterStart = '(';
-    static constexpr char kDelimiterEnd = ')';
+    static const std::vector<int> kActivePowerModes;
+    static const std::vector<RefreshSource> kRefreshSource;
 
     void mapStatistics();
     uint64_t aggregateStatistics();
 
     void generatePowerStatsStates();
 
-    bool parseDisplayStateResidencyPattern();
+    void generateUniqueStates();
 
     std::shared_ptr<CommonDisplayContextProvider> mDisplayContextProvider;
 
     std::shared_ptr<StatisticsProvider> mStatisticsProvider;
 
-    DisplayPresentStatistics mStatistics;
+    PowerStatsProfileTokenGenerator mPowerStatsProfileTokenGenerator;
 
-    typedef std::map<PowerStatsPresentProfile, DisplayPresentRecord> PowerStatsPresentStatistics;
-
-    PowerStatsPresentStatistics mRemappedStatistics;
-
-    PowerStatsPresentProfileTokenGenerator mPowerStatsPresentProfileTokenGenerator;
-    std::vector<std::pair<std::string, std::string>> mDisplayStateResidencyPattern;
-
+    std::set<std::pair<PowerStatsProfile, std::string>> mUniqueStates;
     std::vector<State> mStates;
-    std::map<PowerStatsPresentProfile, int> mPowerStatsPresentProfileToIdMap;
+    std::map<PowerStatsProfile, int> mPowerStatsProfileToIdMap;
 
 #ifdef DEBUG_VRR_POWERSTATS
     int64_t mLastGetStateResidencyTimeNs = -1;

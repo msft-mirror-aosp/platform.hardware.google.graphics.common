@@ -829,6 +829,7 @@ int32_t ExynosDisplayDrmInterface::initDrmDevice(DrmDevice *drmDevice)
         mExynosDisplay->mHistogramController->initDrm(*mDrmDevice, *mDrmCrtc);
     }
 
+    mVsyncCallback.setTransientDuration(getConfigChangeDuration());
     return NO_ERROR;
 }
 
@@ -914,17 +915,40 @@ bool ExynosDisplayDrmInterface::ExynosVsyncCallback::Callback(
     mVsyncTimeStamp = timestamp;
 
     /* There was no config chage request */
-    if (!mDesiredVsyncPeriod)
+    if (!mDesiredVsyncPeriod) {
+        ATRACE_NAME("No pending desired VSync period");
         return true;
-
+    }
     /*
      * mDesiredVsyncPeriod is nanoseconds
      * Compare with 20% margin
      */
-    if (abs(static_cast<int32_t>(mDesiredVsyncPeriod - mVsyncPeriod)) < (mDesiredVsyncPeriod / 5))
+    const int error = mDesiredVsyncPeriod / 5;
+    if (abs(static_cast<int32_t>(mDesiredVsyncPeriod - mVsyncPeriod)) < error) {
+        ATRACE_NAME("Received the desired VSync period");
         return true;
+    }
+    bool isModeSwitchTimeReached = false;
+    nsecs_t signalTime = 0;
+    {
+        std::lock_guard<std::mutex> lock(mFenceMutex);
+        signalTime = getSignalTime(mModeSetFence);
+        if (signalTime != SIGNAL_TIME_INVALID && signalTime != SIGNAL_TIME_PENDING &&
+            timestamp > (signalTime + mVsyncPeriod * mTransientDuration - error)) {
+            close(mModeSetFence);
+            mModeSetFence = -1;
+            isModeSwitchTimeReached = true;
+        }
+    }
+    if (isModeSwitchTimeReached && ATRACE_ENABLED()) {
+        std::stringstream str;
+        str << "Over the RR duration: timestamp:" << timestamp << ",signalTime:" << signalTime
+            << ",VSyncPeriod:" << mVsyncPeriod << ",desiredVsyncPeriod:" << mDesiredVsyncPeriod
+            << ",transientDuration:" << mTransientDuration;
+        ATRACE_NAME(str.str().c_str());
+    }
 
-    return false;
+    return isModeSwitchTimeReached;
 }
 
 int32_t ExynosDisplayDrmInterface::getLowPowerDrmModeModeInfo() {
@@ -1153,6 +1177,7 @@ int32_t ExynosDisplayDrmInterface::getDisplayConfigs(
                 return HWC2_ERROR_BAD_DISPLAY;
             }
             configs.isOperationRateToBts = mode.is_operation_rate_to_bts();
+            configs.isBoost2xBts = mode.is_boost_2x_bts();
             configs.width = mode.h_display();
             configs.height = mode.v_display();
             // Dots per 1000 inches
@@ -1486,6 +1511,7 @@ int32_t ExynosDisplayDrmInterface::setActiveDrmMode(DrmMode const &mode) {
     mDrmConnector->set_active_mode(mode);
     mActiveModeState.setMode(mode, modeBlob, drmReq);
     mActiveModeState.clearPendingModeState();
+    mVsyncCallback.setVsyncPeriod(mode.te_period());
 
     if (reconfig) {
         mDrmConnector->ResetLpMode();
@@ -2214,6 +2240,18 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
                          __func__, ret);
             }
         }
+
+        if (mXrrSettings.versionInfo.needVrrParameters()) {
+            auto frameInterval = mExynosDisplay->getPendingFrameInterval();
+            if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(),
+                                                mDrmConnector->frame_interval(),
+                                                frameInterval)) < 0) {
+                HWC_LOGE(mExynosDisplay, "%s: Fail to set frameInterval property (%d)",
+                         __func__,
+                         ret);
+            }
+        }
+
         mExynosDisplay->applyExpectedPresentTime();
     }
 
@@ -2244,6 +2282,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
             getLowPowerDrmModeModeInfo();
         }
         mVsyncCallback.setDesiredVsyncPeriod(mActiveModeState.mode.te_period());
+        mVsyncCallback.setModeSetFence(dup(mExynosDisplay->mDpuData.retire_fence));
         /* Enable vsync to check vsync period */
         mDrmVSyncWorker.VSyncControl(true);
     }
