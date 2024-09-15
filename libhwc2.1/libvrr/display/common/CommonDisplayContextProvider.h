@@ -25,10 +25,11 @@ namespace android::hardware::graphics::composer {
 class CommonDisplayContextProvider : public DisplayContextProvider {
 public:
     CommonDisplayContextProvider(DisplayConfigurationsOwner* displayConfigurationOwner,
-                                 std::unique_ptr<RefreshRateCalculator> videoFrameRateCalculator)
+                                 std::shared_ptr<RefreshRateCalculator> videoFrameRateCalculator)
           : mDisplayConfigurationOwner(displayConfigurationOwner),
             mVideoFrameRateCalculator(std::move(videoFrameRateCalculator)){};
 
+    // Implement DisplayContextProvider
     OperationSpeedMode getOperationSpeedMode() const override;
 
     virtual BrightnessMode getBrightnessMode() const = 0;
@@ -42,11 +43,26 @@ public:
     virtual int getAmbientLightSensorOutput() const = 0;
 
     virtual bool isProximityThrottlingEnabled() const = 0;
+    // End of DisplayContextProvider implementation.
+
+    virtual const std::map<uint32_t, displayConfigs_t>* getDisplayConfigs() const = 0;
+
+    virtual const displayConfigs_t* getDisplayConfig(hwc2_config_t id) const = 0;
+
+    virtual int getMaxFrameRate(hwc2_config_t id) const = 0;
+
+    virtual int getTeFrequency(hwc2_config_t id) const = 0;
+
+    virtual int getWidth(hwc2_config_t id) const = 0;
+
+    virtual int getHeight(hwc2_config_t id) const = 0;
+
+    virtual bool isHsMode(hwc2_config_t id) const = 0;
 
 private:
     DisplayConfigurationsOwner* mDisplayConfigurationOwner;
 
-    std::unique_ptr<RefreshRateCalculator> mVideoFrameRateCalculator;
+    std::shared_ptr<RefreshRateCalculator> mVideoFrameRateCalculator;
 };
 
 } // namespace android::hardware::graphics::composer

@@ -163,8 +163,9 @@ const format_description_t exynos_format_desc[] = {
         1, 1, 32, RGB | BIT10 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("RGBA_1010102"), 0},
     {HAL_PIXEL_FORMAT_EXYNOS_ARGB_8888, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ARGB8888,
         1, 1, 32, RGB | BIT8 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("EXYNOS_ARGB_8888"), 0},
-    {HAL_PIXEL_FORMAT_RGBA_FP16, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ABGR16161616F,
-        1, 1, 64, RGB | BIT16 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("RGBA_FP16"), 0},
+    //FIXME: can't support FP16 with extended. remove it for now. b/320584418
+    /* {HAL_PIXEL_FORMAT_RGBA_FP16, DECON_PIXEL_FORMAT_MAX, DRM_FORMAT_ABGR16161616F,
+        1, 1, 64, RGB | BIT16 | COMP_TYPE_NONE | COMP_TYPE_AFBC, true, String8("RGBA_FP16"), 0},*/
 
     /* YUV 420 */
     {HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_P_M, DECON_PIXEL_FORMAT_YUV420M, DRM_FORMAT_UNDEFINED,
@@ -670,67 +671,6 @@ struct RollingAverage {
         elems = std::min(elems + 1, bufferSize);
         average = total / elems;
     }
-};
-
-class FileNodeWriter {
-public:
-    FileNodeWriter(const std::string& nodePath) : mNodePath(nodePath) {}
-
-    ~FileNodeWriter() {
-        for (auto& node : mOperateNodes) {
-            close(node.second);
-        }
-    }
-
-    std::optional<std::string> read(const std::string& nodeName) {
-        std::string fullPath = mNodePath + nodeName;
-        std::ifstream ifs(fullPath);
-        if (ifs) {
-            std::ostringstream os;
-            os << ifs.rdbuf(); // reading data
-            return os.str();
-        }
-        return std::nullopt;
-    }
-
-    template <typename T>
-    bool WriteCommandString(const std::string& nodeName, T cmd) {
-        // ref: https://elixir.bootlin.com/linux/latest/source/include/linux/kstrtox.h
-        static_assert(std::is_integral_v<T>);
-
-        int fd = getOperateNodeFileHandle(nodeName);
-        if (fd >= 0) {
-            std::string cmdString = std::to_string(cmd);
-            int ret = write(fd, cmdString.c_str(), std::strlen(cmdString.c_str()));
-            if (ret < 0) {
-                ALOGE("Write to file node %s failed, ret = %d errno = %d", mNodePath.c_str(), ret,
-                      errno);
-                return false;
-            }
-        } else {
-            ALOGE("Write to invalid file node %s", mNodePath.c_str());
-            return false;
-        }
-        return true;
-    }
-
-private:
-    int getOperateNodeFileHandle(const std::string& nodeName) {
-        if (mOperateNodes.count(nodeName) > 0) {
-            return mOperateNodes[nodeName];
-        }
-        std::string fullPath = mNodePath + nodeName;
-        int fd = open(fullPath.c_str(), O_WRONLY, 0);
-        if (fd < 0) {
-            ALOGE("Open file node failed, fd = %d", fd);
-            return fd;
-        }
-        mOperateNodes[nodeName] = fd;
-        return fd;
-    }
-
-    std::string mNodePath;
-    std::unordered_map<std::string, int> mOperateNodes;
 };
 
 // Waits for a given property value, or returns std::nullopt if unavailable

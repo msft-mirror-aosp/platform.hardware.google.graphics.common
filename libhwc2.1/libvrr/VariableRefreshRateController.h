@@ -26,11 +26,13 @@
 
 #include "../libdevice/ExynosDisplay.h"
 #include "../libdevice/ExynosLayer.h"
-#include "DisplayStateResidencyWatcher.h"
 #include "EventQueue.h"
 #include "ExternalEventHandlerLoader.h"
+#include "FileNode.h"
+#include "Power/DisplayStateResidencyWatcher.h"
 #include "RefreshRateCalculator/RefreshRateCalculator.h"
 #include "RingBuffer.h"
+#include "Statistics/VariableRefreshRateStatistic.h"
 #include "Utils.h"
 #include "display/common/DisplayConfigurationOwner.h"
 #include "interface/DisplayContextProvider.h"
@@ -48,13 +50,34 @@ public:
     auto static CreateInstance(ExynosDisplay* display, const std::string& panelName)
             -> std::shared_ptr<VariableRefreshRateController>;
 
-    const VrrConfig_t* getCurrentDisplayConfiguration() const override {
-        const auto& it = mVrrConfigs.find(mVrrActiveConfig);
-        if (it == mVrrConfigs.end()) {
-            return nullptr;
+    const displayConfigs_t* getCurrentDisplayConfiguration() const override {
+        auto configs = mDisplayContextProvider->getDisplayConfigs();
+        if (configs) {
+            const auto& it = configs->find(mVrrActiveConfig);
+            if (it != configs->end()) {
+                return &(it->second);
+            }
         }
-        return &(it->second);
+        return nullptr;
     }
+
+    void enableRefreshRateCalculator(bool enabled) {
+        const std::lock_guard<std::mutex> lock(mMutex);
+
+        if (mRefreshRateCalculator) {
+            mRefreshRateCalculatorEnabled = enabled;
+            if (mRefreshRateCalculatorEnabled) {
+                if (mDisplay->isVrrSupported()) {
+                    reportRefreshRateIndicator();
+                } else {
+                    // This is a VTS hack for MRRv2
+                    mDisplay->mDevice->onRefreshRateChangedDebug(mDisplay->mDisplayId,
+                                                                 freqToDurationNs(
+                                                                         mLastRefreshRate));
+                }
+            }
+        }
+    };
 
     int notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs);
 
@@ -67,7 +90,10 @@ public:
 
     void setEnable(bool isEnabled);
 
-    void setPowerMode(int32_t mode);
+    // |preSetPowerMode| is called before the power mode is configured.
+    void preSetPowerMode(int32_t mode);
+    //|postSetPowerMode| is called after the setting to new power mode has been done.
+    void postSetPowerMode(int32_t mode);
 
     void setVrrConfigurations(std::unordered_map<hwc2_config_t, VrrConfig_t> configs);
 
@@ -84,51 +110,38 @@ public:
         return &mDisplayContextProviderInterface;
     }
 
+    void registerRefreshRateChangeListener(std::shared_ptr<RefreshRateChangeListener> listener) {
+        mRefreshRateChangeListeners.emplace_back(listener);
+    }
+
     void setPresentTimeoutParameters(int timeoutNs,
-                                     const std::vector<std::pair<uint32_t, uint32_t>>& settings) {
-        const std::lock_guard<std::mutex> lock(mMutex);
+                                     const std::vector<std::pair<uint32_t, uint32_t>>& settings);
 
-        if (!mPresentTimeoutEventHandler) {
-            return;
-        }
-        if ((timeoutNs >= 0) && (!settings.empty())) {
-            auto functor = mPresentTimeoutEventHandler->getHandleFunction();
-            mVendorPresentTimeoutOverride = std::make_optional<PresentTimeoutSettingsNew>();
-            mVendorPresentTimeoutOverride.value().mTimeoutNs = timeoutNs;
-            mVendorPresentTimeoutOverride.value().mFunctor = std::move(functor);
-            for (const auto& setting : settings) {
-                mVendorPresentTimeoutOverride.value().mSchedule.emplace_back(setting);
-            }
-        } else {
-            mVendorPresentTimeoutOverride = std::nullopt;
-        }
-    }
+    void setPresentTimeoutController(uint32_t controllerType);
 
-    void setPresentTimeoutController(uint32_t controllerType) {
-        const std::lock_guard<std::mutex> lock(mMutex);
-
-        PresentTimeoutControllerType newControllerType =
-                static_cast<PresentTimeoutControllerType>(controllerType);
-        if (newControllerType != mPresentTimeoutController) {
-            if (mPresentTimeoutController == PresentTimeoutControllerType::kSoftware) {
-                dropEventLocked(VrrControllerEventType::kVendorRenderingTimeout);
-            }
-            if (mPresentTimeoutEventHandler) {
-                // When |controllerType| is kNone, we select software to control present timeout,
-                // but without handling.
-                mPresentTimeoutEventHandler->setPanelFrameInsertionMode(
-                        newControllerType == PresentTimeoutControllerType::kHardware);
-            }
-        }
-        mPresentTimeoutController = newControllerType;
-    }
+    // Set refresh rate within the range [minimumRefreshRate, maximumRefreshRateOfCurrentConfig].
+    // The maximum refresh rate, |maximumRefreshRateOfCurrentConfig|, is intrinsic to the current
+    // configuration, hence only |minimumRefreshRate| needs to be specified. If
+    // |minLockTimeForPeakRefreshRate| does not equal zero, upon arrival of new frames, the
+    // current refresh rate will be set to |maximumRefreshRateOfCurrentConfig| and will remain so
+    // for |minLockTimeForPeakRefreshRate| duration. Afterward, the current refresh rate will
+    // revert to |minimumRefreshRate|. Alternatively, when |minLockTimeForPeakRefreshRate| equals
+    // zero, if no new frame update, refresh rate will drop to |minimumRefreshRate| immediately.
+    int setFixedRefreshRateRange(uint32_t minimumRefreshRate,
+                                 uint64_t minLockTimeForPeakRefreshRate);
 
 private:
+    static constexpr int kMaxFrameRate = 120;
+    static constexpr int kMaxTefrequency = 240;
+
     static constexpr int kDefaultRingBufferCapacity = 128;
     static constexpr int64_t kDefaultWakeUpTimeInPowerSaving =
             500 * (std::nano::den / std::milli::den); // 500 ms
     static constexpr int64_t SIGNAL_TIME_PENDING = INT64_MAX;
     static constexpr int64_t SIGNAL_TIME_INVALID = -1;
+
+    static constexpr int64_t kDefaultSystemPresentTimeoutNs =
+            500 * (std::nano::den / std::milli::den); // 500 ms
 
     static constexpr int64_t kDefaultVendorPresentTimeoutNs =
             33 * (std::nano::den / std::milli::den); // 33 ms
@@ -147,26 +160,40 @@ private:
         int mDuration;
     } PresentEvent;
 
-    // The |PresentTimeoutSettings| will override the settings of the present timeout handler. Once
-    // it is set, the present timeout will be directly set by these parameters.
     typedef struct PresentTimeoutSettings {
-        int mNumOfWorks;
-        int mTimeoutNs;
-        int mIntervalNs;
-        std::function<int()> mFunctor;
-    } PresentTimeoutSettings;
-
-    typedef struct PresentTimeoutSettingsNew {
-        PresentTimeoutSettingsNew() = default;
+        PresentTimeoutSettings() = default;
         int mTimeoutNs = 0;
         std::vector<std::pair<uint32_t, uint32_t>> mSchedule;
         std::function<int()> mFunctor;
-    } PresentTimeoutSettingsNew;
+    } PresentTimeoutSettings;
 
-    enum class PresentTimeoutControllerType {
+    enum PresentTimeoutControllerType {
         kNone = 0,
-        kHardware,
         kSoftware,
+        kHardware,
+    };
+
+    // 0: If the minimum refresh rate is unset, the state is set to |kMinRefreshRateUnset|.
+    //
+    // Otherwise, if the minimum refresh rate has been set:
+    // 1: The state is set to |kAtMinRefreshRate|.
+    // 2: If a presentation occurs when the state is |kAtMinRefreshRate|.
+    // 2.1: If |mMaximumRefreshRateTimeoutNs| = 0, no action is taken.
+    // 2.2: If |mMaximumRefreshRateTimeoutNs| > 0, the frame rate is promoted to the maximum refresh
+    //      rate and maintained for |mMaximumRefreshRateTimeoutNs| by setting a timer. During this
+    //      period, the state is set to |kAtMaximumRefreshRate|.
+    // 3: When a timeout occurs at step 2.2, state is set to |kTransitionToMinimumRefreshRate|.
+    //    It remains in this state until there are no further presentations after a period =
+    //    |kGotoMinimumRefreshRateIfNoPresentTimeout|.
+    // 4. Then, frame rate reverts to the minimum refresh rate, state is set to |kAtMinRefreshRate|.
+    //    Returns to step 1.
+    // Steps 1, 2, 3 and 4 continue until the minimum refresh rate is unset (by inputting 0 or 1);
+    // at this point, the state is set to |kMinRefreshRateUnset| and goto 0.
+    enum MinimumRefreshRatePresentStates {
+        kMinRefreshRateUnset = 0,
+        kAtMinimumRefreshRate,
+        kAtMaximumRefreshRate,
+        kTransitionToMinimumRefreshRate,
     };
 
     typedef struct VsyncEvent {
@@ -213,6 +240,8 @@ private:
 
     std::string dumpEventQueueLocked();
 
+    uint32_t getCurrentRefreshControlStateLocked() const;
+
     int64_t getLastFenceSignalTimeUnlocked(int fd);
 
     int64_t getNextEventTimeLocked() const;
@@ -225,9 +254,9 @@ private:
             if (layer->isLayerFormatYuv()) {
                 flag |= static_cast<int>(PresentFrameFlag::kIsYuv);
             }
-            if (layer->mRequestedCompositionType == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR) {
-                flag |= static_cast<int>(PresentFrameFlag::kHasRefreshRateIndicatorLayer);
-            }
+        }
+        if (mDisplay->isUpdateRRIndicatorOnly()) {
+            flag |= static_cast<int>(PresentFrameFlag::kUpdateRefreshRateIndicatorLayerOnly);
         }
         // Present when doze.
         if ((mPowerMode == HWC_POWER_MODE_DOZE) || (mPowerMode == HWC_POWER_MODE_DOZE_SUSPEND)) {
@@ -244,7 +273,7 @@ private:
     void handleHibernate();
     void handleStayHibernate();
 
-    void handleGeneralEventLocked(VrrControllerEvent& event) {
+    void handleCallbackEventLocked(VrrControllerEvent& event) {
         if (event.mFunctor) {
             event.mFunctor();
         }
@@ -252,7 +281,16 @@ private:
 
     void handlePresentTimeout(const VrrControllerEvent& event);
 
+    inline bool isMinimumRefreshRateActive() const { return (mMinimumRefreshRate > 1); }
+
+    // Report frame frequency changes to the kernel via the sysfs node.
+    void onFrameRateChangedForDBI(int refreshRate);
+    // Report refresh rate changes to the framework(SurfaceFlinger) or other display HWC components.
     void onRefreshRateChanged(int refreshRate);
+    void onRefreshRateChangedInternal(int refreshRate);
+    void reportRefreshRateIndicator();
+    std::vector<int> generateValidRefreshRates(const VrrConfig_t& config) const;
+    int convertToValidRefreshRate(int refreshRate);
 
     void postEvent(VrrControllerEventType type, TimedEvent& timedEvent);
     void postEvent(VrrControllerEventType type, int64_t when);
@@ -280,25 +318,48 @@ private:
     std::unordered_map<hwc2_config_t, VrrConfig_t> mVrrConfigs;
     std::optional<int> mLastPresentFence;
 
-    std::unique_ptr<FileNodeWriter> mFileNodeWritter;
+    std::shared_ptr<FileNode> mFileNode;
 
     DisplayContextProviderInterface mDisplayContextProviderInterface;
     std::unique_ptr<ExternalEventHandlerLoader> mPresentTimeoutEventHandlerLoader;
     ExternalEventHandler* mPresentTimeoutEventHandler = nullptr;
-    std::optional<PresentTimeoutSettings> mVendorPresentTimeoutOverrideOld;
-    std::optional<PresentTimeoutSettingsNew> mVendorPresentTimeoutOverride;
-    PresentTimeoutControllerType mPresentTimeoutController =
-            PresentTimeoutControllerType::kSoftware;
+    std::optional<PresentTimeoutSettings> mVendorPresentTimeoutOverride;
 
     std::string mPanelName;
 
-    std::unique_ptr<RefreshRateCalculator> mRefreshRateCalculator;
-    std::shared_ptr<DisplayStateResidencyWatcher> mResidencyWatcher;
+    // Refresh rate indicator.
+    bool mRefreshRateCalculatorEnabled = false;
 
-    std::unique_ptr<DisplayContextProvider> mDisplayContextProvider;
+    std::shared_ptr<RefreshRateCalculator> mRefreshRateCalculator;
+    int mLastRefreshRate = kDefaultInvalidRefreshRate;
+    std::unordered_map<hwc2_config_t, std::vector<int>> mValidRefreshRates;
+
+    std::shared_ptr<RefreshRateCalculator> mFrameRateReporter;
+
+    // Power stats.
+    std::shared_ptr<DisplayStateResidencyWatcher> mResidencyWatcher;
+    std::shared_ptr<VariableRefreshRateStatistic> mVariableRefreshRateStatistic;
+
+    std::shared_ptr<CommonDisplayContextProvider> mDisplayContextProvider;
 
     bool mEnabled = false;
     bool mThreadExit = false;
+
+    PresentTimeoutControllerType mPresentTimeoutController =
+            PresentTimeoutControllerType::kSoftware;
+
+    // When |mMinimumRefreshRate| is 0 or equal to 1, we are in normal mode.
+    // when |mMinimumRefreshRate| is greater than 1. we are in a special mode where the minimum idle
+    // refresh rate is |mMinimumRefreshRate|.
+    uint32_t mMinimumRefreshRate = 0;
+    // |mMaximumRefreshRateTimeoutNs| sets the minimum duration for which we should maintain the
+    // peak refresh rate when transitioning to idle. |mMaximumRefreshRateTimeoutNs| takes effect
+    // only when |mMinimumRefreshRate| is greater than 1.
+    uint64_t mMaximumRefreshRateTimeoutNs = 0;
+    std::optional<TimedEvent> mMinimumRefreshRateTimeoutEvent;
+    MinimumRefreshRatePresentStates mMinimumRefreshRatePresentStates = kMinRefreshRateUnset;
+
+    std::vector<std::shared_ptr<RefreshRateChangeListener>> mRefreshRateChangeListeners;
 
     std::mutex mMutex;
     std::condition_variable mCondition;
