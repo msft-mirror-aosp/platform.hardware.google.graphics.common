@@ -334,12 +334,52 @@ struct LayerColorData {
     bool enabled = true;
 };
 
+struct LtmParams {
+    struct Display {
+        int32_t width{};
+        int32_t height{};
+        bool operator==(const Display &rhs) const {
+          return width == rhs.width && height == rhs.height;
+        }
+    };
+
+    struct Roi {
+        int32_t left{};
+        int32_t top{};
+        int32_t right{};
+        int32_t bottom{};
+
+        bool Valid(int32_t display_width, int32_t display_height) const {
+            return left >= 0 && right > left && right <= display_width &&
+                top >= 0 && bottom > top && bottom <= display_height;
+        }
+
+        bool operator==(const Roi &rhs) const {
+          return left == rhs.left &&
+              top == rhs.top &&
+              right == rhs.right &&
+              bottom == rhs.bottom;
+        }
+    };
+
+    Display display;
+    Roi roi;
+    // for debug purpose
+    bool force_enable{};
+    bool operator==(const LtmParams &rhs) const {
+        return display == rhs.display && roi == rhs.roi && force_enable == rhs.force_enable;
+    }
+};
+
 /**
  * @brief DisplayScene holds all the information required for libdisplaycolor to
  * return correct data.
  */
 struct DisplayScene {
     bool operator==(const DisplayScene &rhs) const {
+        // TODO: if lux is used by HDR tone mapping, need to check here
+        // but should trigger scene change as less as possible, for example,
+        // only when HDR is on screen and lux change exceeds some threshold.
         return layer_data == rhs.layer_data &&
                dpu_bit_depth == rhs.dpu_bit_depth &&
                color_mode == rhs.color_mode &&
@@ -399,6 +439,12 @@ struct DisplayScene {
 
     /// hdr layer state on screen
     HdrLayerState hdr_layer_state = HdrLayerState::kHdrNone;
+
+    /// ambient lux
+    float lux{};
+
+    /// Ltm params gathered in HWC
+    LtmParams ltm_params;
 };
 
 struct CalibrationInfo {
