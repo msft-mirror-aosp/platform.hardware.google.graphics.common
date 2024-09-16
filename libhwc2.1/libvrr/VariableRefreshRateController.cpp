@@ -1003,8 +1003,8 @@ void VariableRefreshRateController::onFrameRateChangedForDBI(int refreshRate) {
     // this case.
     auto maxFrameRate = durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
     refreshRate = std::max(1, refreshRate);
-    refreshRate = std::min(maxFrameRate, refreshRate);
-    mFileNode->writeValue(kFrameRateNodeName, refreshRate);
+    mFrameRate = std::min(maxFrameRate, refreshRate);
+    postEvent(VrrControllerEventType::kUpdateDbiFrameRate, getSteadyClockTimeNs());
 }
 
 void VariableRefreshRateController::onRefreshRateChanged(int refreshRate) {
@@ -1092,6 +1092,7 @@ void VariableRefreshRateController::threadBody() {
     }
     for (;;) {
         bool stateChanged = false;
+        uint32_t frameRate = 0;
         {
             std::unique_lock<std::mutex> lock(mMutex);
             if (mThreadExit) break;
@@ -1124,6 +1125,9 @@ void VariableRefreshRateController::threadBody() {
                 static_cast<int>(VrrControllerEventType::kCallbackEventMask)) {
                 handleCallbackEventLocked(event);
                 continue;
+            }
+            if (event.mEventType == VrrControllerEventType::kUpdateDbiFrameRate) {
+                frameRate = mFrameRate;
             }
             if (mState == VrrControllerState::kRendering) {
                 if (event.mEventType == VrrControllerEventType::kHibernateTimeout) {
@@ -1227,6 +1231,14 @@ void VariableRefreshRateController::threadBody() {
         // thread owned by the VRR controller.
         if (stateChanged) {
             updateVsyncHistory();
+        }
+        // Write pending values without holding mutex shared with HWC main thread.
+        if (frameRate) {
+            if (!mFileNode->writeValue(kFrameRateNodeName, frameRate)) {
+                LOG(ERROR) << "VrrController: write to node = " << kFrameRateNodeName
+                           << " failed, value = " << frameRate;
+            }
+            ATRACE_INT("frameRate", frameRate);
         }
     }
 }
