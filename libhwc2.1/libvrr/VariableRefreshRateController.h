@@ -357,6 +357,7 @@ private:
     hwc2_config_t mVrrActiveConfig = -1;
     std::unordered_map<hwc2_config_t, VrrConfig_t> mVrrConfigs;
     std::optional<int> mLastPresentFence;
+    uint32_t mFrameRate = 0;
 
     std::shared_ptr<FileNode> mFileNode;
 

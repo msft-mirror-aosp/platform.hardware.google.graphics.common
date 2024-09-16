@@ -39,6 +39,7 @@ enum class VrrControllerEventType {
     kHibernateTimeout = kGeneralEventMask + (1 << 3),
     kNotifyExpectedPresentConfig = kGeneralEventMask + (1 << 4),
     kTestEvent = kGeneralEventMask + (1 << 5),
+    kUpdateDbiFrameRate = kGeneralEventMask + (1 << 6),
     kGeneralEventMax = kGeneralEventMask + (1 << 27),
     // General callback events.
     kCallbackEventMask = 0x20000000,
