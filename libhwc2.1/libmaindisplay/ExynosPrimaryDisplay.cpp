@@ -1587,7 +1587,7 @@ void ExynosPrimaryDisplay::calculateTimelineLocked(
         std::lock_guard<std::mutex> lock(mIdleRefreshRateThrottleMutex);
         threshold = mRefreshRateDelayNanos;
         mRrUseDelayNanos = 0;
-        mIsRrNeedCheckDelay =
+        mIsRrNeedCheckDelay = !mXrrSettings.versionInfo.needVrrParameters() &&
                 mDisplayConfigs[mActiveConfig].vsyncPeriod < mDisplayConfigs[config].vsyncPeriod;
         if (threshold != 0 && mLastRefreshRateAppliedNanos != 0 && mIsRrNeedCheckDelay) {
             lastUpdateDelta = desiredUpdateTimeNanos - mLastRefreshRateAppliedNanos;
