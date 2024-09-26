@@ -2813,13 +2813,7 @@ int ExynosDisplay::setReleaseFences() {
                     continue;
                 }
             }
-            if (mType == HWC_DISPLAY_VIRTUAL)
-                mLayers[i]->mReleaseFence = -1;
-            else
-                mLayers[i]->mReleaseFence =
-                    hwcCheckFenceDebug(this, FENCE_TYPE_SRC_RELEASE, FENCE_IP_DPP,
-                            hwc_dup(config.rel_fence, this,
-                                FENCE_TYPE_SRC_RELEASE, FENCE_IP_DPP));
+            mLayers[i]->mReleaseFence = -1;
         }
         config.rel_fence = fence_close(config.rel_fence, this,
                    FENCE_TYPE_SRC_RELEASE, FENCE_IP_FB);
