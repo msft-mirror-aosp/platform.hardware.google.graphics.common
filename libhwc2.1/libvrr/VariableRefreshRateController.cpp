@@ -778,6 +778,7 @@ void VariableRefreshRateController::onPresent(int fence) {
             } else {
                 firstTimeOutNs = mPresentTimeoutEventHandler->getPresentTimeoutNs();
             }
+            mPendingVendorRenderingTimeoutTasks.baseTimeNs += firstTimeOutNs;
             firstTimeOutNs -= kDefaultAheadOfTimeNs;
             if (firstTimeOutNs >= 0) {
                 auto vendorPresentTimeoutNs =
