@@ -366,7 +366,10 @@ struct LtmParams {
     Roi roi;
     // for debug purpose
     bool force_enable{};
-    bool operator==(const LtmParams &rhs) const {
+    bool enable_local_tm{true};
+    bool enable_sr{true};
+    bool sr_in_gtm{true};
+    bool ConfigUpdateNeeded(const LtmParams &rhs) const {
         return display == rhs.display && roi == rhs.roi && force_enable == rhs.force_enable;
     }
 };
