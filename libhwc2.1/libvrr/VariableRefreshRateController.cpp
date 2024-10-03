@@ -858,6 +858,10 @@ std::string VariableRefreshRateController::dumpEventQueueLocked() {
 
 void VariableRefreshRateController::dump(String8& result, const std::vector<std::string>& args) {
     result.appendFormat("\nVariableRefreshRateStatistic: \n");
+    if (mDisplay) {
+        result.appendFormat("[%s] ", mDisplay->mDisplayName.c_str());
+    }
+    result.appendFormat("Physical Refresh Rate = %i \n", mLastRefreshRate);
     mVariableRefreshRateStatistic->dump(result, args);
 }
 
