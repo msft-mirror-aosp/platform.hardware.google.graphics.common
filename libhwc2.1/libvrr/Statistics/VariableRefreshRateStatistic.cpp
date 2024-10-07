@@ -80,18 +80,19 @@ DisplayRefreshStatistics VariableRefreshRateStatistic::getUpdatedStatistics() {
             if (it.first.mNumVsync < 0) {
                 it.second.mAccumulatedTimeNs = getPowerOffDurationNs();
             }
-            updatedStatistics[it.first] = it.second;
-            it.second.mUpdated = false;
         }
+        // need all mStatistics to be able to do aggregation and bucketing accurately
+        updatedStatistics[it.first] = it.second;
     }
     if (isPowerModeOffNowLocked()) {
         mStatistics[mDisplayRefreshProfile].mUpdated = true;
     }
+
     return std::move(updatedStatistics);
 }
 
-std::string VariableRefreshRateStatistic::dumpStatistics(RefreshSource refreshSource,
-                                                         bool getUpdatedOnly,
+std::string VariableRefreshRateStatistic::dumpStatistics(bool getUpdatedOnly,
+                                                         RefreshSource refreshSource,
                                                          const std::string& delimiter) {
     std::string res;
     updateIdleStats();
@@ -112,6 +113,98 @@ std::string VariableRefreshRateStatistic::dumpStatistics(RefreshSource refreshSo
         }
     }
     return res;
+}
+
+std::string VariableRefreshRateStatistic::normalizeString(const std::string& input) {
+    static constexpr int kDesiredLength = 30;
+    static constexpr int kSpaceWidth = 1;
+    int extraSpacesNeeded = std::max(0, (kDesiredLength - static_cast<int>(input.length())));
+    return input + std::string(extraSpacesNeeded, ' ');
+}
+
+void VariableRefreshRateStatistic::dump(String8& result, const std::vector<std::string>& args) {
+    bool hasDelta = false;
+
+    if (!args.empty()) {
+        for (const auto& arg : args) {
+            std::string lowercaseArg = arg;
+            std::transform(lowercaseArg.begin(), lowercaseArg.end(), lowercaseArg.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+
+            if (lowercaseArg.find("delta") != std::string::npos) {
+                hasDelta = true;
+            }
+        }
+    }
+
+    auto updatedStatistics = getUpdatedStatistics();
+    auto curTime = getSteadyClockTimeNs();
+    std::map<std::string, DisplayRefreshRecord, StateNameComparator> aggregatedStats;
+    std::map<std::string, DisplayRefreshRecord> aggregatedStatsSnapshot;
+    // Aggregating lastSnapshot dumpsys to calculate delta
+    for (const auto& it : mStatisticsSnapshot) {
+        PowerStatsProfile profile = it.first.toPowerStatsProfile(false);
+        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile, false);
+        aggregatedStatsSnapshot[stateName] += it.second;
+    }
+
+    for (const auto& it : updatedStatistics) {
+        PowerStatsProfile profile = it.first.toPowerStatsProfile(false);
+        std::string stateName = mPowerStatsProfileTokenGenerator.generateStateName(&profile, false);
+        aggregatedStats[stateName] += it.second;
+    }
+
+    if (hasDelta) {
+        result.appendFormat("Elapsed Time: %lu \n", (curTime - mLastDumpsysTime) / 1000000);
+    }
+
+    std::string headerString = hasDelta ? normalizeString("StateName") + "\t" +
+                    normalizeString("Total Time (ms)") + "\t" + normalizeString("Delta") + "\t" +
+                    normalizeString("Total Entries") + "\t" + normalizeString("Delta") + "\t" +
+                    normalizeString("Last Entry TStamp (ms)") + "\t" + normalizeString("Delta")
+                                        : normalizeString("StateName") + "\t" +
+                    normalizeString("Total Time (ms)") + "\t" + normalizeString("Total Entries") +
+                    "\t" + normalizeString("Last Entry TStamp (ms)");
+
+    result.appendFormat("%s \n", headerString.c_str());
+
+    for (const auto& it : aggregatedStats) {
+        uint64_t countDelta = 0;
+        uint64_t accumulatedTimeNsDelta = 0;
+        uint64_t lastTimeStampInBootClockNsDelta = 0;
+
+        auto agIt = aggregatedStatsSnapshot.find(it.first);
+        if (agIt != aggregatedStatsSnapshot.end()) {
+            countDelta = it.second.mCount - agIt->second.mCount;
+            accumulatedTimeNsDelta = it.second.mAccumulatedTimeNs - agIt->second.mAccumulatedTimeNs;
+            lastTimeStampInBootClockNsDelta = it.second.mLastTimeStampInBootClockNs -
+                    agIt->second.mLastTimeStampInBootClockNs;
+        }
+
+        std::string statsString = hasDelta
+                ? normalizeString(it.first) + "\t" +
+                        normalizeString(std::to_string(it.second.mAccumulatedTimeNs / 1000000)) +
+                        "\t" + normalizeString(std::to_string(accumulatedTimeNsDelta / 1000000)) +
+                        "\t" + normalizeString(std::to_string(it.second.mCount)) + "\t" +
+                        normalizeString(std::to_string(countDelta)) + "\t" +
+                        normalizeString(
+                                std::to_string(it.second.mLastTimeStampInBootClockNs / 1000000)) +
+                        "\t" +
+                        normalizeString(std::to_string(lastTimeStampInBootClockNsDelta / 1000000))
+                :
+
+                normalizeString(it.first) + "\t" +
+                        normalizeString(std::to_string(it.second.mAccumulatedTimeNs / 1000000)) +
+                        "\t" + normalizeString(std::to_string(it.second.mCount)) + "\t" +
+                        normalizeString(
+                                std::to_string(it.second.mLastTimeStampInBootClockNs / 1000000));
+
+        result.appendFormat("%s \n", statsString.c_str());
+    }
+
+    // Take a snapshot of updatedStatistics and time
+    mLastDumpsysTime = curTime;
+    mStatisticsSnapshot = DisplayRefreshStatistics(updatedStatistics);
 }
 
 void VariableRefreshRateStatistic::onPowerStateChange(int from, int to) {
@@ -214,6 +307,9 @@ void VariableRefreshRateStatistic::onRefreshInternal(int64_t refreshTimeNs, int 
 void VariableRefreshRateStatistic::setActiveVrrConfiguration(int activeConfigId, int teFrequency) {
     updateIdleStats();
     mDisplayRefreshProfile.mCurrentDisplayConfig.mActiveConfigId = activeConfigId;
+    mDisplayRefreshProfile.mWidth = mDisplayContextProvider->getWidth(activeConfigId);
+    mDisplayRefreshProfile.mHeight = mDisplayContextProvider->getHeight(activeConfigId);
+    mDisplayRefreshProfile.mTeFrequency = mDisplayContextProvider->getTeFrequency(activeConfigId);
     mTeFrequency = teFrequency;
     if (mTeFrequency % mMaxFrameRate != 0) {
         ALOGW("%s TE frequency does not align with the maximum frame rate as a multiplier.",

@@ -16,15 +16,16 @@
 
 #pragma once
 
+#include <hardware/hwcomposer2.h>
 #include <optional>
+#include <sstream>
 #include <string>
 
-#include "../Statistics/VariableRefreshRateStatistic.h"
 #include "../display/common/CommonDisplayContextProvider.h"
 
 namespace android::hardware::graphics::composer {
 
-typedef struct PowerStatsPresentProfile {
+typedef struct PowerStatsProfile {
     inline bool isOff() const {
         if ((mPowerMode == HWC_POWER_MODE_OFF) || (mPowerMode == HWC_POWER_MODE_DOZE_SUSPEND)) {
             return true;
@@ -33,7 +34,7 @@ typedef struct PowerStatsPresentProfile {
         }
     }
 
-    bool operator==(const PowerStatsPresentProfile& rhs) const {
+    bool operator==(const PowerStatsProfile& rhs) const {
         if (isOff() || rhs.isOff()) {
             return isOff() == rhs.isOff();
         }
@@ -42,7 +43,7 @@ typedef struct PowerStatsPresentProfile {
                 (mRefreshSource == rhs.mRefreshSource);
     }
 
-    bool operator<(const PowerStatsPresentProfile& rhs) const {
+    bool operator<(const PowerStatsProfile& rhs) const {
         if (isOff() && rhs.isOff()) {
             return false;
         }
@@ -79,30 +80,6 @@ typedef struct PowerStatsPresentProfile {
     int mPowerMode = HWC_POWER_MODE_OFF;
     BrightnessMode mBrightnessMode = BrightnessMode::kInvalidBrightnessMode;
     RefreshSource mRefreshSource = kRefreshSourceActivePresent;
-} PowerStatsPresentProfile;
-
-class PowerStatsPresentProfileTokenGenerator {
-public:
-    PowerStatsPresentProfileTokenGenerator() = default;
-
-    void setPowerStatsPresentProfile(const PowerStatsPresentProfile* powerStatsPresentProfile) {
-        mPowerStatsProfile = powerStatsPresentProfile;
-    }
-
-    std::optional<std::string> generateToken(const std::string& tokenLabel);
-
-private:
-    std::string generateRefreshSourceToken() const;
-
-    std::string generateModeToken() const;
-
-    std::string generateWidthToken() const;
-
-    std::string generateHeightToken() const;
-
-    std::string generateFpsToken() const;
-
-    const PowerStatsPresentProfile* mPowerStatsProfile;
-};
+} PowerStatsProfile;
 
 } // namespace android::hardware::graphics::composer

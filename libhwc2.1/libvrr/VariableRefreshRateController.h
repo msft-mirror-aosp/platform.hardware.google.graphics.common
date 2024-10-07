@@ -130,6 +130,8 @@ public:
     int setFixedRefreshRateRange(uint32_t minimumRefreshRate,
                                  uint64_t minLockTimeForPeakRefreshRate);
 
+    void dump(String8& result, const std::vector<std::string>& args = {});
+
 private:
     static constexpr int kMaxFrameRate = 120;
     static constexpr int kMaxTefrequency = 240;
@@ -355,6 +357,7 @@ private:
     hwc2_config_t mVrrActiveConfig = -1;
     std::unordered_map<hwc2_config_t, VrrConfig_t> mVrrConfigs;
     std::optional<int> mLastPresentFence;
+    uint32_t mFrameRate = 0;
 
     std::shared_ptr<FileNode> mFileNode;
 
@@ -383,6 +386,8 @@ private:
     bool mEnabled = false;
     bool mThreadExit = false;
 
+    PresentTimeoutControllerType mDefaultPresentTimeoutController =
+            PresentTimeoutControllerType::kSoftware;
     PresentTimeoutControllerType mPresentTimeoutController =
             PresentTimeoutControllerType::kSoftware;
 
