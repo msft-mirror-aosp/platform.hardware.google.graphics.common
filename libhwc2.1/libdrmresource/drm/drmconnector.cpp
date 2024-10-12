@@ -306,7 +306,8 @@ int DrmConnector::UpdateModes(bool is_vrr_mode) {
     }
     if (!exists) {
       // Remove modes that mismatch with the VRR setting..
-      if (is_vrr_mode != ((c->modes[i].type & DRM_MODE_TYPE_VRR) != 0)) {
+      if (type_ == DRM_MODE_CONNECTOR_DSI &&
+          is_vrr_mode != ((c->modes[i].type & DRM_MODE_TYPE_VRR) != 0 || c->modes[i].vscan > 0)) {
         continue;
       }
       DrmMode m(&c->modes[i]);
