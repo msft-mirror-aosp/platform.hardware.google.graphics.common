@@ -53,6 +53,7 @@ enum class Format : uint32_t {
      * from the lowest memory address to the highest memory address.
      */
     GOOGLE_RGB16 = 0x304,
+    GOOGLE_BGRX = 0x305,
 };
 
 #undef MapFormat
