@@ -1409,6 +1409,8 @@ class ExynosDisplay {
             return NO_ERROR;
         }
 
+        virtual void setForceColorUpdate(bool force) { return; }
+
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
         virtual int32_t getActiveConfigInternal(hwc2_config_t* outConfig);
