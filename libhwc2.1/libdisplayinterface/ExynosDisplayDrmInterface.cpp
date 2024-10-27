@@ -2258,6 +2258,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
     if ((ret = drmReq.commit(flags, true)) < 0) {
         HWC_LOGE(mExynosDisplay, "%s:: Failed to commit pset ret=%d in deliverWinConfigData()\n",
                 __func__, ret);
+        mExynosDisplay->setForceColorUpdate(true);
         return ret;
     }
 
