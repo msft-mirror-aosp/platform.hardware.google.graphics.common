@@ -21,58 +21,6 @@ LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_SHARED_LIBRARIES := libcutils libdrm liblog libutils libhardware
-
-LOCAL_PROPRIETARY_MODULE := true
-
-LOCAL_C_INCLUDES += \
-	$(TOP)/hardware/google/graphics/common/libhwc2.1/libdrmresource/include
-
-LOCAL_SRC_FILES := \
-	libdrmresource/utils/worker.cpp \
-	libdrmresource/drm/resourcemanager.cpp \
-	libdrmresource/drm/drmdevice.cpp \
-	libdrmresource/drm/drmconnector.cpp \
-	libdrmresource/drm/drmcrtc.cpp \
-	libdrmresource/drm/drmencoder.cpp \
-	libdrmresource/drm/drmmode.cpp \
-	libdrmresource/drm/drmplane.cpp \
-	libdrmresource/drm/drmproperty.cpp \
-	libdrmresource/drm/drmeventlistener.cpp \
-	libdrmresource/drm/vsyncworker.cpp
-
-LOCAL_CFLAGS := -DHLOG_CODE=0
-LOCAL_CFLAGS += -Wno-unused-parameter
-LOCAL_CFLAGS += -DSOC_VERSION=$(soc_ver)
-LOCAL_CFLAGS += -Wthread-safety
-LOCAL_EXPORT_SHARED_LIBRARY_HEADERS := libdrm
-
-ifeq ($(CLANG_COVERAGE),true)
-# enable code coverage (these flags are copied from build/soong/cc/coverage.go)
-LOCAL_CFLAGS += -fprofile-instr-generate -fcoverage-mapping
-LOCAL_CFLAGS += -Wno-frame-larger-than=
-LOCAL_WHOLE_STATIC_LIBRARIES += libprofile-clang-extras_ndk
-LOCAL_LDFLAGS += -fprofile-instr-generate
-LOCAL_LDFLAGS += -Wl,--wrap,open
-
-ifeq ($(CLANG_COVERAGE_CONTINUOUS_MODE),true)
-LOCAL_CFLAGS += -mllvm -runtime-counter-relocation
-LOCAL_LDFLAGS += -Wl,-mllvm=-runtime-counter-relocation
-endif
-endif
-
-LOCAL_MODULE := libdrmresource
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS := notice
-LOCAL_NOTICE_FILE := $(LOCAL_PATH)/NOTICE
-LOCAL_MODULE_TAGS := optional
-
-include $(TOP)/hardware/google/graphics/common/BoardConfigCFlags.mk
-include $(BUILD_SHARED_LIBRARY)
-
-################################################################################
-include $(CLEAR_VARS)
-
 LOCAL_SHARED_LIBRARIES := liblog libcutils libhardware \
 	android.hardware.graphics.composer@2.4 \
 	android.hardware.graphics.allocator@2.0 \
