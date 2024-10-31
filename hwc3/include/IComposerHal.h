@@ -21,6 +21,7 @@
  * does own the fences).
  */
 #include <aidl/android/hardware/common/NativeHandle.h>
+#include <aidl/android/hardware/drm/HdcpLevels.h>
 #include <aidl/android/hardware/graphics/common/BlendMode.h>
 #include <aidl/android/hardware/graphics/common/ColorTransform.h>
 #include <aidl/android/hardware/graphics/common/Dataspace.h>
@@ -98,7 +99,7 @@ class IComposerHal {
      virtual ~IComposerHal() = default;
 
      virtual void getCapabilities(std::vector<Capability>* caps) = 0;
-     virtual void dumpDebugInfo(std::string* output) = 0;
+     virtual void dumpDebugInfo(std::string* output, const std::vector<std::string>& args = {}) = 0;
      virtual bool hasCapability(Capability cap) = 0;
 
      class EventCallback {
@@ -113,6 +114,7 @@ class IComposerHal {
          virtual void onSeamlessPossible(int64_t display) = 0;
          virtual void onRefreshRateChangedDebug(const RefreshRateChangedDebugData& data) = 0;
          virtual void onHotplugEvent(int64_t display, common::DisplayHotplugEvent event) = 0;
+         virtual void onHdcpLevelsChanged(int64_t display, drm::HdcpLevels levels) = 0;
      };
     virtual void registerEventCallback(EventCallback* callback) = 0;
     virtual void unregisterEventCallback() = 0;
