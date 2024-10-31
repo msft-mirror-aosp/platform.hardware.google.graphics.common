@@ -555,6 +555,11 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
     ATRACE_CALL();
     ATRACE_INT(kMinimumRefreshRateRequestTraceName, minimumRefreshRate);
     const std::lock_guard<std::mutex> lock(mMutex);
+    // Discontinue handling fixed refresh rate range settings after power-off, as we will
+    // immediately configure it again.
+    if (mPowerMode == HWC_POWER_MODE_OFF) {
+        return NO_ERROR;
+    }
     if (minimumRefreshRate == 0) {
         minimumRefreshRate = 1;
     }
