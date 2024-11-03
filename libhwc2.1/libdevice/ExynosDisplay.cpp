@@ -3519,7 +3519,7 @@ void dumpBuffer(const String8& prefix, const exynos_image& image, std::ofstream&
             bufferFile.write(static_cast<char*>(addr), gmeta.sizes[i]);
             munmap(addr, gmeta.sizes[i]);
         } else {
-            ALOGE("%s: failed to mmap fds[%d]:%d for %s", __func__, i, gmeta.fds[i]);
+            ALOGE("%s: failed to mmap fds[%d]:%d", __func__, i, gmeta.fds[i]);
         }
     }
 }
