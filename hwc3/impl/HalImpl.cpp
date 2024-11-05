@@ -255,12 +255,11 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
                                   reinterpret_cast<hwc2_function_pointer_t>(
                                           hook::refreshRateChangedDebug));
-    // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
-    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this,
-    //                             reinterpret_cast<hwc2_function_pointer_t>(hook::hotplugEvent));
-    // Don't register onHdcpLevelsChanged until it's available in nextfood
-    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
-    //                             reinterpret_cast<hwc2_function_pointer_t>(hook::hdcpLevelsChanged));
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this,
+                                  reinterpret_cast<hwc2_function_pointer_t>(hook::hotplugEvent));
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
+                                  reinterpret_cast<hwc2_function_pointer_t>(
+                                          hook::hdcpLevelsChanged));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -274,11 +273,9 @@ void HalImpl::unregisterEventCallback() {
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this, nullptr);
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
                                   nullptr);
-    // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
-    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this, nullptr);
-    // Don't register onHdcpLevelsChanged until it's available in nextfood
-    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
-    // nullptr);
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this, nullptr);
+    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
+                                  nullptr);
 
     mEventCallback = nullptr;
 }
