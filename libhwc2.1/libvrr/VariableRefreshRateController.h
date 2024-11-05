@@ -133,8 +133,13 @@ public:
     void dump(String8& result, const std::vector<std::string>& args = {});
 
 private:
+    static constexpr char kMinimumRefreshRateRequestTraceName[] = "MinimumRefreshRateRequest";
+    static constexpr char kMinimumRefreshRateConfiguredTraceName[] = "MinimumRefreshRateConfigured";
+
     static constexpr int kMaxFrameRate = 120;
     static constexpr int kMaxTefrequency = 240;
+
+    static constexpr int64_t kWaitForConfigTimeoutNs = std::nano::den; // 1 second.
 
     static constexpr int kDefaultRingBufferCapacity = 128;
     static constexpr int64_t kDefaultWakeUpTimeInPowerSaving =
@@ -335,6 +340,8 @@ private:
     void postEvent(VrrControllerEventType type, TimedEvent& timedEvent);
     void postEvent(VrrControllerEventType type, int64_t when);
 
+    int setFixedRefreshRateRangeWorker();
+
     bool shouldHandleVendorRenderingTimeout() const;
 
     void stopThread(bool exit);
@@ -357,6 +364,7 @@ private:
     hwc2_config_t mVrrActiveConfig = -1;
     std::unordered_map<hwc2_config_t, VrrConfig_t> mVrrConfigs;
     std::optional<int> mLastPresentFence;
+    uint32_t mFrameRate = 0;
 
     std::shared_ptr<FileNode> mFileNode;
 
@@ -400,6 +408,7 @@ private:
     uint64_t mMaximumRefreshRateTimeoutNs = 0;
     std::optional<TimedEvent> mMinimumRefreshRateTimeoutEvent;
     MinimumRefreshRatePresentStates mMinimumRefreshRatePresentStates = kMinRefreshRateUnset;
+    std::optional<uint32_t> mPendingMinimumRefreshRateRequest = std::nullopt;
 
     std::vector<std::shared_ptr<RefreshRateChangeListener>> mRefreshRateChangeListeners;
 

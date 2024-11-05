@@ -47,12 +47,14 @@ enum class Format : uint32_t {
 
     // Pixel specific formats
     GOOGLE_NV12 = 0x301,
+    GOOGLE_RGBX16 = 0x302,
     GOOGLE_R8 = 0x303,
     /**
      * 48-bit format that has 16-bit R, G, B components, in that order,
      * from the lowest memory address to the highest memory address.
      */
     GOOGLE_RGB16 = 0x304,
+    GOOGLE_BGRX = 0x305,
 };
 
 #undef MapFormat
