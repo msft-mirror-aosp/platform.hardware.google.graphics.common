@@ -109,6 +109,11 @@ int DrmConnector::Init() {
     ALOGE("Could not get hdr_formats property\n");
   }
 
+  ret = drm_->GetConnectorProperty(*this, "frame_interval", &frame_interval_);
+  if (ret) {
+    ALOGE("Could not get frame_interval property\n");
+  }
+
   ret = drm_->GetConnectorProperty(*this, "panel orientation", &orientation_);
   if (ret) {
     ALOGE("Could not get orientation property\n");
@@ -188,6 +193,7 @@ int DrmConnector::Init() {
   properties_.push_back(&max_avg_luminance_);
   properties_.push_back(&min_luminance_);
   properties_.push_back(&hdr_formats_);
+  properties_.push_back(&frame_interval_);
   properties_.push_back(&orientation_);
   properties_.push_back(&lp_mode_property_);
   properties_.push_back(&brightness_cap_);
@@ -300,7 +306,9 @@ int DrmConnector::UpdateModes(bool is_vrr_mode) {
     }
     if (!exists) {
       // Remove modes that mismatch with the VRR setting..
-      if (is_vrr_mode != ((c->modes[i].type & DRM_MODE_TYPE_VRR) != 0)) {
+      if ((is_vrr_mode != ((c->modes[i].type & DRM_MODE_TYPE_VRR) != 0)) ||
+          ((c->modes[i].flags & DRM_MODE_FLAG_TE_FREQ_X2) ||
+           (c->modes[i].flags & DRM_MODE_FLAG_TE_FREQ_X4))) {
         continue;
       }
       DrmMode m(&c->modes[i]);
@@ -474,6 +482,10 @@ const DrmProperty &DrmConnector::rr_switch_duration() const {
 
 const DrmProperty &DrmConnector::content_protection() const {
     return content_protection_;
+}
+
+const DrmProperty &DrmConnector::frame_interval() const {
+  return frame_interval_;
 }
 
 DrmEncoder *DrmConnector::encoder() const {

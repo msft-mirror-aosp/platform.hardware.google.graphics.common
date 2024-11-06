@@ -16,6 +16,8 @@
 #ifndef _EXYNOSHWCHELPER_H
 #define _EXYNOSHWCHELPER_H
 
+#include <aidl/android/hardware/graphics/common/Transform.h>
+#include <aidl/android/hardware/graphics/composer3/Composition.h>
 #include <drm/drm_fourcc.h>
 #include <drm/samsung_drm.h>
 #include <hardware/hwcomposer2.h>
@@ -59,6 +61,8 @@
 #ifndef DRM_FORMAT_YUV420_10BIT
 #define DRM_FORMAT_YUV420_10BIT fourcc_code('Y', 'U', '1', '0')
 #endif
+
+using AidlTransform = ::aidl::android::hardware::graphics::common::Transform;
 
 static constexpr uint32_t DISPLAYID_MASK_LEN = 8;
 
@@ -333,30 +337,32 @@ enum {
 };
 
 enum {
-    eSkipLayer                    =     0x00000001,
-    eInvalidHandle                =     0x00000002,
-    eHasFloatSrcCrop              =     0x00000004,
-    eUpdateExynosComposition      =     0x00000008,
-    eDynamicRecomposition         =     0x00000010,
-    eForceFbEnabled               =     0x00000020,
-    eSandwitchedBetweenGLES       =     0x00000040,
-    eSandwitchedBetweenEXYNOS     =     0x00000080,
-    eInsufficientWindow           =     0x00000100,
-    eInsufficientMPP              =     0x00000200,
-    eSkipStaticLayer              =     0x00000400,
-    eUnSupportedUseCase           =     0x00000800,
-    eDimLayer                     =     0x00001000,
-    eResourcePendingWork          =     0x00002000,
-    eSkipRotateAnim               =     0x00004000,
-    eUnSupportedColorTransform    =     0x00008000,
-    eLowFpsLayer                  =     0x00010000,
-    eReallocOnGoingForDDI         =     0x00020000,
-    eInvalidDispFrame             =     0x00040000,
-    eExceedMaxLayerNum            =     0x00080000,
-    eExceedSdrDimRatio            =     0x00100000,
-    eResourceAssignFail           =     0x20000000,
-    eMPPUnsupported               =     0x40000000,
-    eUnknown                      =     0x80000000,
+    eForceBySF = 0x00000001,
+    eInvalidHandle = 0x00000002,
+    eHasFloatSrcCrop = 0x00000004,
+    eUpdateExynosComposition = 0x00000008,
+    eDynamicRecomposition = 0x00000010,
+    eForceFbEnabled = 0x00000020,
+    eSandwichedBetweenGLES = 0x00000040,
+    eSandwichedBetweenEXYNOS = 0x00000080,
+    eInsufficientWindow = 0x00000100,
+    eInsufficientMPP = 0x00000200,
+    eSkipStaticLayer = 0x00000400,
+    eUnSupportedUseCase = 0x00000800,
+    eDimLayer = 0x00001000,
+    eResourcePendingWork = 0x00002000,
+    eSkipRotateAnim = 0x00004000,
+    eUnSupportedColorTransform = 0x00008000,
+    eLowFpsLayer = 0x00010000,
+    eReallocOnGoingForDDI = 0x00020000,
+    eInvalidDispFrame = 0x00040000,
+    eExceedMaxLayerNum = 0x00080000,
+    eExceedSdrDimRatio = 0x00100000,
+    eIgnoreLayer = 0x00200000,
+    eSkipStartFrame = 0x008000000,
+    eResourceAssignFail = 0x20000000,
+    eMPPUnsupported = 0x40000000,
+    eUnknown = 0x80000000,
 };
 
 enum regionType {
@@ -582,6 +588,36 @@ bool hasPPC(uint32_t physicalType, uint32_t formatIndex, uint32_t rotIndex);
 
 class TableBuilder {
 public:
+    void recordKeySequence(const std::string& key) {
+        if (kToVs.find(key) == kToVs.end()) keys.push_back(key);
+    }
+    template <typename T>
+    TableBuilder& addKeyValue(const std::string& key, const T& value) {
+        recordKeySequence(key);
+        std::stringstream v;
+        v << value;
+        kToVs[key].emplace_back(v.str());
+        return *this;
+    }
+
+    template <typename T>
+    TableBuilder& addKeyValue(const std::string& key, const std::vector<T>& values) {
+        recordKeySequence(key);
+        std::stringstream value;
+        for (int i = 0; i < values.size(); i++) {
+            if (i) value << ", ";
+            value << values[i];
+        }
+
+        kToVs[key].emplace_back(value.str());
+        return *this;
+    }
+
+    // Template overrides for hex integers
+    TableBuilder& addKeyValue(const std::string& key, const uint64_t& value, bool toHex);
+    TableBuilder& addKeyValue(const std::string& key, const std::vector<uint64_t>& values,
+                              bool toHex);
+
     template <typename T>
     TableBuilder& add(const std::string& key, const T& value) {
         std::stringstream v;
@@ -607,12 +643,16 @@ public:
     TableBuilder& add(const std::string& key, const std::vector<uint64_t>& values, bool toHex);
 
     std::string build();
+    std::string buildForMiniDump();
 
 private:
     std::string buildPaddedString(const std::string& str, int size);
 
     using StringPairVec = std::vector<std::pair<std::string, std::string>>;
     StringPairVec data;
+
+    std::vector<std::string> keys;
+    std::map<std::string, std::vector<std::string>> kToVs;
 };
 
 void writeFileNode(FILE *fd, int value);
@@ -680,4 +720,167 @@ uint32_t rectSize(const hwc_rect_t &rect);
 void assign(decon_win_rect &win_rect, uint32_t left, uint32_t right, uint32_t width,
             uint32_t height);
 uint32_t nanoSec2Hz(uint64_t ns);
+
+inline std::string transOvlInfoToString(const int32_t ovlInfo) {
+    std::string ret;
+    if (ovlInfo & eForceBySF) ret += "ForceBySF ";
+    if (ovlInfo & eInvalidHandle) ret += "InvalidHandle ";
+    if (ovlInfo & eHasFloatSrcCrop) ret += "FloatSrcCrop ";
+    if (ovlInfo & eUpdateExynosComposition) ret += "ExyComp ";
+    if (ovlInfo & eDynamicRecomposition) ret += "DR ";
+    if (ovlInfo & eForceFbEnabled) ret += "ForceFb ";
+    if (ovlInfo & eSandwichedBetweenGLES) ret += "SandwichGLES ";
+    if (ovlInfo & eSandwichedBetweenEXYNOS) ret += "SandwichExy ";
+    if (ovlInfo & eInsufficientWindow) ret += "NoWin ";
+    if (ovlInfo & eInsufficientMPP) ret += "NoMPP ";
+    if (ovlInfo & eSkipStaticLayer) ret += "SkipStaticLayer ";
+    if (ovlInfo & eUnSupportedUseCase) ret += "OutOfCase ";
+    if (ovlInfo & eDimLayer) ret += "Dim ";
+    if (ovlInfo & eResourcePendingWork) ret += "ResourcePending ";
+    if (ovlInfo & eSkipRotateAnim) ret += "SkipRotAnim ";
+    if (ovlInfo & eUnSupportedColorTransform) ret += "UnsupportedColorTrans ";
+    if (ovlInfo & eLowFpsLayer) ret += "LowFps ";
+    if (ovlInfo & eReallocOnGoingForDDI) ret += "ReallocForDDI ";
+    if (ovlInfo & eInvalidDispFrame) ret += "InvalidDispFrame ";
+    if (ovlInfo & eExceedMaxLayerNum) ret += "OverMaxLayer ";
+    if (ovlInfo & eExceedSdrDimRatio) ret += "OverSdrDimRatio ";
+    if (ovlInfo & eIgnoreLayer) ret += "Ignore ";
+    if (ovlInfo & eSkipStartFrame) ret += "SkipFirstFrame ";
+    if (ovlInfo & eResourceAssignFail) ret += "ResourceAssignFail ";
+    if (ovlInfo & eMPPUnsupported) ret += "MPPUnspported ";
+    if (ovlInfo & eUnknown) ret += "Unknown ";
+
+    if (std::size_t found = ret.find_last_of(" ");
+        found != std::string::npos && found < ret.size()) {
+        ret.erase(found);
+    }
+    return ret;
+}
+
+inline std::string transDataSpaceToString(const uint32_t& dataspace) {
+    std::string ret;
+    const uint32_t standard = dataspace & HAL_DATASPACE_STANDARD_MASK;
+    if (standard == HAL_DATASPACE_STANDARD_UNSPECIFIED)
+        ret += std::string("NA");
+    else if (standard == HAL_DATASPACE_STANDARD_BT709)
+        ret += std::string("BT709");
+    else if (standard == HAL_DATASPACE_STANDARD_BT601_625)
+        ret += std::string("BT601_625");
+    else if (standard == HAL_DATASPACE_STANDARD_BT601_625_UNADJUSTED)
+        ret += std::string("BT601_625_UNADJUSTED");
+    else if (standard == HAL_DATASPACE_STANDARD_BT601_525)
+        ret += std::string("BT601_525");
+    else if (standard == HAL_DATASPACE_STANDARD_BT601_525_UNADJUSTED)
+        ret += std::string("BT601_525_UNADJUSTED");
+    else if (standard == HAL_DATASPACE_STANDARD_BT2020)
+        ret += std::string("BT2020");
+    else if (standard == HAL_DATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE)
+        ret += std::string("BT2020_CONSTANT_LUMINANCE");
+    else if (standard == HAL_DATASPACE_STANDARD_BT470M)
+        ret += std::string("BT470M");
+    else if (standard == HAL_DATASPACE_STANDARD_FILM)
+        ret += std::string("FILM");
+    else if (standard == HAL_DATASPACE_STANDARD_DCI_P3)
+        ret += std::string("DCI-P3");
+    else if (standard == HAL_DATASPACE_STANDARD_ADOBE_RGB)
+        ret += std::string("Adobe RGB");
+    else
+        ret += std::string("Unknown");
+
+    const uint32_t transfer = dataspace & HAL_DATASPACE_TRANSFER_MASK;
+    if (transfer == HAL_DATASPACE_TRANSFER_LINEAR)
+        ret += std::string(",Linear");
+    else if (transfer == HAL_DATASPACE_TRANSFER_SRGB)
+        ret += std::string(",SRGB");
+    else if (transfer == HAL_DATASPACE_TRANSFER_SMPTE_170M)
+        ret += std::string(",SMPTE");
+    else if (transfer == HAL_DATASPACE_TRANSFER_GAMMA2_2)
+        ret += std::string(",G2.2");
+    else if (transfer == HAL_DATASPACE_TRANSFER_GAMMA2_6)
+        ret += std::string(",G2.6");
+    else if (transfer == HAL_DATASPACE_TRANSFER_GAMMA2_8)
+        ret += std::string(",G2.8");
+    else if (transfer == HAL_DATASPACE_TRANSFER_ST2084)
+        ret += std::string(",ST2084");
+    else if (transfer == HAL_DATASPACE_TRANSFER_HLG)
+        ret += std::string(",HLG");
+    else
+        ret += std::string(",Unknown");
+
+    const uint32_t range = dataspace & HAL_DATASPACE_RANGE_MASK;
+    if (range == HAL_DATASPACE_RANGE_FULL)
+        ret += std::string(",Full");
+    else if (range == HAL_DATASPACE_RANGE_LIMITED)
+        ret += std::string(",Limited");
+    else if (range == HAL_DATASPACE_RANGE_EXTENDED)
+        ret += std::string(",Extend");
+    else
+        ret += std::string(",Unknown");
+    return ret;
+}
+
+inline std::string transBlendModeToString(const uint32_t& blend) {
+    if (blend == HWC2_BLEND_MODE_NONE)
+        return std::string("None");
+    else if (blend == HWC2_BLEND_MODE_PREMULTIPLIED)
+        return std::string("Premult");
+    else if (blend == HWC2_BLEND_MODE_COVERAGE)
+        return std::string("Coverage");
+    else
+        return std::string("Unknown");
+}
+
+inline std::string transTransformToString(const uint32_t& tr) {
+    if (tr == toUnderlying(AidlTransform::NONE))
+        return std::string("None");
+    else if (tr == toUnderlying(AidlTransform::FLIP_H))
+        return std::string("FLIP_H");
+    else if (tr == toUnderlying(AidlTransform::FLIP_V))
+        return std::string("FLIP_V");
+    else if (tr == toUnderlying(AidlTransform::ROT_90))
+        return std::string("ROT_90");
+    else if (tr == toUnderlying(AidlTransform::ROT_180))
+        return std::string("ROT_180");
+    else if (tr == toUnderlying(AidlTransform::ROT_270))
+        return std::string("ROT_270");
+    return std::string("Unknown");
+}
+
+using ::aidl::android::hardware::graphics::composer3::Composition;
+
+enum {
+    HWC2_COMPOSITION_DISPLAY_DECORATION = toUnderlying(Composition::DISPLAY_DECORATION),
+    HWC2_COMPOSITION_REFRESH_RATE_INDICATOR = toUnderlying(Composition::REFRESH_RATE_INDICATOR),
+    /*add after hwc2_composition_t, margin number here*/
+    HWC2_COMPOSITION_EXYNOS = 32,
+};
+
+inline std::string transCompTypeToString(const uint32_t& type) {
+    if (type == HWC2_COMPOSITION_INVALID)
+        return std::string("Invalid");
+    else if (type == HWC2_COMPOSITION_CLIENT)
+        return std::string("CLI");
+    else if (type == HWC2_COMPOSITION_DEVICE)
+        return std::string("DEV");
+    else if (type == HWC2_COMPOSITION_SOLID_COLOR)
+        return std::string("SOLID");
+    else if (type == HWC2_COMPOSITION_CURSOR)
+        return std::string("CURSOR");
+    else if (type == HWC2_COMPOSITION_SIDEBAND)
+        return std::string("SIDEBAND");
+    else if (type == HWC2_COMPOSITION_DISPLAY_DECORATION)
+        return std::string("RCD");
+    else if (type == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR)
+        return std::string("REFRESH_RATE");
+    else if (type == HWC2_COMPOSITION_EXYNOS)
+        return std::string("EXYNOS");
+    else
+        return std::string("Unknown");
+}
+
+static constexpr int64_t SIGNAL_TIME_PENDING = INT64_MAX;
+static constexpr int64_t SIGNAL_TIME_INVALID = -1;
+
+nsecs_t getSignalTime(int32_t fd);
+
 #endif
