@@ -280,6 +280,8 @@ private:
 
     void cancelPresentTimeoutHandlingLocked();
 
+    void createMinimumRefreshRateTimeoutEventLocked();
+
     void dropEventLocked();
     void dropEventLocked(VrrControllerEventType eventType);
 
@@ -407,12 +409,17 @@ private:
     // only when |mMinimumRefreshRate| is greater than 1.
     uint64_t mMaximumRefreshRateTimeoutNs = 0;
     std::optional<TimedEvent> mMinimumRefreshRateTimeoutEvent;
-    MinimumRefreshRatePresentStates mMinimumRefreshRatePresentStates = kMinRefreshRateUnset;
+    MinimumRefreshRatePresentStates mMinimumRefreshRatePresentState = kMinRefreshRateUnset;
     std::optional<uint32_t> mPendingMinimumRefreshRateRequest = std::nullopt;
 
     std::vector<std::shared_ptr<RefreshRateChangeListener>> mRefreshRateChangeListeners;
 
     PendingVendorRenderingTimeoutTasks mPendingVendorRenderingTimeoutTasks;
+
+    // It stores the last present time as a cadence hint. Note that it does not update when
+    // notifyExpectedPresent is called, as notifyExpectedPresent may not result in an actual
+    // display.
+    int64_t mLastExpectedPresentTimeNs = -1;
 
     std::mutex mMutex;
     std::condition_variable mCondition;
