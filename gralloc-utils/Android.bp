@@ -5,6 +5,9 @@ package {
 cc_library_static {
     name: "pixel-gralloc-utils",
     vendor_available: true,
+    defaults: [
+        "//hardware/google/graphics/common:pixel-gralloc-headers-dependencies",
+    ],
     shared_libs: [
         "libui",
     ],
