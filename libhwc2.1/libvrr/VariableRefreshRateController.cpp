@@ -595,12 +595,12 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
     if ((mPendingMinimumRefreshRateRequest) &&
         (mPendingMinimumRefreshRateRequest.value() == minimumRefreshRate)) {
         return NO_ERROR;
-    } else {
-        mPendingMinimumRefreshRateRequest = std::nullopt;
-        dropEventLocked(VrrControllerEventType::kMinimumRefreshRateWaitForConfigTimeout);
-        if (minimumRefreshRate == mMinimumRefreshRate) {
-            return NO_ERROR;
-        }
+    }
+
+    mPendingMinimumRefreshRateRequest = std::nullopt;
+    dropEventLocked(VrrControllerEventType::kMinimumRefreshRateControlEventMask);
+    if (minimumRefreshRate == mMinimumRefreshRate) {
+        return NO_ERROR;
     }
 
     if ((minimumRefreshRate == 1) ||
@@ -612,7 +612,6 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
         LOG(INFO) << "Set the minimum refresh rate to " << mMinimumRefreshRate
                   << " but wait until the configuration is ready before applying.";
         mPendingMinimumRefreshRateRequest = minimumRefreshRate;
-        dropEventLocked(VrrControllerEventType::kMinimumRefreshRateWaitForConfigTimeout);
         postEvent(VrrControllerEventType::kMinimumRefreshRateWaitForConfigTimeout,
                   getSteadyClockTimeNs() + kWaitForConfigTimeoutNs);
         return NO_ERROR;
@@ -621,9 +620,6 @@ int VariableRefreshRateController::setFixedRefreshRateRange(
 
 int VariableRefreshRateController::setFixedRefreshRateRangeWorker() {
     uint32_t command = getCurrentRefreshControlStateLocked();
-    dropEventLocked(VrrControllerEventType::kMinLockTimeForPeakRefreshRate);
-    dropEventLocked(VrrControllerEventType::kMinimumRefreshRateWaitForConfigTimeout);
-    dropEventLocked(VrrControllerEventType::kMinimumRefreshRateAlignWithPresent);
     if (isMinimumRefreshRateActive()) {
         cancelPresentTimeoutHandlingLocked();
         // Delegate timeout management to hardware.
@@ -722,7 +718,8 @@ void VariableRefreshRateController::onPresent(int fence) {
             dropEventLocked(VrrControllerEventType::kHibernateTimeout);
         }
 
-        if ((mMaximumRefreshRateTimeoutNs > 0) && (mMinimumRefreshRate > 1)) {
+        if ((mMaximumRefreshRateTimeoutNs > 0) && (mMinimumRefreshRate > 1) &&
+            (!mPendingMinimumRefreshRateRequest)) {
             auto maxFrameRate = durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
             // If the target minimum refresh rate equals the maxFrameRate, there's no need to
             // promote the refresh rate to maxFrameRate during presentation.
@@ -1206,32 +1203,35 @@ void VariableRefreshRateController::threadBody() {
                 frameRate = mFrameRate;
             }
             if (event.mEventType == VrrControllerEventType::kMinimumRefreshRateAlignWithPresent) {
-                mMinimumRefreshRate = mPendingMinimumRefreshRateRequest.value();
-                mPendingMinimumRefreshRateRequest = std::nullopt;
-                auto maxFrameRate =
-                        durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
-                uint32_t command = getCurrentRefreshControlStateLocked();
-                // Delegate timeout management to hardware.
-                setBit(command, kPanelRefreshCtrlFrameInsertionAutoModeOffset);
-                // Configure panel to maintain the minimum refresh rate.
-                setBitField(command, maxFrameRate, kPanelRefreshCtrlMinimumRefreshRateOffset,
-                            kPanelRefreshCtrlMinimumRefreshRateMask);
-                if (!mFileNode->writeValue(composer::kRefreshControlNodeName, command)) {
-                    LOG(WARNING) << "VrrController: write file node error, command = " << command;
-                    return;
+                if (mPendingMinimumRefreshRateRequest) {
+                    mMinimumRefreshRate = mPendingMinimumRefreshRateRequest.value();
+                    mPendingMinimumRefreshRateRequest = std::nullopt;
+                    auto maxFrameRate =
+                            durationNsToFreq(mVrrConfigs[mVrrActiveConfig].minFrameIntervalNs);
+                    uint32_t command = getCurrentRefreshControlStateLocked();
+                    // Delegate timeout management to hardware.
+                    setBit(command, kPanelRefreshCtrlFrameInsertionAutoModeOffset);
+                    // Configure panel to maintain the minimum refresh rate.
+                    setBitField(command, maxFrameRate, kPanelRefreshCtrlMinimumRefreshRateOffset,
+                                kPanelRefreshCtrlMinimumRefreshRateMask);
+                    if (!mFileNode->writeValue(composer::kRefreshControlNodeName, command)) {
+                        LOG(WARNING)
+                                << "VrrController: write file node error, command = " << command;
+                        return;
+                    }
+                    ATRACE_INT(kMinimumRefreshRateConfiguredTraceName, maxFrameRate);
+                    mMinimumRefreshRatePresentState = kAtMaximumRefreshRate;
+                    // Even though we transition directly to the maximum refresh rate, we still
+                    // report the refresh rate change for |mMinimumRefreshRate| to maintain
+                    // consistency. It will soon ovewrite by |maxFrameRate| below.
+                    onRefreshRateChangedInternal(mMinimumRefreshRate);
+                    onRefreshRateChangedInternal(maxFrameRate);
+                    mMinimumRefreshRateTimeoutEvent->mIsRelativeTime = false;
+                    mMinimumRefreshRateTimeoutEvent->mWhenNs =
+                            getSteadyClockTimeNs() + mMaximumRefreshRateTimeoutNs;
+                    postEvent(VrrControllerEventType::kMinLockTimeForPeakRefreshRate,
+                              mMinimumRefreshRateTimeoutEvent.value());
                 }
-                ATRACE_INT(kMinimumRefreshRateConfiguredTraceName, maxFrameRate);
-                mMinimumRefreshRatePresentState = kAtMaximumRefreshRate;
-                // Even though we transition directly to the maximum refresh rate, we still report
-                // the refresh rate change for |mMinimumRefreshRate| to maintain consistency. It
-                // will soon ovewrite by |maxFrameRate| below.
-                onRefreshRateChangedInternal(mMinimumRefreshRate);
-                onRefreshRateChangedInternal(maxFrameRate);
-                mMinimumRefreshRateTimeoutEvent->mIsRelativeTime = false;
-                mMinimumRefreshRateTimeoutEvent->mWhenNs =
-                        getSteadyClockTimeNs() + mMaximumRefreshRateTimeoutNs;
-                postEvent(VrrControllerEventType::kMinLockTimeForPeakRefreshRate,
-                          mMinimumRefreshRateTimeoutEvent.value());
                 continue;
             }
             if (event.mEventType ==
