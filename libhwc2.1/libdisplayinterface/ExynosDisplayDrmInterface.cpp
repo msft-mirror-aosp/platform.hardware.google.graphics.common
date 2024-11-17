@@ -2218,7 +2218,8 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
          * refresh rate take effect (b/202346402)
          */
         bool ignoreExpectedPresentTime = false;
-        if (mVsyncCallback.getDesiredVsyncPeriod()) {
+        bool isVrr = mXrrSettings.versionInfo.isVrr();
+        if (!isVrr && mVsyncCallback.getDesiredVsyncPeriod()) {
             ignoreExpectedPresentTime = true;
 
             /* limit the condition to avoid unexpected early present */
@@ -2241,7 +2242,7 @@ int32_t ExynosDisplayDrmInterface::deliverWinConfigData()
             }
         }
 
-        if (mXrrSettings.versionInfo.needVrrParameters()) {
+        if (isVrr) {
             auto frameInterval = mExynosDisplay->getPendingFrameInterval();
             if ((ret = drmReq.atomicAddProperty(mDrmConnector->id(),
                                                 mDrmConnector->frame_interval(),
