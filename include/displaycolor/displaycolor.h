@@ -79,6 +79,11 @@ constexpr struct DisplayColorIntfVer {
 /// A map associating supported RenderIntents for each supported ColorMode
 using ColorModesMap = std::map<hwc::ColorMode, std::vector<hwc::RenderIntent>>;
 
+/// precision of convert app gain lut to DPU TM LUT
+static constexpr int32_t kAppGainLutPrecisionBit = 11;
+/// expected application's gain lut size
+static constexpr int32_t kAppGainLutSize = (1 << kAppGainLutPrecisionBit) + 1;
+
 /// Image data bit depths.
 enum class BitDepth { kEight, kTen };
 
@@ -334,6 +339,17 @@ struct LayerColorData {
      * colordata if its false. true by default for backward compatibility.
      */
     bool enabled = true;
+
+    /**
+     * @brief gain lut from app. valid lut must have at least two items
+     */
+    std::vector<float> gain_lut;
+
+    /**
+     * gain lut could change w/o triggering ValidateDisplay. HWC tracks lut
+     * change between frames.
+     */
+    mutable bool gain_lut_dirty{};
 };
 
 struct LtmParams {
@@ -632,6 +648,14 @@ class IDisplayColorGeneric {
                               const std::string& obj_sel,
                               const std::string& action,
                               const std::vector<std::string>& args) = 0;
+
+    /**
+     * @brief compute TM gain lut based on the input layer color data
+     * @return OK if successful, error otherwise.
+     */
+    virtual int32_t ComputeTmLut(const int64_t display,
+                                 const LayerColorData &layer_color_data,
+                                 std::vector<float> &lut) const = 0;
 };
 
 extern "C" {
