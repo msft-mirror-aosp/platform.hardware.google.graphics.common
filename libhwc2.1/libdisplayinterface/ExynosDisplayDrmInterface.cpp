@@ -51,6 +51,7 @@ struct _drmModeAtomicReqItem {
     uint32_t object_id;
     uint32_t property_id;
     uint64_t value;
+    uint32_t cursor;
 };
 
 struct _drmModeAtomicReq {
