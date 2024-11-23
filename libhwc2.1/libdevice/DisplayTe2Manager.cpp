@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
+
 #include "DisplayTe2Manager.h"
 
 DisplayTe2Manager::DisplayTe2Manager(ExynosDisplay* display, int32_t panelIndex,
@@ -180,6 +182,7 @@ DisplayTe2Manager::ProximitySensorStateNotifierWorker::~ProximitySensorStateNoti
 }
 
 void DisplayTe2Manager::ProximitySensorStateNotifierWorker::onStateChanged(bool active) {
+    ATRACE_INT("proximitySensorState(HAL)", active);
     Lock();
     mIsStateActive = active;
     Unlock();
@@ -187,6 +190,7 @@ void DisplayTe2Manager::ProximitySensorStateNotifierWorker::onStateChanged(bool 
 }
 
 void DisplayTe2Manager::ProximitySensorStateNotifierWorker::Routine() {
+    ATRACE_NAME("StateNotifierWorker");
     int ret;
     Lock();
     ret = WaitForSignalOrExitLocked(ms2ns(kDebounceTimeMs));
@@ -228,6 +232,7 @@ void DisplayTe2Manager::ProximitySensorStateNotifierWorker::Routine() {
                 mReceivedFirstStateAfterTimeout = false;
             }
         }
+        ATRACE_INT("proximitySensorPendingState", static_cast<uint32_t>(mPendingState));
     }
     Unlock();
 }
