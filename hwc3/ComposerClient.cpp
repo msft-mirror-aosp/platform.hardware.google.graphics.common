@@ -463,6 +463,13 @@ ndk::ScopedAStatus ComposerClient::setRefreshRateChangedCallbackDebugEnabled(int
     return TO_BINDER_STATUS(err);
 }
 
+ndk::ScopedAStatus ComposerClient::startHdcpNegotiation(int64_t display,
+                                                        const drm::HdcpLevels& /*levels*/) {
+    DEBUG_DISPLAY_FUNC(display);
+    LOG(ERROR) << "not implemented";
+    return ndk::ScopedAStatus::fromStatus(EX_UNSUPPORTED_OPERATION);
+}
+
 void ComposerClient::HalEventCallback::onRefreshRateChangedDebug(
         const RefreshRateChangedDebugData& data) {
     DEBUG_DISPLAY_FUNC(data.display);
