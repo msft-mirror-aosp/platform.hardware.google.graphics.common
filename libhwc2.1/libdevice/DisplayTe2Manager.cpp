@@ -207,9 +207,15 @@ void DisplayTe2Manager::ProximitySensorStateNotifierWorker::Routine() {
         }
     } else {
         if (ret != -ETIMEDOUT) {
-            // receive the signal within kDebounceTimeMs, update the pending state
-            mPendingState =
-                    mIsStateActive ? ProximitySensorState::ACTIVE : ProximitySensorState::INACTIVE;
+            if (!mIsStateActive) {
+                // inactive within kDebounceTimeMs, update the pending state
+                mPendingState = ProximitySensorState::INACTIVE;
+            } else {
+                // notify immediately if active
+                ALOGI("ProximitySensorStateNotifierWorker: %s: notify state (1)", __func__);
+                mTe2Manager->mDisplay->onProximitySensorStateChanged(true);
+                mPendingState = ProximitySensorState::NONE;
+            }
         } else {
             // no signal within kDebounceTimeMs, notify the pending state if it exists
             if (mPendingState != ProximitySensorState::NONE) {
