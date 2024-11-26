@@ -55,6 +55,12 @@ enum class Format : uint32_t {
      */
     GOOGLE_RGB16 = 0x304,
     GOOGLE_BGRX = 0x305,
+
+    /**
+     * 2 plane format following [x:Y2:Y1:Y0], [x:Cr2:Cb2:Cr1 x:Cb1:Cr0:Cb0]
+     * With each Y, Cr and Cb being 10 bits, and x representing 2 bits padding
+     */
+    GOOGLE_YCBCR_P030 = 0x306,
 };
 
 #undef MapFormat
