@@ -453,6 +453,7 @@ int ExynosExternalDisplay::enable()
 
     mEnabled = true;
     mPowerModeState = (hwc2_power_mode_t)HWC_POWER_MODE_NORMAL;
+    mDisplayInterface->triggerClearDisplayPlanes();
 
     reportUsage(true);
 
