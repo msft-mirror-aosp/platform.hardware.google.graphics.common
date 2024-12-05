@@ -159,6 +159,9 @@ class DrmEventListener : public Worker {
   std::shared_ptr<DrmPropertyUpdateHandler> drm_prop_update_handler_;
   std::mutex mutex_;
   std::map<int, std::shared_ptr<DrmSysfsEventHandler>> sysfs_handlers_;
+
+  static constexpr uint32_t kUEventBufferSize = 2048;
+  std::unique_ptr<char[]> uevent_read_buffer_;
 };
 
 }  // namespace android

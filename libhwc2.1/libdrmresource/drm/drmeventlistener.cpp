@@ -92,6 +92,7 @@ int DrmEventListener::Init() {
     ALOGE("Failed to add uevent fd into epoll: %s", strerror(errno));
     return -errno;
   }
+  uevent_read_buffer_ = std::make_unique<char[]>(kUEventBufferSize);
 
   ev.events = EPOLLIN;
   ev.data.fd = drm_->fd();
@@ -272,18 +273,18 @@ void DrmEventListener::FlipHandler(int /* fd */, unsigned int /* sequence */,
 }
 
 void DrmEventListener::UEventHandler() {
-  char buffer[1024];
   int ret;
-
   struct timespec ts;
   uint64_t timestamp = 0;
+
   ret = clock_gettime(CLOCK_MONOTONIC, &ts);
   if (!ret)
     timestamp = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
   else
     ALOGE("Failed to get monotonic clock on hotplug %d", ret);
 
-  ret = read(uevent_fd_.get(), &buffer, sizeof(buffer));
+  std::memset(uevent_read_buffer_.get(), 0, kUEventBufferSize);
+  ret = read(uevent_fd_.get(), uevent_read_buffer_.get(), kUEventBufferSize);
   if (ret == 0) {
     return;
   } else if (ret < 0) {
@@ -296,7 +297,12 @@ void DrmEventListener::UEventHandler() {
   unsigned connector_id = 0;
   unsigned updated_property_id = 0;
   for (int i = 0; i < ret;) {
-    char *event = buffer + i;
+    char *event = uevent_read_buffer_.get() + i;
+
+    if (event[strlen(event)] != '\0') {
+      ALOGE("Invalid uevent string: %s", event);
+      break;
+    }
 
     if (!strcmp(event, "DEVTYPE=drm_minor")) {
       drm_event = true;
