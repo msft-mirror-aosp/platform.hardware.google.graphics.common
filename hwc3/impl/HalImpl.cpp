@@ -255,11 +255,12 @@ void HalImpl::registerEventCallback(EventCallback* callback) {
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
                                   reinterpret_cast<hwc2_function_pointer_t>(
                                           hook::refreshRateChangedDebug));
-    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this,
-                                  reinterpret_cast<hwc2_function_pointer_t>(hook::hotplugEvent));
-    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
-                                  reinterpret_cast<hwc2_function_pointer_t>(
-                                          hook::hdcpLevelsChanged));
+    // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this,
+    //                             reinterpret_cast<hwc2_function_pointer_t>(hook::hotplugEvent));
+    // Don't register onHdcpLevelsChanged until it's available in nextfood
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
+    //                             reinterpret_cast<hwc2_function_pointer_t>(hook::hdcpLevelsChanged));
 }
 
 void HalImpl::unregisterEventCallback() {
@@ -273,9 +274,11 @@ void HalImpl::unregisterEventCallback() {
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onVsyncIdle, this, nullptr);
     mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onRefreshRateChangedDebug, this,
                                   nullptr);
-    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this, nullptr);
-    mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
-                                  nullptr);
+    // Don't register onHotplugEvent until it's available in nextfood (b/323291596)
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHotplugEvent, this, nullptr);
+    // Don't register onHdcpLevelsChanged until it's available in nextfood
+    // mDevice->registerHwc3Callback(IComposerCallback::TRANSACTION_onHdcpLevelsChanged, this,
+    // nullptr);
 
     mEventCallback = nullptr;
 }
@@ -1316,6 +1319,11 @@ int32_t HalImpl::setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool
     RET_IF_ERR(getHalDisplay(display, halDisplay));
 
     return halDisplay->setRefreshRateChangedCallbackDebugEnabled(enabled);
+}
+
+int32_t HalImpl::getMaxLayerPictureProfiles([[maybe_unused]] int64_t display,
+                                            [[maybe_unused]] int32_t* outMaxProfiles) {
+    return HWC2_ERROR_UNSUPPORTED;
 }
 
 } // namespace aidl::android::hardware::graphics::composer3::impl
