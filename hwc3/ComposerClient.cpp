@@ -92,6 +92,20 @@ ndk::ScopedAStatus ComposerClient::notifyExpectedPresent(
     return TO_BINDER_STATUS(err);
 }
 
+ndk::ScopedAStatus ComposerClient::getMaxLayerPictureProfiles(int64_t display,
+                                                              int32_t* outMaxProfiles) {
+    DEBUG_DISPLAY_FUNC(display);
+    auto err = mHal->getMaxLayerPictureProfiles(display, outMaxProfiles);
+    return TO_BINDER_STATUS(err);
+}
+
+ndk::ScopedAStatus ComposerClient::getLuts(int64_t display, const std::vector<Buffer>& /*buffers*/,
+                                           std::vector<Luts>* /*luts*/) {
+    DEBUG_DISPLAY_FUNC(display);
+    LOG(ERROR) << "not implemented";
+    return ndk::ScopedAStatus::fromStatus(EX_UNSUPPORTED_OPERATION);
+}
+
 ndk::ScopedAStatus ComposerClient::destroyLayer(int64_t display, int64_t layer) {
     DEBUG_DISPLAY_FUNC(display);
     auto err = mHal->destroyLayer(display, layer);
@@ -456,6 +470,13 @@ ndk::ScopedAStatus ComposerClient::setRefreshRateChangedCallbackDebugEnabled(int
     return TO_BINDER_STATUS(err);
 }
 
+ndk::ScopedAStatus ComposerClient::startHdcpNegotiation(int64_t display,
+                                                        const drm::HdcpLevels& /*levels*/) {
+    DEBUG_DISPLAY_FUNC(display);
+    LOG(ERROR) << "not implemented";
+    return ndk::ScopedAStatus::fromStatus(EX_UNSUPPORTED_OPERATION);
+}
+
 void ComposerClient::HalEventCallback::onRefreshRateChangedDebug(
         const RefreshRateChangedDebugData& data) {
     DEBUG_DISPLAY_FUNC(data.display);
@@ -524,6 +545,15 @@ void ComposerClient::HalEventCallback::onHotplugEvent(int64_t display,
     auto ret = mCallback->onHotplugEvent(display, event);
     if (!ret.isOk()) {
         LOG(ERROR) << "failed to send onHotplugEvent:" << ret.getDescription();
+    }
+}
+
+void ComposerClient::HalEventCallback::onHdcpLevelsChanged(int64_t display,
+                                                           drm::HdcpLevels levels) {
+    DEBUG_DISPLAY_FUNC(display);
+    auto ret = mCallback->onHdcpLevelsChanged(display, levels);
+    if (!ret.isOk()) {
+        LOG(ERROR) << "failed to send onHdcpLevelsChanged:" << ret.getDescription();
     }
 }
 

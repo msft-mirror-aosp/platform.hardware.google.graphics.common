@@ -927,6 +927,13 @@ int32_t ExynosPrimaryDisplay::setLhbmDisplayConfigLocked(uint32_t peakRate) {
 
 void ExynosPrimaryDisplay::restoreLhbmDisplayConfigLocked() {
     enableConfigSetting(true);
+
+    if (*mPowerModeState == HWC2_POWER_MODE_DOZE ||
+        *mPowerModeState == HWC2_POWER_MODE_DOZE_SUSPEND) {
+        DISPLAY_LOGI("%s: in aod mode(%d), skip restore", __func__, *mPowerModeState);
+        return;
+    }
+
     hwc2_config_t pendingConfig = mPendingConfig;
     auto hwConfig = mDisplayInterface->getActiveModeId();
     if (pendingConfig != UINT_MAX && pendingConfig != hwConfig) {
@@ -1350,6 +1357,7 @@ int32_t ExynosPrimaryDisplay::setDisplayTemperature(const int temperature) {
 void ExynosPrimaryDisplay::onProximitySensorStateChanged(bool active) {
     if (mProximitySensorStateChangeCallback) {
         ALOGI("ExynosPrimaryDisplay: %s: %d", __func__, active);
+        ATRACE_NAME("onProximitySensorStateChanged(HAL)");
         mProximitySensorStateChangeCallback->onProximitySensorStateChanged(active);
     }
 }
@@ -1587,7 +1595,7 @@ void ExynosPrimaryDisplay::calculateTimelineLocked(
         std::lock_guard<std::mutex> lock(mIdleRefreshRateThrottleMutex);
         threshold = mRefreshRateDelayNanos;
         mRrUseDelayNanos = 0;
-        mIsRrNeedCheckDelay =
+        mIsRrNeedCheckDelay = !mXrrSettings.versionInfo.needVrrParameters() &&
                 mDisplayConfigs[mActiveConfig].vsyncPeriod < mDisplayConfigs[config].vsyncPeriod;
         if (threshold != 0 && mLastRefreshRateAppliedNanos != 0 && mIsRrNeedCheckDelay) {
             lastUpdateDelta = desiredUpdateTimeNanos - mLastRefreshRateAppliedNanos;
