@@ -631,8 +631,8 @@ class IDisplayColorGeneric {
      * @return true for yes.
      */
     //deprecated by the 'int64_t display' version
-    virtual bool IsEarlyPowerOnNeeded(const DisplayType display) = 0;
-    virtual bool IsEarlyPowerOnNeeded(const int64_t display) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const DisplayType display, const DisplayInfo& info) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const int64_t display, const DisplayInfo& info) = 0;
 
     /**
      * @brief a debug call from command line with arguments, output will show on screen.
