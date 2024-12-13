@@ -119,7 +119,7 @@ private:
         void Routine() override;
 
     private:
-        static constexpr uint32_t kDebounceTimeMs = 500U;
+        static constexpr uint32_t kDebounceTimeMs = 5000U;
 
         DisplayTe2Manager* mTe2Manager;
         bool mIsStateActive;
