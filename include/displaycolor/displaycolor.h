@@ -142,6 +142,7 @@ class IBrightnessTable {
 
     virtual std::optional<std::reference_wrapper<const DisplayBrightnessRange>> GetBrightnessRange(
         BrightnessMode bm) const = 0;
+    virtual std::optional<uint32_t> BrightnessToDbv(float brightness) const = 0;
     virtual std::optional<float> BrightnessToNits(float brightness, BrightnessMode &bm) const = 0;
     virtual std::optional<uint32_t> NitsToDbv(BrightnessMode bm, float nits) const = 0;
     virtual std::optional<float> DbvToNits(BrightnessMode bm, uint32_t dbv) const = 0;
@@ -161,6 +162,10 @@ struct DisplayInfo {
 
     // If brightness table exists in pb file, it will overwrite values in brightness_ranges
     BrightnessRangeMap brightness_ranges;
+
+    // displays that no need to calibrate like virtual or external displays
+    // expect the pipeline outputs pixels with a standard color space
+    bool standard_calibrated_display{false};
 };
 
 struct Color {
@@ -329,12 +334,52 @@ struct LayerColorData {
     bool enabled = true;
 };
 
+struct LtmParams {
+    struct Display {
+        int32_t width{};
+        int32_t height{};
+        bool operator==(const Display &rhs) const {
+          return width == rhs.width && height == rhs.height;
+        }
+    };
+
+    struct Roi {
+        int32_t left{};
+        int32_t top{};
+        int32_t right{};
+        int32_t bottom{};
+
+        bool Valid(int32_t display_width, int32_t display_height) const {
+            return left >= 0 && right > left && right <= display_width &&
+                top >= 0 && bottom > top && bottom <= display_height;
+        }
+
+        bool operator==(const Roi &rhs) const {
+          return left == rhs.left &&
+              top == rhs.top &&
+              right == rhs.right &&
+              bottom == rhs.bottom;
+        }
+    };
+
+    Display display;
+    Roi roi;
+    // for debug purpose
+    bool force_enable{};
+    bool operator==(const LtmParams &rhs) const {
+        return display == rhs.display && roi == rhs.roi && force_enable == rhs.force_enable;
+    }
+};
+
 /**
  * @brief DisplayScene holds all the information required for libdisplaycolor to
  * return correct data.
  */
 struct DisplayScene {
     bool operator==(const DisplayScene &rhs) const {
+        // TODO: if lux is used by HDR tone mapping, need to check here
+        // but should trigger scene change as less as possible, for example,
+        // only when HDR is on screen and lux change exceeds some threshold.
         return layer_data == rhs.layer_data &&
                dpu_bit_depth == rhs.dpu_bit_depth &&
                color_mode == rhs.color_mode &&
@@ -346,7 +391,8 @@ struct DisplayScene {
                dbv == rhs.dbv &&
                refresh_rate == rhs.refresh_rate &&
                operation_rate == rhs.operation_rate &&
-               hdr_layer_state == rhs.hdr_layer_state;
+               hdr_layer_state == rhs.hdr_layer_state &&
+               temperature == rhs.temperature;
     }
     bool operator!=(const DisplayScene &rhs) const {
         return !(*this == rhs);
@@ -388,8 +434,17 @@ struct DisplayScene {
     /// operation rate to switch between hs/ns mode
     uint32_t operation_rate = 120;
 
+    /// display temperature in degrees Celsius
+    uint32_t temperature = UINT_MAX;
+
     /// hdr layer state on screen
     HdrLayerState hdr_layer_state = HdrLayerState::kHdrNone;
+
+    /// ambient lux
+    float lux{};
+
+    /// Ltm params gathered in HWC
+    LtmParams ltm_params;
 };
 
 struct CalibrationInfo {
@@ -547,6 +602,15 @@ class IDisplayColorGeneric {
      * the displaycolor internal states and need to apply to next frame update.
      */
     virtual bool CheckUpdateNeeded(const int64_t display) = 0;
+
+    /**
+     * @brief Check if early power on is needed.
+     *
+     * @return true for yes.
+     */
+    //deprecated by the 'int64_t display' version
+    virtual bool IsEarlyPowerOnNeeded(const DisplayType display) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const int64_t display) = 0;
 };
 
 extern "C" {

@@ -16,15 +16,16 @@
 
 #pragma once
 
+#include <hardware/hwcomposer2.h>
 #include <optional>
+#include <sstream>
 #include <string>
 
-#include "../Statistics/VariableRefreshRateStatistic.h"
 #include "../display/common/CommonDisplayContextProvider.h"
 
 namespace android::hardware::graphics::composer {
 
-typedef struct PowerStatsPresentProfile {
+typedef struct PowerStatsProfile {
     inline bool isOff() const {
         if ((mPowerMode == HWC_POWER_MODE_OFF) || (mPowerMode == HWC_POWER_MODE_DOZE_SUSPEND)) {
             return true;
@@ -33,15 +34,16 @@ typedef struct PowerStatsPresentProfile {
         }
     }
 
-    bool operator==(const PowerStatsPresentProfile& rhs) const {
+    bool operator==(const PowerStatsProfile& rhs) const {
         if (isOff() || rhs.isOff()) {
             return isOff() == rhs.isOff();
         }
         return (mWidth == rhs.mWidth) && (mHeight == rhs.mHeight) && (mFps == rhs.mFps) &&
-                (mPowerMode == rhs.mPowerMode) && (mBrightnessMode == rhs.mBrightnessMode);
+                (mPowerMode == rhs.mPowerMode) && (mBrightnessMode == rhs.mBrightnessMode) &&
+                (mRefreshSource == rhs.mRefreshSource);
     }
 
-    bool operator<(const PowerStatsPresentProfile& rhs) const {
+    bool operator<(const PowerStatsProfile& rhs) const {
         if (isOff() && rhs.isOff()) {
             return false;
         }
@@ -50,6 +52,8 @@ typedef struct PowerStatsPresentProfile {
             return (isOff() || (mPowerMode < rhs.mPowerMode));
         } else if (mBrightnessMode != rhs.mBrightnessMode) {
             return mBrightnessMode < rhs.mBrightnessMode;
+        } else if (mRefreshSource != rhs.mRefreshSource) {
+            return mRefreshSource < rhs.mRefreshSource;
         } else if (mWidth != rhs.mWidth) {
             return mWidth < rhs.mWidth;
         } else if (mHeight != rhs.mHeight) {
@@ -64,6 +68,7 @@ typedef struct PowerStatsPresentProfile {
         os << "mWidth = " << mWidth;
         os << " mHeight = " << mHeight;
         os << " mFps = " << mFps;
+        os << ", mRefreshSource = " << mRefreshSource;
         os << ", power mode = " << mPowerMode;
         os << ", brightness = " << static_cast<int>(mBrightnessMode);
         return os.str();
@@ -74,29 +79,7 @@ typedef struct PowerStatsPresentProfile {
     int mFps = -1;
     int mPowerMode = HWC_POWER_MODE_OFF;
     BrightnessMode mBrightnessMode = BrightnessMode::kInvalidBrightnessMode;
-
-} PowerStatsPresentProfile;
-
-class PowerStatsPresentProfileTokenGenerator {
-public:
-    PowerStatsPresentProfileTokenGenerator() = default;
-
-    void setPowerStatsPresentProfile(const PowerStatsPresentProfile* powerStatsPresentProfile) {
-        mPowerStatsProfile = powerStatsPresentProfile;
-    }
-
-    std::optional<std::string> generateToken(const std::string& tokenLabel);
-
-private:
-    std::string generateModeToken();
-
-    std::string generateWidthToken();
-
-    std::string generateHeightToken();
-
-    std::string generateFpsToken();
-
-    const PowerStatsPresentProfile* mPowerStatsProfile;
-};
+    RefreshSource mRefreshSource = kRefreshSourceActivePresent;
+} PowerStatsProfile;
 
 } // namespace android::hardware::graphics::composer

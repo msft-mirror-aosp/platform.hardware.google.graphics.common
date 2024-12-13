@@ -235,7 +235,7 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice* device,
             if (content.has_value() &&
                 !(content.value().compare(0, kRefreshControlNodeEnabled.length(),
                                           kRefreshControlNodeEnabled))) {
-                bool ret = fileNode->WriteUint32(kRefreshControlNodeName, refreshControlCommand);
+                bool ret = fileNode->writeValue(kRefreshControlNodeName, refreshControlCommand);
                 if (!ret) {
                     ALOGE("%s(): write command to file node %s%s failed.", __func__,
                           displayFileNodePath.c_str(), kRefreshControlNodeName.c_str());
@@ -244,6 +244,7 @@ ExynosPrimaryDisplay::ExynosPrimaryDisplay(uint32_t index, ExynosDevice* device,
                 ALOGI("%s(): refresh control is not supported", __func__);
             }
         }
+        mIsDisplayTempMonitorSupported = initDisplayTempMonitor(displayTypeIdentifier);
     }
 
     // Allow to enable dynamic recomposition after every power on
@@ -306,6 +307,14 @@ ExynosPrimaryDisplay::~ExynosPrimaryDisplay()
 
     if (mDisplayNeedHandleIdleExitOfs.is_open()) {
         mDisplayNeedHandleIdleExitOfs.close();
+    }
+
+    if (mIsDisplayTempMonitorSupported) {
+        mTMLoopStatus.store(false, std::memory_order_relaxed);
+        mTMCondition.notify_one();
+        if (mTMThread.joinable()) {
+            mTMThread.join();
+        }
     }
 }
 
@@ -668,6 +677,9 @@ int32_t ExynosPrimaryDisplay::setPowerMode(int32_t mode) {
                                                                      mRefreshRateDelayNanos);
         }
     }
+
+    checkTemperatureMonitorThread(mPowerModeState.has_value() && mode == HWC2_POWER_MODE_ON);
+
     return res;
 }
 
@@ -841,9 +853,9 @@ int32_t ExynosPrimaryDisplay::getDisplayConfigs(uint32_t* outNumConfigs,
 int32_t ExynosPrimaryDisplay::presentDisplay(int32_t* outRetireFence) {
     auto res = ExynosDisplay::presentDisplay(outRetireFence);
     // Forward presentDisplay if there is a listener.
-    const auto presentListener = getPresentListener();
-    if (res == HWC2_ERROR_NONE && presentListener) {
-        presentListener->onPresent(*outRetireFence);
+    const auto refreshListener = getRefreshListener();
+    if (res == HWC2_ERROR_NONE && refreshListener) {
+        refreshListener->onPresent(*outRetireFence);
     }
     return res;
 }
@@ -856,6 +868,8 @@ void ExynosPrimaryDisplay::onVsync(int64_t timestamp) {
 }
 
 int32_t ExynosPrimaryDisplay::notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) {
+    DISPLAY_ATRACE_INT64("expectedPresentTimeDelta", timestamp - systemTime());
+    DISPLAY_ATRACE_INT("frameInterval", frameIntervalNs);
     if (mVariableRefreshRateController) {
         mVariableRefreshRateController->notifyExpectedPresent(timestamp, frameIntervalNs);
     }
@@ -913,6 +927,13 @@ int32_t ExynosPrimaryDisplay::setLhbmDisplayConfigLocked(uint32_t peakRate) {
 
 void ExynosPrimaryDisplay::restoreLhbmDisplayConfigLocked() {
     enableConfigSetting(true);
+
+    if (*mPowerModeState == HWC2_POWER_MODE_DOZE ||
+        *mPowerModeState == HWC2_POWER_MODE_DOZE_SUSPEND) {
+        DISPLAY_LOGI("%s: in aod mode(%d), skip restore", __func__, *mPowerModeState);
+        return;
+    }
+
     hwc2_config_t pendingConfig = mPendingConfig;
     auto hwConfig = mDisplayInterface->getActiveModeId();
     if (pendingConfig != UINT_MAX && pendingConfig != hwConfig) {
@@ -1130,11 +1151,14 @@ void ExynosPrimaryDisplay::setEarlyWakeupDisplay() {
 }
 
 void ExynosPrimaryDisplay::setExpectedPresentTime(uint64_t timestamp, int frameIntervalNs) {
+    DISPLAY_ATRACE_INT64("expectedPresentTimeDelta", timestamp - systemTime());
+    DISPLAY_ATRACE_INT("frameInterval", frameIntervalNs);
+
     mExpectedPresentTimeAndInterval.store(std::make_tuple(timestamp, frameIntervalNs));
     // Forward presentDisplay if there is a listener.
-    const auto presentListener = getPresentListener();
-    if (presentListener) {
-        presentListener->setExpectedPresentTime(timestamp, frameIntervalNs);
+    const auto refreshListener = getRefreshListener();
+    if (refreshListener) {
+        refreshListener->setExpectedPresentTime(timestamp, frameIntervalNs);
     }
 }
 
@@ -1325,6 +1349,18 @@ int32_t ExynosPrimaryDisplay::setFixedTe2Rate(const int targetTe2RateHz) {
     }
 }
 
+int32_t ExynosPrimaryDisplay::setDisplayTemperature(const int temperature) {
+    mDisplayTemperature = temperature;
+    return HWC2_ERROR_UNSUPPORTED;
+}
+
+void ExynosPrimaryDisplay::onProximitySensorStateChanged(bool active) {
+    if (mProximitySensorStateChangeCallback) {
+        ALOGI("ExynosPrimaryDisplay: %s: %d", __func__, active);
+        mProximitySensorStateChangeCallback->onProximitySensorStateChanged(active);
+    }
+}
+
 int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
                                                     const RrThrottleRequester requester) {
     if (targetFps < 0) {
@@ -1385,6 +1421,9 @@ int32_t ExynosPrimaryDisplay::setMinIdleRefreshRate(const int targetFps,
             ALOGD("%s: proximity state %s, min %dhz, doze mode %d", __func__,
                   proximityActive ? "active" : "inactive", targetFps, dozeMode);
             mDisplayTe2Manager->updateTe2OptionForProximity(proximityActive, targetFps, dozeMode);
+            if (!dozeMode) {
+                mDisplayTe2Manager->handleProximitySensorStateChange(proximityActive);
+            }
         }
 
         if (maxMinIdleFps == mMinIdleRefreshRate) return NO_ERROR;
@@ -1477,7 +1516,7 @@ int32_t ExynosPrimaryDisplay::setRefreshRateThrottleNanos(const int64_t delayNan
     return ret;
 }
 
-void ExynosPrimaryDisplay::dump(String8 &result) {
+void ExynosPrimaryDisplay::dump(String8& result, const std::vector<std::string>& args) {
     ExynosDisplay::dump(result);
     result.appendFormat("Display idle timer: %s\n",
                         (mDisplayIdleTimerEnabled) ? "enabled" : "disabled");
@@ -1512,7 +1551,26 @@ void ExynosPrimaryDisplay::dump(String8 &result) {
     for (uint32_t i = 0; i < toUnderlying(RrThrottleRequester::MAX); i++) {
         result.appendFormat("\t[%u] vote to %" PRId64 " ns\n", i, mRrThrottleNanos[i]);
     }
+    if (mIsDisplayTempMonitorSupported) {
+        result.appendFormat("Temperature : %d°C\n", mDisplayTemperature);
+    }
     result.appendFormat("\n");
+
+    DisplayType displayType = getDcDisplayType();
+    std::string displayTypeIdentifier;
+    if (displayType == DisplayType::DISPLAY_PRIMARY) {
+        displayTypeIdentifier = "primarydisplay";
+    } else if (displayType == DisplayType::DISPLAY_EXTERNAL) {
+        displayTypeIdentifier = "externaldisplay";
+    }
+    if (!displayTypeIdentifier.empty()) {
+        auto xrrVersion =
+                android::hardware::graphics::composer::getDisplayXrrVersion(displayTypeIdentifier);
+        result.appendFormat("XRR version: %d.%d\n", xrrVersion.first, xrrVersion.second);
+    }
+    if (mVariableRefreshRateController) {
+        mVariableRefreshRateController->dump(result, args);
+    }
 }
 
 void ExynosPrimaryDisplay::calculateTimelineLocked(
@@ -1536,7 +1594,7 @@ void ExynosPrimaryDisplay::calculateTimelineLocked(
         std::lock_guard<std::mutex> lock(mIdleRefreshRateThrottleMutex);
         threshold = mRefreshRateDelayNanos;
         mRrUseDelayNanos = 0;
-        mIsRrNeedCheckDelay =
+        mIsRrNeedCheckDelay = !mXrrSettings.versionInfo.needVrrParameters() &&
                 mDisplayConfigs[mActiveConfig].vsyncPeriod < mDisplayConfigs[config].vsyncPeriod;
         if (threshold != 0 && mLastRefreshRateAppliedNanos != 0 && mIsRrNeedCheckDelay) {
             lastUpdateDelta = desiredUpdateTimeNanos - mLastRefreshRateAppliedNanos;
@@ -1669,7 +1727,7 @@ int32_t ExynosPrimaryDisplay::setDbmState(bool enabled) {
     return NO_ERROR;
 }
 
-PresentListener* ExynosPrimaryDisplay::getPresentListener() {
+RefreshListener* ExynosPrimaryDisplay::getRefreshListener() {
     if (mVariableRefreshRateController) {
         return mVariableRefreshRateController.get();
     }
@@ -1714,4 +1772,112 @@ int32_t ExynosPrimaryDisplay::registerRefreshRateChangeListener(
     } else {
         return -EINVAL;
     }
+}
+
+// TODO(b/355579338): to create a dedicated class DisplayTemperatureMonitor
+bool ExynosPrimaryDisplay::initDisplayTempMonitor(const std::string& display) {
+    mDisplayTempInterval = property_get_int32(kDisplayTempIntervalSec, 0);
+
+    if (mDisplayTempInterval <= 0) {
+        ALOGD("%s: Invalid display temperature interval: %d", __func__, mDisplayTempInterval);
+        return false;
+    }
+
+    auto propertyName = getPropertyDisplayTemperatureStr(display);
+
+    char value[PROPERTY_VALUE_MAX];
+    auto ret = property_get(propertyName.c_str(), value, "");
+
+    if (ret <= 0) {
+        ALOGD("%s: Display temperature property values is empty", __func__);
+        return false;
+    }
+
+    mDisplayTempSysfsNode = String8(value);
+    return true;
+}
+
+int32_t ExynosPrimaryDisplay::getDisplayTemperature() {
+    DISPLAY_ATRACE_CALL();
+
+    if (mDisplayTempSysfsNode.empty()) {
+        ALOGE("%s: Display temp sysfs node string is empty", __func__);
+        return UINT_MAX;
+    }
+
+    int32_t temperature;
+    std::ifstream ifs(mDisplayTempSysfsNode.c_str());
+
+    if (!ifs.is_open()) {
+        ALOGE("%s: Unable to open node '%s', error = %s", __func__, mDisplayTempSysfsNode.c_str(),
+              strerror(errno));
+        return UINT_MAX;
+    }
+
+    if (!(ifs >> temperature) || !ifs.good()) {
+        ALOGE("%s: Unable to read node '%s', error = %s", __func__, mDisplayTempSysfsNode.c_str(),
+              strerror(errno));
+    }
+
+    ifs.close();
+    return temperature / 1000;
+}
+
+bool ExynosPrimaryDisplay::isTemperatureMonitorThreadRunning() {
+    android_atomic_acquire_load(&mTMThreadStatus);
+    return (mTMThreadStatus > 0);
+}
+
+void ExynosPrimaryDisplay::checkTemperatureMonitorThread(bool shouldRun) {
+    ATRACE_CALL();
+    if (!mIsDisplayTempMonitorSupported) {
+        return;
+    }
+
+    // If thread was destroyed, create thread and run.
+    if (!isTemperatureMonitorThreadRunning()) {
+        if (shouldRun) {
+            temperatureMonitorThreadCreate();
+            return;
+        }
+    } else {
+        // if screen state changed make the thread suspend/resume.
+        {
+            std::lock_guard<std::mutex> lock(mThreadMutex);
+            if (mTMLoopStatus != shouldRun) {
+                mTMLoopStatus = shouldRun;
+                mTMCondition.notify_one();
+            }
+        }
+    }
+}
+
+void ExynosPrimaryDisplay::temperatureMonitorThreadCreate() {
+    mTMLoopStatus.store(false, std::memory_order_relaxed);
+
+    ALOGI("Creating monitor display temperature thread");
+    mTMLoopStatus.store(true, std::memory_order_relaxed);
+    mTMThread = std::thread(&ExynosPrimaryDisplay::temperatureMonitorThreadLoop, this);
+    mTMCondition.notify_one();
+}
+
+void* ExynosPrimaryDisplay::temperatureMonitorThreadLoop() {
+    android_atomic_inc(&mTMThreadStatus);
+    while (true) {
+        std::unique_lock<std::mutex> lock(mThreadMutex);
+        mTMCondition.wait(lock, [this] { return mTMLoopStatus.load(std::memory_order_relaxed); });
+
+        mDisplayTemperature = getDisplayTemperature();
+        if (mDisplayTemperature == UINT_MAX) {
+            ALOGE("%s: Failed to get display temperature", LOG_TAG);
+        } else {
+            ALOGI("Display Temperature : %d°C", mDisplayTemperature);
+        }
+
+        // Wait for the specified interval or until the thread is suspended
+        mTMCondition.wait_for(lock, std::chrono::seconds(mDisplayTempInterval),
+                              [this] { return !mTMLoopStatus.load(std::memory_order_relaxed); });
+    }
+    android_atomic_dec(&mTMThreadStatus);
+    return NULL;
 }
