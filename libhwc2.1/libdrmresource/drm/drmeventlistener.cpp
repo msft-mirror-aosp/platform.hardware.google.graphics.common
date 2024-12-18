@@ -103,64 +103,92 @@ int DrmEventListener::Init() {
   return 0;
 }
 
-void DrmEventListener::RegisterHotplugHandler(DrmEventHandler *handler) {
+void DrmEventListener::RegisterHotplugHandler(const std::shared_ptr<DrmEventHandler> &handler) {
   assert(!hotplug_handler_);
-  hotplug_handler_.reset(handler);
+  hotplug_handler_ = handler;
 }
 
-void DrmEventListener::UnRegisterHotplugHandler(DrmEventHandler *handler) {
-  if (handler == hotplug_handler_.get())
+void DrmEventListener::UnRegisterHotplugHandler(const std::shared_ptr<DrmEventHandler> &handler) {
+  if (handler.get() == hotplug_handler_.get())
     hotplug_handler_ = NULL;
 }
 
-void DrmEventListener::RegisterHistogramHandler(DrmHistogramEventHandler *handler) {
-    assert(!histogram_handler_);
-    histogram_handler_.reset(handler);
+void DrmEventListener::RegisterHistogramHandler(
+    const std::shared_ptr<DrmHistogramEventHandler> &handler) {
+  assert(!histogram_handler_);
+  histogram_handler_ = handler;
 }
 
-void DrmEventListener::UnRegisterHistogramHandler(DrmHistogramEventHandler *handler) {
-    if (handler == histogram_handler_.get()) histogram_handler_ = NULL;
+void DrmEventListener::UnRegisterHistogramHandler(
+    const std::shared_ptr<DrmHistogramEventHandler> &handler) {
+  if (handler.get() == histogram_handler_.get())
+    histogram_handler_ = NULL;
 }
 
-void DrmEventListener::RegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler) {
-    assert(!histogram_channel_handler_);
+void DrmEventListener::RegisterHistogramChannelHandler(
+    const std::shared_ptr<DrmHistogramChannelEventHandler> &handler) {
+  assert(!histogram_channel_handler_);
 
-    if (handler) {
-        histogram_channel_handler_.reset(handler);
-    } else {
-        ALOGE("%s: failed to register, handler is nullptr", __func__);
-    }
+  if (handler) {
+    histogram_channel_handler_ = handler;
+  } else {
+    ALOGE("%s: failed to register, handler is nullptr", __func__);
+  }
 }
 
-void DrmEventListener::UnRegisterHistogramChannelHandler(DrmHistogramChannelEventHandler *handler) {
-    if (handler == histogram_channel_handler_.get()) {
-        histogram_channel_handler_ = NULL;
-    } else {
-        ALOGE("%s: failed to unregister, handler(%p), histogram_channel_handler(%p)", __func__,
-              handler, histogram_channel_handler_.get());
-    }
+void DrmEventListener::UnRegisterHistogramChannelHandler(
+    const std::shared_ptr<DrmHistogramChannelEventHandler> &handler) {
+  if (handler.get() == histogram_channel_handler_.get()) {
+    histogram_channel_handler_ = NULL;
+  } else {
+    ALOGE("%s: failed to unregister, handler(%p), histogram_channel_handler(%p)", __func__,
+          handler.get(), histogram_channel_handler_.get());
+  }
 }
 
-void DrmEventListener::RegisterTUIHandler(DrmTUIEventHandler *handler) {
+void DrmEventListener::RegisterContextHistogramHandler(
+    const std::shared_ptr<DrmContextHistogramEventHandler> &handler) {
+  assert(!context_histogram_handler_);
+
+  if (handler) {
+    context_histogram_handler_ = handler;
+  } else {
+    ALOGE("%s: failed to register, handler is nullptr", __func__);
+  }
+}
+
+void DrmEventListener::UnRegisterContextHistogramHandler(
+    const std::shared_ptr<DrmContextHistogramEventHandler> &handler) {
+  if (handler.get() == context_histogram_handler_.get()) {
+    context_histogram_handler_ = NULL;
+  } else {
+    ALOGE("%s: failed to unregister, handler(%p), context_histogram_handler(%p)", __func__,
+          handler.get(), context_histogram_handler_.get());
+  }
+}
+
+void DrmEventListener::RegisterTUIHandler(const std::shared_ptr<DrmTUIEventHandler> &handler) {
   if (tui_handler_) {
     ALOGE("TUI handler was already registered");
     return;
   }
-  tui_handler_.reset(handler);
+  tui_handler_ = handler;
 }
 
-void DrmEventListener::UnRegisterTUIHandler(DrmTUIEventHandler *handler) {
-  if (handler == tui_handler_.get())
+void DrmEventListener::UnRegisterTUIHandler(const std::shared_ptr<DrmTUIEventHandler> &handler) {
+  if (handler.get() == tui_handler_.get())
     tui_handler_ = NULL;
 }
 
-void DrmEventListener::RegisterPanelIdleHandler(DrmPanelIdleEventHandler *handler) {
+void DrmEventListener::RegisterPanelIdleHandler(
+    const std::shared_ptr<DrmPanelIdleEventHandler> &handler) {
   assert(!panel_idle_handler_);
-  panel_idle_handler_.reset(handler);
+  panel_idle_handler_ = handler;
 }
 
-void DrmEventListener::UnRegisterPanelIdleHandler(DrmPanelIdleEventHandler *handler) {
-  if (handler == panel_idle_handler_.get())
+void DrmEventListener::UnRegisterPanelIdleHandler(
+    const std::shared_ptr<DrmPanelIdleEventHandler> &handler) {
+  if (handler.get() == panel_idle_handler_.get())
     panel_idle_handler_ = NULL;
 }
 
@@ -201,13 +229,15 @@ int DrmEventListener::UnRegisterSysfsHandler(int sysfs_fd) {
   return 0;
 }
 
-void DrmEventListener::RegisterPropertyUpdateHandler(DrmPropertyUpdateHandler *handler) {
+void DrmEventListener::RegisterPropertyUpdateHandler(
+    const std::shared_ptr<DrmPropertyUpdateHandler> &handler) {
   assert(!drm_prop_update_handler_);
-  drm_prop_update_handler_.reset(handler);
+  drm_prop_update_handler_ = handler;
 }
 
-void DrmEventListener::UnRegisterPropertyUpdateHandler(DrmPropertyUpdateHandler *handler) {
-  if (handler == drm_prop_update_handler_.get())
+void DrmEventListener::UnRegisterPropertyUpdateHandler(
+    const std::shared_ptr<DrmPropertyUpdateHandler> &handler) {
+  if (handler.get() == drm_prop_update_handler_.get())
     drm_prop_update_handler_ = NULL;
 }
 
@@ -328,6 +358,15 @@ void DrmEventListener::DRMEventHandler() {
                     histogram_channel_handler_->handleHistogramChannelEvent((void *)e);
                 } else {
                     ALOGE("%s: no valid histogram channel event handler", __func__);
+                }
+                break;
+#endif
+#if defined(EXYNOS_DRM_CONTEXT_HISTOGRAM_EVENT)
+            case EXYNOS_DRM_CONTEXT_HISTOGRAM_EVENT:
+                if (context_histogram_handler_) {
+                    context_histogram_handler_->handleContextHistogramEvent((void *)e);
+                } else {
+                    ALOGE("%s: no valid context histogram event handler", __func__);
                 }
                 break;
 #endif

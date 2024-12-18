@@ -93,6 +93,8 @@ public:
     int32_t setPresentTimeoutParameters(uint32_t displayId, int __unused timeoutNs,
                                         const std::vector<std::pair<uint32_t, uint32_t>>& __unused
                                                 settings) override;
+    virtual int32_t setFixedTe2Rate(uint32_t displayId, int32_t rateHz);
+    virtual int32_t setDisplayTemperature(uint32_t displayId, int32_t temperature);
 
 private:
     friend class Singleton<ExynosHWCService>;

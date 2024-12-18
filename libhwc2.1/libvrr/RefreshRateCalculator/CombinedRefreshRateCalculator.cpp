@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
+
 #include "CombinedRefreshRateCalculator.h"
 
 #include <algorithm>
@@ -23,17 +25,17 @@
 namespace android::hardware::graphics::composer {
 
 CombinedRefreshRateCalculator::CombinedRefreshRateCalculator(
-        std::vector<std::unique_ptr<RefreshRateCalculator>>& refreshRateCalculators)
-      : CombinedRefreshRateCalculator(refreshRateCalculators, kDefaultMinValidRefreshRate,
-                                      kDefaultMaxValidRefreshRate) {}
+        std::vector<std::shared_ptr<RefreshRateCalculator>> refreshRateCalculators)
+      : CombinedRefreshRateCalculator(std::move(refreshRateCalculators),
+                                      kDefaultMinValidRefreshRate, kDefaultMaxValidRefreshRate) {}
 
 CombinedRefreshRateCalculator::CombinedRefreshRateCalculator(
-        std::vector<std::unique_ptr<RefreshRateCalculator>>& refreshRateCalculators,
+        std::vector<std::shared_ptr<RefreshRateCalculator>> refreshRateCalculators,
         int minValidRefreshRate, int maxValidRefreshRate)
       : mRefreshRateCalculators(std::move(refreshRateCalculators)),
         mMinValidRefreshRate(minValidRefreshRate),
         mMaxValidRefreshRate(maxValidRefreshRate) {
-    mName = "CombinedRefreshRateCalculator";
+    mName = "RefreshRateCalculator-Combined";
     for (auto& refreshRateCalculator : mRefreshRateCalculators) {
         refreshRateCalculator->registerRefreshRateChangeCallback(
                 std::bind(&CombinedRefreshRateCalculator::onRefreshRateChanged, this,
@@ -49,15 +51,14 @@ void CombinedRefreshRateCalculator::onPowerStateChange(int from, int to) {
     for (auto& refreshRateCalculator : mRefreshRateCalculators) {
         refreshRateCalculator->onPowerStateChange(from, to);
     }
-    mPowerMode = to;
 }
 
-void CombinedRefreshRateCalculator::onPresent(int64_t presentTimeNs, int flag) {
+void CombinedRefreshRateCalculator::onPresentInternal(int64_t presentTimeNs, int flag) {
     mHasRefreshRateChage = false;
 
     mIsOnPresent = true;
     for (auto& refreshRateCalculator : mRefreshRateCalculators) {
-        refreshRateCalculator->onPresent(presentTimeNs, flag);
+        refreshRateCalculator->onPresentInternal(presentTimeNs, flag);
     }
     mIsOnPresent = false;
 
@@ -80,6 +81,15 @@ void CombinedRefreshRateCalculator::setEnabled(bool isEnabled) {
     }
 }
 
+void CombinedRefreshRateCalculator::setVrrConfigAttributes(int64_t vsyncPeriodNs,
+                                                           int64_t minFrameIntervalNs) {
+    RefreshRateCalculator::setVrrConfigAttributes(vsyncPeriodNs, minFrameIntervalNs);
+
+    for (auto& refreshRateCalculator : mRefreshRateCalculators) {
+        refreshRateCalculator->setVrrConfigAttributes(vsyncPeriodNs, minFrameIntervalNs);
+    }
+}
+
 void CombinedRefreshRateCalculator::onRefreshRateChanged(int refreshRate) {
     if (mIsOnPresent) {
         mHasRefreshRateChage = true;
@@ -91,6 +101,7 @@ void CombinedRefreshRateCalculator::onRefreshRateChanged(int refreshRate) {
 void CombinedRefreshRateCalculator::setNewRefreshRate(int newRefreshRate) {
     if (newRefreshRate != mLastRefreshRate) {
         mLastRefreshRate = newRefreshRate;
+        ATRACE_INT(mName.c_str(), newRefreshRate);
         if (mRefreshRateChangeCallback) {
             mRefreshRateChangeCallback(newRefreshRate);
         }

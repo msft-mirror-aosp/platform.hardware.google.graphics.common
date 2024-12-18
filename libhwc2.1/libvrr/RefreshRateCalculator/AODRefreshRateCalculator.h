@@ -16,6 +16,8 @@
 
 #pragma once
 
+#define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
+
 #include "RefreshRateCalculator.h"
 
 #include "../Utils.h"
@@ -25,6 +27,7 @@ namespace android::hardware::graphics::composer {
 class AODRefreshRateCalculator : public RefreshRateCalculator {
 public:
     AODRefreshRateCalculator(EventQueue* eventQueue) : mEventQueue(eventQueue) {
+        mName = "RefreshRateCalculator-AOD";
         mResetRefreshRateEvent.mEventType = VrrControllerEventType::kAodRefreshRateCalculatorUpdate;
         mResetRefreshRateEvent.mFunctor = std::move(
                 std::bind(&AODRefreshRateCalculator::changeRefreshRateDisplayState, this));
@@ -37,13 +40,14 @@ public:
         return mLastRefreshRate;
     }
 
-    void onPresent(int64_t presentTimeNs, int flag) override {
+    void onPresentInternal(int64_t presentTimeNs, int flag) override {
         if (hasPresentFrameFlag(flag, PresentFrameFlag::kPresentingWhenDoze)) {
             mIsInDoze = true;
             if (mAodRefreshRateState != kAodActiveToIdleTransitionState) {
                 setNewRefreshRate(kActiveRefreshRate);
                 mEventQueue->dropEvent(VrrControllerEventType::kAodRefreshRateCalculatorUpdate);
-                mResetRefreshRateEvent.mWhenNs = getNowNs() + kActiveRefreshRateDurationNs;
+                mResetRefreshRateEvent.mWhenNs =
+                        getSteadyClockTimeNs() + kActiveRefreshRateDurationNs;
                 mEventQueue->mPriorityQueue.emplace(mResetRefreshRateEvent);
                 if (mAodRefreshRateState == kAodIdleRefreshRateState) {
                     changeRefreshRateDisplayState();
@@ -90,6 +94,7 @@ private:
     void setNewRefreshRate(int newRefreshRate) {
         if (newRefreshRate != mLastRefreshRate) {
             mLastRefreshRate = newRefreshRate;
+            ATRACE_INT(mName.c_str(), newRefreshRate);
             if (mRefreshRateChangeCallback) {
                 mRefreshRateChangeCallback(mLastRefreshRate);
             }
@@ -102,7 +107,8 @@ private:
         } else if (mAodRefreshRateState == kAodActiveRefreshRateState) {
             setNewRefreshRate(kIdleRefreshRate);
             mAodRefreshRateState = kAodActiveToIdleTransitionState;
-            mResetRefreshRateEvent.mWhenNs = getNowNs() + kActiveToIdleTransitionDurationNs;
+            mResetRefreshRateEvent.mWhenNs =
+                    getSteadyClockTimeNs() + kActiveToIdleTransitionDurationNs;
             mEventQueue->mPriorityQueue.emplace(mResetRefreshRateEvent);
         } else {
             mAodRefreshRateState = kAodIdleRefreshRateState;

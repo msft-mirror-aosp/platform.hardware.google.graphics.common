@@ -1061,6 +1061,10 @@ bool ExynosMPP::needCompressDstBuf() const {
     return (mMaxSrcLayerNum > 1) && mNeedCompressedTarget;
 }
 
+uint32_t ExynosMPP::getAlignedDstFullWidth(struct exynos_image& dst) {
+    return pixel_align(dst.fullWidth, getDstStrideAlignment(dst.format));
+}
+
 bool ExynosMPP::needDstBufRealloc(struct exynos_image &dst, uint32_t index)
 {
     MPP_LOGD(eDebugMPP|eDebugBuf, "index: %d++++++++", index);
@@ -1078,35 +1082,36 @@ bool ExynosMPP::needDstBufRealloc(struct exynos_image &dst, uint32_t index)
         return true;
     }
 
-    int32_t assignedDisplay = -1;
+    int32_t assignedDisplayType = -1;
     if (mAssignedDisplay != NULL) {
-        assignedDisplay = mAssignedDisplay->mType;
+        assignedDisplayType = mAssignedDisplay->mType;
     } else {
         MPP_LOGE("%s:: mpp is not assigned", __func__);
         return false;
     }
 
-    VendorGraphicBufferMeta gmeta(dst_handle);
+    ExynosDisplay *prevAssignedDisplay = mDstImgs[index].assignedDisplay;
+    if(prevAssignedDisplay == NULL) {
+        MPP_LOGD(eDebugMPP|eDebugBuf, "\tDstImag[%d] prevAssignedDisplay is NULL", index);
+        return true;
+    }
 
-    uint32_t prevAssignedBufferNum =
-            getBufferNumOfFormat(gmeta.format, getCompressionType(dst_handle));
-    uint32_t assignedBufferNum = getBufferNumOfFormat(dst.format, getCompressionType(dst_handle));
+    VendorGraphicBufferMeta gmeta(dst_handle);
 
     MPP_LOGD(eDebugMPP | eDebugBuf, "\tdst_handle(%p) afbc (%u) sbwc (%u) lossy (%u)", dst_handle,
              isAFBCCompressed(dst_handle), isFormatSBWC(gmeta.format), isFormatLossy(gmeta.format));
     MPP_LOGD(eDebugMPP | eDebugBuf,
-             "\tAssignedDisplay[%d, %d] format[0x%8x, 0x%8x], bufferType[%d, %d], bufferNum[%d, "
-             "%d] "
+             "\tAssignedDisplay[%d, %d] format[0x%8x, 0x%8x], bufferType[%d, %d], "
              "usageFlags: 0x%" PRIx64 ", need comp_type 0x%x lossy %u",
-             mPrevAssignedDisplayType, assignedDisplay, gmeta.format, dst.format,
-             mDstImgs[index].bufferType, getBufferType(dst.usageFlags), prevAssignedBufferNum,
-             assignedBufferNum, dst.usageFlags, dst.compressionInfo.type,
-             isFormatLossy(dst.format));
+             mPrevAssignedDisplayType, assignedDisplayType, gmeta.format, dst.format,
+             mDstImgs[index].bufferType, getBufferType(dst.usageFlags), dst.usageFlags,
+             dst.compressionInfo.type, isFormatLossy(dst.format));
 
-    bool realloc = (mPrevAssignedDisplayType != assignedDisplay) ||
-            (prevAssignedBufferNum < assignedBufferNum) ||
+    bool realloc = (mPrevAssignedDisplayType != assignedDisplayType) ||
+            (prevAssignedDisplay != mAssignedDisplay) ||
             (formatToBpp(gmeta.format) < formatToBpp(dst.format)) ||
-            ((gmeta.stride * gmeta.vstride) < (int)(dst.fullWidth * dst.fullHeight)) ||
+            ((gmeta.stride * gmeta.vstride) <
+             (int)(getAlignedDstFullWidth(dst) * dst.fullHeight)) ||
             (mDstImgs[index].bufferType != getBufferType(dst.usageFlags)) ||
             (isAFBCCompressed(dst_handle) != (dst.compressionInfo.type == COMP_TYPE_AFBC)) ||
             (isFormatSBWC(gmeta.format) != isFormatSBWC(dst.format)) ||
@@ -1326,6 +1331,16 @@ dstMetaInfo_t ExynosMPP::getDstMetaInfo(android_dataspace_t dstDataspace)
     return metaInfo;
 }
 
+uint32_t ExynosMPP::getDstStrideAlignment(int format) {
+    /* In cases of Single-FD format, stride alignment should be matched. */
+    if (format == HAL_PIXEL_FORMAT_EXYNOS_YCbCr_420_SPN)
+        return 64;
+    else if (format == HAL_PIXEL_FORMAT_EXYNOS_YCbCr_P010_SPN)
+        return 128;
+    else
+        return G2D_JUSTIFIED_DST_ALIGN;
+}
+
 int32_t ExynosMPP::setupDst(exynos_mpp_img_info *dstImgInfo)
 {
     int ret = NO_ERROR;
@@ -1380,9 +1395,12 @@ int32_t ExynosMPP::setupDst(exynos_mpp_img_info *dstImgInfo)
     if (dstImgInfo->bufferType == MPP_BUFFER_SECURE_DRM)
         attribute |= AcrylicCanvas::ATTR_PROTECTED;
 
+    dstImgInfo->assignedDisplay = mAssignedDisplay;
     if (mAssignedDisplay != NULL) {
-        mAcrylicHandle->setCanvasDimension(pixel_align(mAssignedDisplay->mXres, G2D_JUSTIFIED_DST_ALIGN),
-                pixel_align(mAssignedDisplay->mYres, G2D_JUSTIFIED_DST_ALIGN));
+        mAcrylicHandle->setCanvasDimension(pixel_align(mAssignedDisplay->mXres,
+                                                       getDstStrideAlignment(dstImgInfo->format)),
+                                           pixel_align(mAssignedDisplay->mYres,
+                                                       G2D_JUSTIFIED_DST_ALIGN));
     }
 
     /* setup dst */
@@ -1664,8 +1682,7 @@ bool ExynosMPP::canSkipProcessing()
         (mLogicalType == MPP_LOGICAL_G2D_COMBO)) {
         dst = mAssignedDisplay->mExynosCompositionInfo.mDstImg;
     }
-    return ((needDstBufRealloc(dst, mCurrentDstBuf) == false) & canUsePrevFrame());
-
+    return ((needDstBufRealloc(dst, mCurrentDstBuf) == false) && canUsePrevFrame());
 }
 
 /**
@@ -1943,6 +1960,7 @@ int32_t ExynosMPP::requestHWStateChange(uint32_t state)
                 } else {
                     mDstImgs[i].bufferHandle = freeDstBuf.bufferHandle;
                     mDstImgs[i].bufferType = freeDstBuf.bufferType;
+                    mDstImgs[i].assignedDisplay = freeDstBuf.assignedDisplay;
                 }
             }
         }

@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <limits>
 
+#include "format.h"
+#include "format_type.h"
+
 namespace pixel::graphics {
 
 constexpr const char* kGralloc4StandardMetadataTypeName = GRALLOC4_STANDARD_METADATA_TYPE;
@@ -64,6 +67,19 @@ enum class MetadataType : int64_t {
     // Returns: std::vector<int>
     PLANE_DMA_BUFS,
 
+    // PLANE_LAYOUTS from gralloc reply with the actual offset of the plane from the start of the
+    // header if any. But some IPs require the offset starting from the body of a plane.
+    // Returns: std::vector<CompressedPlaneLayout>
+    COMPRESSED_PLANE_LAYOUTS,
+
+    // Ideally drivers should be using fourcc to identify an allocation, but some of the drivers
+    // depend upon the format too much that updating them will require longer time.
+    // Returns: ::pixel::graphics::Format
+    PIXEL_FORMAT_ALLOCATED,
+
+    // Returns: ::pixel::graphics::FormatType
+    FORMAT_TYPE,
+
     // This is a experimental feature
     VIDEO_GMV,
 };
@@ -74,5 +90,52 @@ struct VideoGMV {
 };
 
 #undef MapMetadataType
+
+// There is no backward compatibility guarantees, all dependencies must be built together.
+struct CompressedPlaneLayout {
+    uint64_t header_offset_in_bytes;
+    uint64_t header_size_in_bytes;
+    uint64_t body_offset_in_bytes;
+    uint64_t body_size_in_bytes;
+
+    bool operator==(const CompressedPlaneLayout& other) const {
+        return header_offset_in_bytes == other.header_offset_in_bytes &&
+                header_size_in_bytes == other.header_size_in_bytes &&
+                body_offset_in_bytes == other.body_offset_in_bytes &&
+                body_size_in_bytes == other.body_size_in_bytes;
+    }
+
+    bool operator!=(const CompressedPlaneLayout& other) const { return !(*this == other); }
+};
+
+template <MetadataType T>
+struct always_false : std::false_type {};
+
+namespace metadata {
+
+template <MetadataType T>
+struct ReturnType {
+    static_assert(always_false<T>::value, "Unspecialized ReturnType is not supported");
+    using type = void;
+};
+
+#define DEFINE_TYPE(meta_name, return_type)      \
+    template <>                                  \
+    struct ReturnType<MetadataType::meta_name> { \
+        using type = return_type;                \
+    };
+
+DEFINE_TYPE(PLANE_DMA_BUFS, std::vector<int>);
+DEFINE_TYPE(VIDEO_HDR, void*);
+DEFINE_TYPE(VIDEO_ROI, void*);
+DEFINE_TYPE(VIDEO_GMV, VideoGMV);
+
+DEFINE_TYPE(COMPRESSED_PLANE_LAYOUTS, std::vector<CompressedPlaneLayout>);
+DEFINE_TYPE(PIXEL_FORMAT_ALLOCATED, Format);
+DEFINE_TYPE(FORMAT_TYPE, FormatType);
+
+#undef DEFINE_TYPE
+
+} // namespace metadata
 
 } // namespace pixel::graphics

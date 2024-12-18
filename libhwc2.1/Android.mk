@@ -21,58 +21,6 @@ LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_SHARED_LIBRARIES := libcutils libdrm liblog libutils libhardware
-
-LOCAL_PROPRIETARY_MODULE := true
-
-LOCAL_C_INCLUDES += \
-	$(TOP)/hardware/google/graphics/common/libhwc2.1/libdrmresource/include
-
-LOCAL_SRC_FILES := \
-	libdrmresource/utils/worker.cpp \
-	libdrmresource/drm/resourcemanager.cpp \
-	libdrmresource/drm/drmdevice.cpp \
-	libdrmresource/drm/drmconnector.cpp \
-	libdrmresource/drm/drmcrtc.cpp \
-	libdrmresource/drm/drmencoder.cpp \
-	libdrmresource/drm/drmmode.cpp \
-	libdrmresource/drm/drmplane.cpp \
-	libdrmresource/drm/drmproperty.cpp \
-	libdrmresource/drm/drmeventlistener.cpp \
-	libdrmresource/drm/vsyncworker.cpp
-
-LOCAL_CFLAGS := -DHLOG_CODE=0
-LOCAL_CFLAGS += -Wno-unused-parameter
-LOCAL_CFLAGS += -DSOC_VERSION=$(soc_ver)
-LOCAL_CFLAGS += -Wthread-safety
-LOCAL_EXPORT_SHARED_LIBRARY_HEADERS := libdrm
-
-ifeq ($(CLANG_COVERAGE),true)
-# enable code coverage (these flags are copied from build/soong/cc/coverage.go)
-LOCAL_CFLAGS += -fprofile-instr-generate -fcoverage-mapping
-LOCAL_CFLAGS += -Wno-frame-larger-than=
-LOCAL_WHOLE_STATIC_LIBRARIES += libprofile-clang-extras_ndk
-LOCAL_LDFLAGS += -fprofile-instr-generate
-LOCAL_LDFLAGS += -Wl,--wrap,open
-
-ifeq ($(CLANG_COVERAGE_CONTINUOUS_MODE),true)
-LOCAL_CFLAGS += -mllvm -runtime-counter-relocation
-LOCAL_LDFLAGS += -Wl,-mllvm=-runtime-counter-relocation
-endif
-endif
-
-LOCAL_MODULE := libdrmresource
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS := notice
-LOCAL_NOTICE_FILE := $(LOCAL_PATH)/NOTICE
-LOCAL_MODULE_TAGS := optional
-
-include $(TOP)/hardware/google/graphics/common/BoardConfigCFlags.mk
-include $(BUILD_SHARED_LIBRARY)
-
-################################################################################
-include $(CLEAR_VARS)
-
 LOCAL_SHARED_LIBRARIES := liblog libcutils libhardware \
 	android.hardware.graphics.composer@2.4 \
 	android.hardware.graphics.allocator@2.0 \
@@ -83,9 +31,9 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libhardware \
 	android.hardware.power-V2-ndk pixel-power-ext-V1-ndk \
 	pixel_stateresidency_provider_aidl_interface-ndk
 
-LOCAL_SHARED_LIBRARIES += android.hardware.graphics.composer3-V3-ndk \
+LOCAL_SHARED_LIBRARIES += android.hardware.graphics.composer3-V4-ndk \
                           android.hardware.drm-V1-ndk \
-                          com.google.hardware.pixel.display-V10-ndk \
+                          com.google.hardware.pixel.display-V13-ndk \
                           android.frameworks.stats-V2-ndk \
                           libpixelatoms_defs \
                           pixelatoms-cpp \
@@ -136,6 +84,7 @@ LOCAL_SRC_FILES := \
 	libdevice/ExynosDevice.cpp \
 	libdevice/ExynosLayer.cpp \
 	libdevice/HistogramDevice.cpp \
+	libdevice/DisplayTe2Manager.cpp \
 	libmaindisplay/ExynosPrimaryDisplay.cpp \
 	libresource/ExynosMPP.cpp \
 	libresource/ExynosResourceManager.cpp \
@@ -145,16 +94,22 @@ LOCAL_SRC_FILES := \
 	libdisplayinterface/ExynosDisplayInterface.cpp \
 	libdisplayinterface/ExynosDeviceDrmInterface.cpp \
 	libdisplayinterface/ExynosDisplayDrmInterface.cpp \
-	libvrr/DisplayStateResidencyWatcher.cpp \
-	libvrr/VariableRefreshRateController.cpp \
 	libvrr/display/common/CommonDisplayContextProvider.cpp \
 	libvrr/display/exynos/ExynosDisplayContextProvider.cpp \
+	libvrr/Power/PowerStatsProfileTokenGenerator.cpp \
+	libvrr/Power/DisplayStateResidencyProvider.cpp \
+	libvrr/Power/DisplayStateResidencyWatcher.cpp \
+	libvrr/FileNode.cpp \
 	libvrr/RefreshRateCalculator/InstantRefreshRateCalculator.cpp \
+	libvrr/RefreshRateCalculator/ExitIdleRefreshRateCalculator.cpp \
 	libvrr/RefreshRateCalculator/PeriodRefreshRateCalculator.cpp \
 	libvrr/RefreshRateCalculator/CombinedRefreshRateCalculator.cpp \
 	libvrr/RefreshRateCalculator/RefreshRateCalculatorFactory.cpp \
 	libvrr/RefreshRateCalculator/VideoFrameRateCalculator.cpp \
+	libvrr/Statistics/VariableRefreshRateStatistic.cpp \
 	libvrr/Utils.cpp \
+	libvrr/VariableRefreshRateController.cpp \
+	libvrr/VariableRefreshRateVersion.cpp \
 	pixel-display.cpp \
 	pixelstats-display.cpp \
 	histogram_mediator.cpp
@@ -210,10 +165,10 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libutils libbinder libexynosdisplay l
 	android.hardware.graphics.composer@2.4 \
 	android.hardware.graphics.allocator@2.0 \
 	android.hardware.graphics.mapper@2.0 \
-	android.hardware.graphics.composer3-V3-ndk \
+	android.hardware.graphics.composer3-V4-ndk \
 	android.hardware.drm-V1-ndk
 
-LOCAL_SHARED_LIBRARIES += com.google.hardware.pixel.display-V10-ndk \
+LOCAL_SHARED_LIBRARIES += com.google.hardware.pixel.display-V13-ndk \
                           android.frameworks.stats-V2-ndk \
                           libpixelatoms_defs \
                           pixelatoms-cpp \
@@ -292,9 +247,9 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libutils libexynosdisplay libacryl \
 	android.hardware.graphics.mapper@2.0 \
 	libui
 
-LOCAL_SHARED_LIBRARIES += android.hardware.graphics.composer3-V3-ndk \
+LOCAL_SHARED_LIBRARIES += android.hardware.graphics.composer3-V4-ndk \
                           android.hardware.drm-V1-ndk \
-                          com.google.hardware.pixel.display-V10-ndk \
+                          com.google.hardware.pixel.display-V13-ndk \
                           android.frameworks.stats-V2-ndk \
                           libpixelatoms_defs \
                           pixelatoms-cpp \

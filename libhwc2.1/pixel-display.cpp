@@ -22,7 +22,9 @@
 #include <android/binder_process.h>
 #include <sys/types.h>
 #include <utils/Errors.h>
+#include <cstdint>
 
+#include "BrightnessController.h"
 #include "ExynosDisplay.h"
 #include "ExynosPrimaryDisplay.h"
 #include "HistogramController.h"
@@ -361,6 +363,93 @@ ndk::ScopedAStatus Display::unregisterHistogram(const ndk::SpAIBinder &token,
                                                 HistogramErrorCode *_aidl_return) {
     if (mDisplay && mDisplay->mHistogramController) {
         return mDisplay->mHistogramController->unregisterHistogram(token, _aidl_return);
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::setFixedTe2Rate(int rateHz, int* _aidl_return) {
+    if (mDisplay) {
+        *_aidl_return = mDisplay->setFixedTe2Rate(rateHz);
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::queryStats(DisplayStats::Tag tag,
+                                       std::optional<DisplayStats>* _aidl_return) {
+    ATRACE_NAME(
+            String8::format("%s(%s)", __func__,
+                            aidl::com::google::hardware::pixel::display::toString(tag).c_str()));
+    if (!mDisplay) {
+        ALOGW("%s: mDisplay is NULL", __func__);
+        return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+    }
+    switch (tag) {
+        case DisplayStats::brightnessNits:
+            if (mDisplay->mBrightnessController != nullptr) {
+                auto res = mDisplay->mBrightnessController->getBrightnessNitsAndMode();
+                if (res != std::nullopt) {
+                    double nits = std::get<float>(res.value());
+                    (*_aidl_return) = DisplayStats::make<DisplayStats::brightnessNits>(nits);
+                } else {
+                    ALOGW("%s: getBrightnessNitsAndMode returned nullopt!", __func__);
+                    return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
+                }
+            } else {
+                ALOGW("%s: mBrightnessController is null!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        case DisplayStats::brightnessDbv:
+            if (mDisplay->mBrightnessController != nullptr) {
+                int dbv = mDisplay->mBrightnessController->getBrightnessLevel();
+                (*_aidl_return) = DisplayStats::make<DisplayStats::brightnessDbv>(dbv);
+            } else {
+                ALOGW("%s: mBrightnessController is null!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        case DisplayStats::operationRate:
+            if (mDisplay->isOperationRateSupported()) {
+                int op_hz = mDisplay->mOperationRateManager->getTargetOperationRate();
+                (*_aidl_return) = DisplayStats::make<DisplayStats::operationRate>(op_hz);
+            } else {
+                ALOGW("%s: operation rate not supported!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        case DisplayStats::opr:
+            if (mDisplay->mHistogramController) {
+                std::array<double, HistogramController::kOPRConfigsCount> oprVals;
+                ndk::ScopedAStatus status = mDisplay->mHistogramController->queryOPR(oprVals);
+                if (!status.isOk()) return status;
+                (*_aidl_return) = DisplayStats::make<DisplayStats::opr>(oprVals);
+            } else {
+                ALOGW("%s: mHistogramController is null!", __func__);
+                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+            }
+            break;
+        default:
+            ALOGW("%s: invalid stats tag: %u", __func__, (uint32_t)tag);
+            *_aidl_return = std::nullopt;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+    };
+    return ndk::ScopedAStatus::ok();
+}
+
+ndk::ScopedAStatus Display::isProximitySensorStateCallbackSupported(bool* _aidl_return) {
+    if (mDisplay) {
+        *_aidl_return = mDisplay->isProximitySensorStateCallbackSupported();
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+}
+
+ndk::ScopedAStatus Display::registerProximitySensorStateChangeCallback(
+        const std::shared_ptr<IDisplayProximitySensorCallback>& callback) {
+    if (mDisplay && callback) {
+        mDisplay->mProximitySensorStateChangeCallback = callback;
+        return ndk::ScopedAStatus::ok();
     }
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }

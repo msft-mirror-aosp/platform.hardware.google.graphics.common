@@ -16,6 +16,7 @@
 #include "ExynosHWCHelper.h"
 
 #include <android-base/properties.h>
+#include <cutils/properties.h>
 #include <linux/videodev2.h>
 #include <linux/videodev2_exynos_media.h>
 #include <png.h>
@@ -1213,6 +1214,68 @@ std::string TableBuilder::build() {
     return output;
 }
 
+std::string TableBuilder::buildForMiniDump() {
+    std::stringstream splitter, header;
+    std::vector<std::stringstream> contents;
+    splitter << "|";
+    header << "|";
+    if (kToVs.size()) {
+        contents.resize(kToVs.begin()->second.size());
+        for (auto& content : contents) content << "|";
+    }
+
+    for (const auto& key : keys) {
+        auto& values = kToVs[key];
+        auto max_value_iter = std::max_element(values.begin(), values.end(),
+                                               [](const std::string& a, const std::string& b) {
+                                                   return a.size() < b.size();
+                                               });
+        const int size = max_value_iter != values.end()
+                ? std::max(key.size(), max_value_iter->size())
+                : key.size();
+        splitter << std::string(size, '-') << "+";
+        header << buildPaddedString(key, size) << "|";
+        for (size_t i = 0; i < values.size(); ++i) {
+            contents[i] << buildPaddedString(values[i], size) << "|";
+        }
+    }
+
+    std::string output = splitter.str() + "\n" + header.str() + "\n";
+    for (auto& content : contents) {
+        output += splitter.str() + "\n" + content.str() + "\n";
+    }
+    output += splitter.str() + "\n";
+    return output;
+}
+
+TableBuilder& TableBuilder::addKeyValue(const std::string& key, const uint64_t& value, bool toHex) {
+    recordKeySequence(key);
+    std::stringstream v;
+    if (toHex)
+        v << "0x" << std::hex << value;
+    else
+        v << value;
+    kToVs[key].emplace_back(v.str());
+    return *this;
+}
+
+TableBuilder& TableBuilder::addKeyValue(const std::string& key, const std::vector<uint64_t>& values,
+                                        bool toHex) {
+    recordKeySequence(key);
+    std::stringstream value;
+    for (int i = 0; i < values.size(); i++) {
+        if (i) value << ", ";
+
+        if (toHex)
+            value << "0x" << std::hex << values[i];
+        else
+            value << values[i];
+    }
+
+    kToVs[key].emplace_back(value.str());
+    return *this;
+}
+
 std::string TableBuilder::buildPaddedString(const std::string& str, int size) {
     int totalPadding = size - str.size();
     int leftPadding = totalPadding / 2.0;
@@ -1268,18 +1331,21 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
 
     png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0);
     if (png_ptr == NULL) {
+        ALOGE("%s png_ptr create failed", filepath);
         fclose(fp);
         return -ENOMEM;
     }
 
     info_ptr = png_create_info_struct(png_ptr);
     if (info_ptr == NULL) {
+        ALOGE("%s info_ptr create failed", filepath);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, NULL, NULL);
         return -ENOMEM;
     }
 
     if (setjmp(png_jmpbuf(png_ptr))) {
+        ALOGE("%s setjmp failed", filepath);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EIO;
@@ -1293,6 +1359,8 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     width = png_get_image_width(png_ptr, info_ptr);
     height = png_get_image_height(png_ptr, info_ptr);
     if (width != gmeta.width || height != gmeta.height) {
+        ALOGE("%s source width/height (%dx%d) doesn't match with buffer (%dx%d)", filepath, width,
+              height, gmeta.width, gmeta.height);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EINVAL;
@@ -1301,6 +1369,9 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     bpp = png_get_bit_depth(png_ptr, info_ptr) * png_get_channels(png_ptr, info_ptr);
     color_type = png_get_color_type(png_ptr, info_ptr);
     if (color_type != PNG_COLOR_TYPE_RGB_ALPHA || bpp != formatToBpp(gmeta.format)) {
+        ALOGE("%s color_type (%d) isn't rgb alpha (%d), or source bpp (%d) doesn't match with "
+              "buffer (%d)",
+              filepath, color_type, PNG_COLOR_TYPE_RGB_ALPHA, bpp, formatToBpp(gmeta.format));
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EINVAL;
@@ -1309,6 +1380,8 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     size_t bufferHandleSize = gmeta.stride * gmeta.vstride * formatToBpp(gmeta.format) / 8;
     size_t png_size = png_get_rowbytes(png_ptr, info_ptr) * height;
     if (bufferHandleSize > gmeta.size || (bufferHandleSize < png_size)) {
+        ALOGE("%s buffer handle size isn't within [png_size, gmeta.size]: %d vs [%d, %d]", filepath,
+              (int)bufferHandleSize, (int)png_size, gmeta.size);
         fclose(fp);
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return -EINVAL;
@@ -1319,10 +1392,23 @@ int32_t load_png_image(const char* filepath, buffer_handle_t buffer) {
     if (bufferHandleData != MAP_FAILED && bufferHandleData != NULL) {
         int strideBytes = gmeta.stride * (formatToBpp(gmeta.format) / 8);
         png_bytep row_ptr = (png_bytep)bufferHandleData;
+
         for (int y = 0; y < height; ++y) {
-            png_read_row(png_ptr, row_ptr, NULL);
-            row_ptr += strideBytes;
+            png_read_row(png_ptr, row_ptr + strideBytes * y, NULL);
         }
+
+        const bool premultiplied =
+                static_cast<bool>(property_get_bool("vendor.display.png.premultiplied", 0));
+        ALOGD("premultiplied=%s", premultiplied ? "true" : "false");
+        if (premultiplied) {
+            const auto& premul = [](int a, int v) { return (unsigned char)(v * a / 255.0 + 0.5); };
+            for (int i = 0; i + 3 < height * strideBytes; i += 4) {
+                row_ptr[i + 0] = premul(row_ptr[i + 3], row_ptr[i + 0]);
+                row_ptr[i + 1] = premul(row_ptr[i + 3], row_ptr[i + 1]);
+                row_ptr[i + 2] = premul(row_ptr[i + 3], row_ptr[i + 2]);
+            }
+        }
+
         munmap(bufferHandleData, bufferHandleSize);
     }
 
@@ -1379,3 +1465,31 @@ uint32_t nanoSec2Hz(uint64_t ns) {
     constexpr auto nsecsPerSec = std::chrono::nanoseconds(1s).count();
     return round(static_cast<float>(nsecsPerSec) / ns);
 };
+
+nsecs_t getSignalTime(const int32_t fd) {
+    if (fd == -1) {
+        return SIGNAL_TIME_INVALID;
+    }
+
+    struct sync_file_info* finfo = sync_file_info(fd);
+    if (finfo == nullptr) {
+        return SIGNAL_TIME_INVALID;
+    }
+
+    if (finfo->status != 1) {
+        const auto status = finfo->status;
+        sync_file_info_free(finfo);
+        return status < 0 ? SIGNAL_TIME_INVALID : SIGNAL_TIME_PENDING;
+    }
+
+    uint64_t timestamp = 0;
+    struct sync_fence_info* pinfo = sync_get_fence_info(finfo);
+    for (size_t i = 0; i < finfo->num_fences; i++) {
+        if (pinfo[i].timestamp_ns > timestamp) {
+            timestamp = pinfo[i].timestamp_ns;
+        }
+    }
+
+    sync_file_info_free(finfo);
+    return nsecs_t(timestamp);
+}

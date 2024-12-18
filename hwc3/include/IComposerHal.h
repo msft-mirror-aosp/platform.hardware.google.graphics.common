@@ -21,6 +21,7 @@
  * does own the fences).
  */
 #include <aidl/android/hardware/common/NativeHandle.h>
+#include <aidl/android/hardware/drm/HdcpLevels.h>
 #include <aidl/android/hardware/graphics/common/BlendMode.h>
 #include <aidl/android/hardware/graphics/common/ColorTransform.h>
 #include <aidl/android/hardware/graphics/common/Dataspace.h>
@@ -60,6 +61,7 @@
 #include <aidl/android/hardware/graphics/composer3/HdrCapabilities.h>
 #include <aidl/android/hardware/graphics/composer3/LayerBrightness.h>
 #include <aidl/android/hardware/graphics/composer3/LayerCommand.h>
+#include <aidl/android/hardware/graphics/composer3/LayerLifecycleBatchCommandType.h>
 #include <aidl/android/hardware/graphics/composer3/OverlayProperties.h>
 #include <aidl/android/hardware/graphics/composer3/ParcelableBlendMode.h>
 #include <aidl/android/hardware/graphics/composer3/ParcelableComposition.h>
@@ -81,7 +83,7 @@
 #include <aidl/android/hardware/graphics/composer3/VsyncPeriodChangeTimeline.h>
 #include <aidl/android/hardware/graphics/composer3/ZOrder.h>
 #include <cutils/native_handle.h>
-
+#include <hardware/hwcomposer2.h>
 // avoid naming conflict
 using AidlPixelFormat = aidl::android::hardware::graphics::common::PixelFormat;
 using AidlNativeHandle = aidl::android::hardware::common::NativeHandle;
@@ -97,7 +99,7 @@ class IComposerHal {
      virtual ~IComposerHal() = default;
 
      virtual void getCapabilities(std::vector<Capability>* caps) = 0;
-     virtual void dumpDebugInfo(std::string* output) = 0;
+     virtual void dumpDebugInfo(std::string* output, const std::vector<std::string>& args = {}) = 0;
      virtual bool hasCapability(Capability cap) = 0;
 
      class EventCallback {
@@ -112,12 +114,15 @@ class IComposerHal {
          virtual void onSeamlessPossible(int64_t display) = 0;
          virtual void onRefreshRateChangedDebug(const RefreshRateChangedDebugData& data) = 0;
          virtual void onHotplugEvent(int64_t display, common::DisplayHotplugEvent event) = 0;
+         virtual void onHdcpLevelsChanged(int64_t display, drm::HdcpLevels levels) = 0;
      };
     virtual void registerEventCallback(EventCallback* callback) = 0;
     virtual void unregisterEventCallback() = 0;
 
     virtual int32_t acceptDisplayChanges(int64_t display) = 0;
     virtual int32_t createLayer(int64_t display, int64_t* outLayer) = 0;
+    virtual int32_t batchedCreateDestroyLayer(int64_t display, int64_t layer,
+                                              LayerLifecycleBatchCommandType cmd) = 0;
     virtual int32_t createVirtualDisplay(uint32_t width, uint32_t height, AidlPixelFormat format,
                                          VirtualDisplay* outDisplay) = 0;
     virtual int32_t destroyLayer(int64_t display, int64_t layer) = 0;
@@ -194,6 +199,9 @@ class IComposerHal {
     virtual int32_t setLayerBlendMode(int64_t display, int64_t layer, common::BlendMode mode) = 0;
     virtual int32_t setLayerBuffer(int64_t display, int64_t layer, buffer_handle_t buffer,
                                    const ndk::ScopedFileDescriptor& acquireFence) = 0;
+    virtual int32_t uncacheLayerBuffers(int64_t display, int64_t layer,
+                                        const std::vector<buffer_handle_t>& buffers,
+                                        std::vector<buffer_handle_t>& outClearableBuffers) = 0;
     virtual int32_t setLayerColor(int64_t display, int64_t layer, Color color) = 0;
     virtual int32_t setLayerColorTransform(int64_t display, int64_t layer,
                                            const std::vector<float>& matrix) = 0;
@@ -224,6 +232,7 @@ class IComposerHal {
     virtual int32_t setOutputBuffer(int64_t display, buffer_handle_t buffer,
                                     const ndk::ScopedFileDescriptor& releaseFence) = 0;
     virtual int32_t setPowerMode(int64_t display, PowerMode mode) = 0;
+    virtual int32_t getPowerMode(int64_t display, std::optional<PowerMode>& outMode) = 0;
     virtual int32_t setReadbackBuffer(int64_t display, buffer_handle_t buffer,
                                       const ndk::ScopedFileDescriptor& releaseFence) = 0;
     virtual int32_t setVsyncEnabled(int64_t display, bool enabled) = 0;
@@ -243,6 +252,7 @@ class IComposerHal {
             int64_t display, int64_t layer,
             const std::vector<std::optional<common::Rect>>& blockingRegion) = 0;
     virtual int32_t setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool enabled) = 0;
+    virtual int32_t layerSf2Hwc(int64_t display, int64_t layer, hwc2_layer_t& outMappedLayer) = 0;
 };
 
 } // namespace aidl::android::hardware::graphics::composer3::detail

@@ -20,9 +20,9 @@
 
 #include "../libdevice/ExynosDisplay.h"
 #include "../libvrr/VariableRefreshRateController.h"
-#include "../libvrr/interface/VariableRefreshRateInterface.h"
+#include <cutils/properties.h>
 
-using android::hardware::graphics::composer::PresentListener;
+using android::hardware::graphics::composer::RefreshListener;
 using android::hardware::graphics::composer::VariableRefreshRateController;
 using android::hardware::graphics::composer::VsyncListener;
 using namespace displaycolor;
@@ -62,7 +62,7 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         virtual bool isDbmSupported() override;
         virtual int32_t setDbmState(bool enabled) override;
 
-        virtual void dump(String8& result) override;
+        virtual void dump(String8& result, const std::vector<std::string>& args = {}) override;
         virtual void updateAppliedActiveConfig(const hwc2_config_t newConfig,
                                                const int64_t ts) override;
         virtual void checkBtsReassignResource(const int32_t vsyncPeriod,
@@ -80,6 +80,12 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
 
         virtual void onVsync(int64_t timestamp) override;
 
+        virtual int32_t setFixedTe2Rate(const int rateHz) override;
+
+        virtual void onProximitySensorStateChanged(bool active) override;
+
+        virtual int32_t setDisplayTemperature(const int temperatue) override;
+
         const std::string& getPanelName() final;
 
         int32_t notifyExpectedPresent(int64_t timestamp, int32_t frameIntervalNs) override;
@@ -88,6 +94,11 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
                 int timeoutNs, const std::vector<std::pair<uint32_t, uint32_t>>& settings) override;
 
         int32_t setPresentTimeoutController(uint32_t controllerType) override;
+
+        int32_t registerRefreshRateChangeListener(
+                std::shared_ptr<RefreshRateChangeListener> listener) override;
+
+        virtual int32_t setRefreshRateChangedCallbackDebugEnabled(bool enabled) final;
 
     protected:
         /* setPowerMode(int32_t mode)
@@ -111,11 +122,16 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         }
         std::string getPanelSysfsPath(const displaycolor::DisplayType& type) const;
 
+        virtual bool isVrrSupported() const override { return mXrrSettings.versionInfo.isVrr(); }
+
         uint32_t mRcdId = -1;
+        uint32_t getDisplayTemperatue() { return mDisplayTemperature; };
 
     private:
         static constexpr const char* kDisplayCalFilePath = "/mnt/vendor/persist/display/";
         static constexpr const char* kPanelGammaCalFilePrefix = "gamma_calib_data";
+        static constexpr const char* kDisplayTempIntervalSec =
+                "ro.vendor.display.read_temp_interval";
         enum PanelGammaSource currentPanelGammaSource = PanelGammaSource::GAMMA_DEFAULT;
 
         bool checkLhbmMode(bool status, nsecs_t timoutNs);
@@ -139,6 +155,26 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         void initDisplayHandleIdleExit();
         int32_t setLhbmDisplayConfigLocked(uint32_t peakRate);
         void restoreLhbmDisplayConfigLocked();
+
+
+        // monitor display thermal temperature
+        int32_t getDisplayTemperature();
+        bool initDisplayTempMonitor(const std::string& display);
+        bool isTemperatureMonitorThreadRunning();
+        void checkTemperatureMonitorThread(bool shouldRun);
+        void temperatureMonitorThreadCreate();
+        void* temperatureMonitorThreadLoop();
+        bool mIsDisplayTempMonitorSupported = false;
+        volatile int32_t mTMThreadStatus;
+        std::atomic<bool> mTMLoopStatus;
+        std::condition_variable mTMCondition;
+        std::thread mTMThread;
+        std::mutex mThreadMutex;
+        int32_t mDisplayTempInterval;
+        String8 mDisplayTempSysfsNode;
+        std::string getPropertyDisplayTemperatureStr(const std::string& display) {
+            return "ro.vendor." + display + "." + getPanelName() + ".temperature_path";
+        }
 
         void onConfigChange(int configId);
 
@@ -171,14 +207,10 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
                 hwc_vsync_period_change_timeline_t* outTimeline) override;
         void recalculateTimelineLocked(int64_t refreshRateDelayNanos);
 
-        // min idle refresh rate
-        int mDefaultMinIdleRefreshRate;
-        // the min refresh rate in the blocking zone, e.g. 10 means 10Hz in the zone
-        int mMinIdleRefreshRateForBlockingZone;
-        // blocking zone threshold, e.g. 492 means entering the zone if DBV < 492
-        uint32_t mDbvThresholdForBlockingZone;
-        bool mUseBlockingZoneForMinIdleRefreshRate;
+        std::map<int, int> mBrightnessBlockingZonesLookupTable;
+
         int mMinIdleRefreshRate;
+        const int kMinIdleRefreshRateForDozeMode = 1;
         int mRrThrottleFps[toUnderlying(RrThrottleRequester::MAX)];
         std::mutex mMinIdleRefreshRateMutex;
 
@@ -198,11 +230,12 @@ class ExynosPrimaryDisplay : public ExynosDisplay {
         bool mDisplayNeedHandleIdleExit;
 
         // Function and variables related to Vrr.
-        PresentListener* getPresentListener();
+        RefreshListener* getRefreshListener();
         VsyncListener* getVsyncListener();
 
-        VrrSettings_t mVrrSettings;
+        XrrSettings_t mXrrSettings;
         std::shared_ptr<VariableRefreshRateController> mVariableRefreshRateController;
+        uint32_t mDisplayTemperature = UINT_MAX;
 };
 
 #endif

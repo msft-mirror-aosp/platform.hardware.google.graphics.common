@@ -26,25 +26,33 @@
 namespace android::hardware::graphics::composer {
 
 enum class VrrControllerEventType {
-    kGeneralEventMask = 0x100,
+    kGeneralEventMask = 0x10000000,
     // kSystemRenderingTimeout is responsible for managing present timeout according to the
     // configuration specified in the system HAL API.
-    kSystemRenderingTimeout,
-    // kVendorRenderingTimeout is responsible for managing present timeout based on the vendor's
-    // proprietary definition.
-    kVendorRenderingTimeout,
-    // kHandleVendorRenderingTimeout is responsible for addressing present timeout by invoking
-    // the handling function provided by the vendor.
-    kHandleVendorRenderingTimeout,
-    kHibernateTimeout,
-    kNotifyExpectedPresentConfig,
-    // Refresh rate Calculator events.
-    kRefreshRateCalculatorUpdateMask = 0x200,
-    kInstantRefreshRateCalculatorUpdate,
-    kPeriodRefreshRateCalculatorUpdate,
-    kVideoFrameRateCalculatorUpdate,
-    kCombinedRefreshRateCalculatorUpdate,
-    kAodRefreshRateCalculatorUpdate,
+    kSystemRenderingTimeout = kGeneralEventMask + (1 << 0),
+    // kVendorRenderingTimeoutInit is responsible for initializing vendor's timeout
+    // configurations and kicking off subsequent handling
+    kVendorRenderingTimeoutInit = kGeneralEventMask + (1 << 1),
+    // kVendorRenderingTimeoutPost is responsible for handling the timeout event
+    // per config after initialization
+    kVendorRenderingTimeoutPost = kGeneralEventMask + (1 << 2),
+    kHibernateTimeout = kGeneralEventMask + (1 << 3),
+    kNotifyExpectedPresentConfig = kGeneralEventMask + (1 << 4),
+    kTestEvent = kGeneralEventMask + (1 << 5),
+    kUpdateDbiFrameRate = kGeneralEventMask + (1 << 6),
+    kGeneralEventMax = kGeneralEventMask + (1 << 27),
+    // General callback events.
+    kCallbackEventMask = 0x20000000,
+    kRefreshRateCalculatorUpdateMask = kCallbackEventMask,
+    kInstantRefreshRateCalculatorUpdate = kCallbackEventMask + (1 << 0),
+    kPeriodRefreshRateCalculatorUpdate = kCallbackEventMask + (1 << 1),
+    kVideoFrameRateCalculatorUpdate = kCallbackEventMask + (1 << 2),
+    kCombinedRefreshRateCalculatorUpdate = kCallbackEventMask + (1 << 3),
+    kAodRefreshRateCalculatorUpdate = kCallbackEventMask + (1 << 4),
+    kExitIdleRefreshRateCalculatorUpdate = kCallbackEventMask + (1 << 5),
+    kStaticticUpdate = kCallbackEventMask + (1 << 6),
+    kMinLockTimeForPeakRefreshRate = kCallbackEventMask + (1 << 7),
+    kCallbackEventMax = kCallbackEventMask + (1 << 27),
     // Sensors, outer events...
 };
 
@@ -69,10 +77,12 @@ struct VrrControllerEvent {
         switch (mEventType) {
             case VrrControllerEventType::kSystemRenderingTimeout:
                 return "kSystemRenderingTimeout";
-            case VrrControllerEventType::kVendorRenderingTimeout:
-                return "kVendorRenderingTimeout";
-            case VrrControllerEventType::kHandleVendorRenderingTimeout:
-                return "kHandleVendorRenderingTimeout";
+            case VrrControllerEventType::kExitIdleRefreshRateCalculatorUpdate:
+                return "kExitIdleRefreshRateCalculatorUpdate";
+            case VrrControllerEventType::kVendorRenderingTimeoutInit:
+                return "kVendorRenderingTimeoutInit";
+            case VrrControllerEventType::kVendorRenderingTimeoutPost:
+                return "kVendorRenderingTimeoutPost";
             case VrrControllerEventType::kHibernateTimeout:
                 return "kHibernateTimeout";
             case VrrControllerEventType::kNotifyExpectedPresentConfig:
@@ -87,6 +97,10 @@ struct VrrControllerEvent {
                 return "kCombinedRefreshRateCalculatorUpdate";
             case VrrControllerEventType::kAodRefreshRateCalculatorUpdate:
                 return "kAodRefreshRateCalculatorUpdate";
+            case VrrControllerEventType::kStaticticUpdate:
+                return "kStaticticUpdate";
+            case VrrControllerEventType::kMinLockTimeForPeakRefreshRate:
+                return "kMinLockTimeForPeakRefreshRate";
             default:
                 return "Unknown";
         }
@@ -114,10 +128,7 @@ public:
 
     virtual std::function<int()> getHandleFunction() = 0;
 
-    // TODO(315887105): We shouldn't ideally place this API here, but for the sake of quickly
-    // implementing the HW/SW present timeout handling switch solution, it's temporarily placed here
-    // for now,
-    virtual void setPanelFrameInsertionMode(bool isAuto) = 0;
+    virtual int64_t getPresentTimeoutNs() = 0;
 };
 
 } // namespace android::hardware::graphics::composer
