@@ -40,7 +40,7 @@ class HalImpl : public IComposerHal {
       virtual ~HalImpl() = default;
 
       void getCapabilities(std::vector<Capability>* caps) override;
-      void dumpDebugInfo(std::string* output) override;
+      void dumpDebugInfo(std::string* output, const std::vector<std::string>& args) override;
       bool hasCapability(Capability cap) override;
 
       void registerEventCallback(EventCallback* callback) override;
@@ -186,6 +186,7 @@ class HalImpl : public IComposerHal {
       int32_t setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool enabled) override;
       int32_t layerSf2Hwc(int64_t display, int64_t layer, hwc2_layer_t& outMappedLayer) override;
       void setHwcBatchingSupport(bool supported);
+      int32_t getMaxLayerPictureProfiles(int64_t display, int32_t* outMaxProfiles) override;
 
   private:
       void initCaps(bool batchingSupported);

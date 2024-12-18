@@ -39,6 +39,7 @@ enum class VrrControllerEventType {
     kHibernateTimeout = kGeneralEventMask + (1 << 3),
     kNotifyExpectedPresentConfig = kGeneralEventMask + (1 << 4),
     kTestEvent = kGeneralEventMask + (1 << 5),
+    kUpdateDbiFrameRate = kGeneralEventMask + (1 << 6),
     kGeneralEventMax = kGeneralEventMask + (1 << 27),
     // General callback events.
     kCallbackEventMask = 0x20000000,
@@ -50,8 +51,13 @@ enum class VrrControllerEventType {
     kAodRefreshRateCalculatorUpdate = kCallbackEventMask + (1 << 4),
     kExitIdleRefreshRateCalculatorUpdate = kCallbackEventMask + (1 << 5),
     kStaticticUpdate = kCallbackEventMask + (1 << 6),
-    kMinLockTimeForPeakRefreshRate = kCallbackEventMask + (1 << 7),
     kCallbackEventMax = kCallbackEventMask + (1 << 27),
+    // Minimum refresh rate control events.
+    kMinimumRefreshRateControlEventMask = 0x40000000,
+    kMinimumRefreshRateWaitForConfigTimeout = kMinimumRefreshRateControlEventMask + (1 << 0),
+    kMinimumRefreshRateAlignWithPresent = kMinimumRefreshRateControlEventMask + (1 << 1),
+    kMinLockTimeForPeakRefreshRate =
+            ((kMinimumRefreshRateControlEventMask + (1 << 2)) | kCallbackEventMask),
     // Sensors, outer events...
 };
 

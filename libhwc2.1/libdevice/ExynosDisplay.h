@@ -1270,7 +1270,8 @@ class ExynosDisplay {
                                     std::vector<buffer_handle_t>& outClearableBuffers);
 
         virtual void miniDump(String8& result);
-        virtual void dump(String8& result);
+        virtual void dump(String8& result, const std::vector<std::string>& args = {});
+
         void dumpLocked(String8& result) REQUIRES(mDisplayMutex);
         void dumpAllBuffers() REQUIRES(mDisplayMutex);
 
@@ -1404,9 +1405,11 @@ class ExynosDisplay {
         virtual int32_t setDisplayTemperature(const int __unused temperature) { return NO_ERROR; }
 
         virtual int32_t registerRefreshRateChangeListener(
-                std::shared_ptr<RefreshRateChangeListener> listener) {
+                std::shared_ptr<RefreshRateChangeListener> __unused listener) {
             return NO_ERROR;
         }
+
+        virtual void setForceColorUpdate(bool __unused force) { return; }
 
     protected:
         virtual bool getHDRException(ExynosLayer *layer);
