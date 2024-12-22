@@ -32,12 +32,12 @@ LOCAL_CFLAGS += \
 	-Wthread-safety
 
 # hwc3 re-uses hwc2.2 ComposerResource and libexynosdisplay
-LOCAL_SHARED_LIBRARIES := android.hardware.graphics.composer3-V3-ndk \
+LOCAL_SHARED_LIBRARIES := android.hardware.graphics.composer3-V4-ndk \
 	android.hardware.graphics.composer@2.1-resources \
         android.hardware.graphics.composer@2.2-resources \
 	android.hardware.graphics.composer@2.4 \
 	android.hardware.drm-V1-ndk \
-	com.google.hardware.pixel.display-V12-ndk \
+	com.google.hardware.pixel.display-V13-ndk \
 	android.frameworks.stats-V2-ndk \
 	libpixelatoms_defs \
 	pixelatoms-cpp \

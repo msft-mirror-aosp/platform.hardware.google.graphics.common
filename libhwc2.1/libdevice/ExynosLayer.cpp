@@ -15,11 +15,12 @@
  */
 
 #include <aidl/android/hardware/graphics/common/BufferUsage.h>
-#include <utils/Errors.h>
+#include <aidl/android/hardware/graphics/common/Transform.h>
+#include <hardware/exynos/ion.h>
+#include <hardware/hwcomposer_defs.h>
 #include <linux/videodev2.h>
 #include <sys/mman.h>
-#include <hardware/hwcomposer_defs.h>
-#include <hardware/exynos/ion.h>
+#include <utils/Errors.h>
 
 #include "BrightnessController.h"
 #include "ExynosLayer.h"
@@ -795,7 +796,7 @@ int32_t ExynosLayer::setLayerBlockingRegion(const std::vector<hwc_rect_t>& block
 
 void ExynosLayer::resetValidateData()
 {
-    mValidateCompositionType = HWC2_COMPOSITION_INVALID;
+    updateValidateCompositionType(HWC2_COMPOSITION_INVALID);
     mOtfMPP = NULL;
     mM2mMPP = NULL;
     mOverlayInfo = 0x0;
@@ -1120,6 +1121,62 @@ void ExynosLayer::dump(String8& result)
     result.appendFormat("\tdump midImg\n");
     dumpExynosImage(result, mMidImg);
 
+}
+
+void ExynosLayer::miniDump(TableBuilder& tb) {
+    int format = HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
+    int32_t fd, fd1, fd2;
+    if (mLayerBuffer != NULL) {
+        VendorGraphicBufferMeta gmeta(mLayerBuffer);
+        format = gmeta.format;
+        fd = gmeta.fd;
+        fd1 = gmeta.fd1;
+        fd2 = gmeta.fd2;
+    } else {
+        format = HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
+        fd = -1;
+        fd1 = -1;
+        fd2 = -1;
+    }
+
+    tb.addKeyValue("z", mZOrder)
+            .addKeyValue("priority", mOverlayPriority)
+            .addKeyValue("format",
+                         std::string(mCompressionInfo.type != COMP_TYPE_NONE ? "C-" : "") +
+                                 getFormatStr(format, mCompressionInfo.type).c_str())
+            .addKeyValue("dataspace", transDataSpaceToString(mDataSpace))
+            .addKeyValue("colorTr", mLayerColorTransform.enable)
+            .addKeyValue("blend", transBlendModeToString(mBlending))
+            .addKeyValue("alpha", mPlaneAlpha)
+            .addKeyValue("tr", transTransformToString(mTransform))
+            .addKeyValue("sourceCrop",
+                         std::vector<double>({mPreprocessedInfo.sourceCrop.left,
+                                              mPreprocessedInfo.sourceCrop.top,
+                                              mPreprocessedInfo.sourceCrop.right,
+                                              mPreprocessedInfo.sourceCrop.bottom}))
+            .addKeyValue("dispFrame",
+                         std::vector<int>({mPreprocessedInfo.displayFrame.left,
+                                           mPreprocessedInfo.displayFrame.top,
+                                           mPreprocessedInfo.displayFrame.right,
+                                           mPreprocessedInfo.displayFrame.bottom}))
+            .addKeyValue("CompType",
+                         std::vector<std::string>({transCompTypeToString(mRequestedCompositionType),
+                                                   transCompTypeToString(mValidateCompositionType),
+                                                   transCompTypeToString(mCompositionType)}))
+            .addKeyValue("OvlInfo", transOvlInfoToString(mOverlayInfo).c_str());
+    if (mValidateCompositionType == HWC2_COMPOSITION_DISPLAY_DECORATION)
+        tb.addKeyValue("MPP", "RCD");
+    else if (mOverlayInfo & eIgnoreLayer)
+        tb.addKeyValue("MPP", "IGN");
+    else if ((mOtfMPP == NULL) && (mM2mMPP == NULL))
+        tb.addKeyValue("MPP", "NA");
+    else if (mM2mMPP != NULL && mOtfMPP != NULL) {
+        String8 MPP = mM2mMPP->mName + "," + mOtfMPP->mName;
+        tb.addKeyValue("MPP", MPP.c_str());
+    } else if (mOtfMPP != NULL)
+        tb.addKeyValue("MPP", mOtfMPP->mName.c_str());
+    else
+        tb.addKeyValue("MPP", "NA");
 }
 
 void ExynosLayer::printLayer()

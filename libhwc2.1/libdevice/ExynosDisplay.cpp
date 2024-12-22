@@ -1155,9 +1155,8 @@ void ExynosDisplay::initDisplay() {
             ExynosMPP* m2mMPP = mLayers[i]->mM2mMPP;
 
             /* Close release fence of dst buffer of last frame */
-            if ((mLayers[i]->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) &&
-                (m2mMPP != NULL) &&
-                (m2mMPP->mAssignedDisplay == this) &&
+            if ((mLayers[i]->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE) &&
+                (m2mMPP != NULL) && (m2mMPP->mAssignedDisplay == this) &&
                 (m2mMPP->getDstImageInfo(&outImage) == NO_ERROR)) {
                 if (m2mMPP->mPhysicalType == MPP_MSC) {
                     fence_close(outImage.releaseFenceFd, this, FENCE_TYPE_DST_RELEASE, FENCE_IP_MSC);
@@ -1254,6 +1253,7 @@ void ExynosDisplay::checkIgnoreLayers() {
         if ((layer->mLayerFlag & EXYNOS_HWC_IGNORE_LAYER) == 0) {
             mLayers.push_back(layer);
             it = mIgnoreLayers.erase(it);
+            layer->mOverlayInfo &= ~eIgnoreLayer;
         } else {
             it++;
         }
@@ -1263,7 +1263,7 @@ void ExynosDisplay::checkIgnoreLayers() {
         ExynosLayer *layer = mLayers[index];
         if (layer->mLayerFlag & EXYNOS_HWC_IGNORE_LAYER) {
             layer->resetValidateData();
-            layer->mValidateCompositionType = HWC2_COMPOSITION_DEVICE;
+            layer->updateValidateCompositionType(HWC2_COMPOSITION_DEVICE, eIgnoreLayer);
             /*
              * Directly close without counting down
              * because it was not counted by validate
@@ -1696,13 +1696,13 @@ int ExynosDisplay::skipStaticLayers(ExynosCompositionInfo& compositionInfo)
 
         for (size_t i = (size_t)compositionInfo.mFirstIndex; i <= (size_t)compositionInfo.mLastIndex; i++) {
             ExynosLayer *layer = mLayers[i];
-            if (layer->mValidateCompositionType == COMPOSITION_CLIENT) {
+            if (layer->getValidateCompositionType() == COMPOSITION_CLIENT) {
                 layer->mOverlayInfo |= eSkipStaticLayer;
             } else {
                 compositionInfo.mSkipStaticInitFlag = false;
                 if (layer->mOverlayPriority < ePriorityHigh) {
-                    DISPLAY_LOGE("[%zu] Invalid layer type: %d",
-                            i, layer->mValidateCompositionType);
+                    DISPLAY_LOGE("[%zu] Invalid layer type: %d", i,
+                                 layer->getValidateCompositionType());
                     return -EINVAL;
                 } else {
                     return NO_ERROR;
@@ -2994,14 +2994,15 @@ int32_t ExynosDisplay::acceptDisplayChanges() {
     for (size_t i = 0; i < mLayers.size(); i++) {
         if (mLayers[i] != NULL) {
             HDEBUGLOGD(eDebugDefault, "%s, Layer %zu : %d, %d", __func__, i,
-                    mLayers[i]->mExynosCompositionType, mLayers[i]->mValidateCompositionType);
+                       mLayers[i]->mExynosCompositionType,
+                       mLayers[i]->getValidateCompositionType());
             type = getLayerCompositionTypeForValidationType(i);
 
             /* update compositionType
              * SF updates their state and doesn't call back into HWC HAL
              */
             mLayers[i]->mCompositionType = type;
-            mLayers[i]->mExynosCompositionType = mLayers[i]->mValidateCompositionType;
+            mLayers[i]->mExynosCompositionType = mLayers[i]->getValidateCompositionType();
         }
         else {
             HWC_LOGE(this, "Layer %zu is NULL", i);
@@ -3057,27 +3058,27 @@ int32_t ExynosDisplay::getLayerCompositionTypeForValidationType(uint32_t layerIn
         DISPLAY_LOGE("invalid layer index (%d)", layerIndex);
         return type;
     }
-    if ((mLayers[layerIndex]->mValidateCompositionType == HWC2_COMPOSITION_CLIENT) &&
+    if ((mLayers[layerIndex]->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT) &&
         (mClientCompositionInfo.mSkipFlag) &&
         (mClientCompositionInfo.mFirstIndex <= (int32_t)layerIndex) &&
         ((int32_t)layerIndex <= mClientCompositionInfo.mLastIndex)) {
         type = HWC2_COMPOSITION_DEVICE;
-    } else if (mLayers[layerIndex]->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS) {
+    } else if (mLayers[layerIndex]->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS) {
         type = HWC2_COMPOSITION_DEVICE;
     } else if ((mLayers[layerIndex]->mCompositionType == HWC2_COMPOSITION_CURSOR) &&
-               (mLayers[layerIndex]->mValidateCompositionType == HWC2_COMPOSITION_DEVICE)) {
+               (mLayers[layerIndex]->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE)) {
         if (mDisplayControl.cursorSupport == true)
             type = HWC2_COMPOSITION_CURSOR;
         else
             type = HWC2_COMPOSITION_DEVICE;
     } else if ((mLayers[layerIndex]->mCompositionType == HWC2_COMPOSITION_SOLID_COLOR) &&
-               (mLayers[layerIndex]->mValidateCompositionType == HWC2_COMPOSITION_DEVICE)) {
+               (mLayers[layerIndex]->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE)) {
         type = HWC2_COMPOSITION_SOLID_COLOR;
     } else if ((mLayers[layerIndex]->mCompositionType == HWC2_COMPOSITION_REFRESH_RATE_INDICATOR) &&
-               (mLayers[layerIndex]->mValidateCompositionType == HWC2_COMPOSITION_DEVICE)) {
+               (mLayers[layerIndex]->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE)) {
         type = HWC2_COMPOSITION_REFRESH_RATE_INDICATOR;
     } else {
-        type = mLayers[layerIndex]->mValidateCompositionType;
+        type = mLayers[layerIndex]->getValidateCompositionType();
     }
 
     return type;
@@ -3121,9 +3122,11 @@ int32_t ExynosDisplay::getChangedCompositionTypes(
 
     int32_t ret = 0;
     for (size_t i = 0; i < mLayers.size(); i++) {
-        DISPLAY_LOGD(eDebugHWC, "[%zu] layer: mCompositionType(%d), mValidateCompositionType(%d), mExynosCompositionType(%d), skipFlag(%d)",
-                i, mLayers[i]->mCompositionType, mLayers[i]->mValidateCompositionType,
-                mLayers[i]->mExynosCompositionType, mClientCompositionInfo.mSkipFlag);
+        DISPLAY_LOGD(eDebugHWC,
+                     "[%zu] layer: mCompositionType(%d), mValidateCompositionType(%d), "
+                     "mExynosCompositionType(%d), skipFlag(%d)",
+                     i, mLayers[i]->mCompositionType, mLayers[i]->getValidateCompositionType(),
+                     mLayers[i]->mExynosCompositionType, mClientCompositionInfo.mSkipFlag);
         if ((ret = set_out_param(mLayers[i], getLayerCompositionTypeForValidationType(i), count,
                                  *outNumElements, outLayers, outTypes)) < 0) {
             break;
@@ -3134,9 +3137,10 @@ int32_t ExynosDisplay::getChangedCompositionTypes(
             DISPLAY_LOGD(eDebugHWC,
                          "[%zu] ignore layer: mCompositionType(%d), mValidateCompositionType(%d)",
                          i, mIgnoreLayers[i]->mCompositionType,
-                         mIgnoreLayers[i]->mValidateCompositionType);
-            if ((ret = set_out_param(mIgnoreLayers[i], mIgnoreLayers[i]->mValidateCompositionType,
-                                     count, *outNumElements, outLayers, outTypes)) < 0) {
+                         mIgnoreLayers[i]->getValidateCompositionType());
+            if ((ret = set_out_param(mIgnoreLayers[i],
+                                     mIgnoreLayers[i]->getValidateCompositionType(), count,
+                                     *outNumElements, outLayers, outTypes)) < 0) {
                 break;
             }
         }
@@ -3918,11 +3922,10 @@ int32_t ExynosDisplay::presentDisplay(int32_t* outRetireFence) {
     /* Check all of acquireFence are closed */
     for (size_t i=0; i < mLayers.size(); i++) {
         if (mLayers[i]->mAcquireFence != -1) {
-            DISPLAY_LOGE("layer[%zu] fence(%d) type(%d, %d, %d) is not closed",
-                    i, mLayers[i]->mAcquireFence,
-                    mLayers[i]->mCompositionType,
-                    mLayers[i]->mExynosCompositionType,
-                    mLayers[i]->mValidateCompositionType);
+            DISPLAY_LOGE("layer[%zu] fence(%d) type(%d, %d, %d) is not closed", i,
+                         mLayers[i]->mAcquireFence, mLayers[i]->mCompositionType,
+                         mLayers[i]->mExynosCompositionType,
+                         mLayers[i]->getValidateCompositionType());
             if (mLayers[i]->mM2mMPP != NULL)
                 DISPLAY_LOGE("\t%s is assigned", mLayers[i]->mM2mMPP->mName.c_str());
             if (mLayers[i]->mAcquireFence > 0)
@@ -4623,6 +4626,8 @@ inline int32_t ExynosDisplay::getDisplayFrameScanoutPeriodFromConfig(hwc2_config
                 frameScanoutPeriodNs =
                         (frameScanoutPeriodNs <= opPeriodNs) ? frameScanoutPeriodNs : opPeriodNs;
             }
+        } else if (mDisplayConfigs[config].isBoost2xBts) {
+            frameScanoutPeriodNs = frameScanoutPeriodNs / 2;
         }
     }
 
@@ -4955,7 +4960,7 @@ int32_t ExynosDisplay::validateDisplay(
             for (size_t i = (size_t)mClientCompositionInfo.mFirstIndex; i <= (size_t)mClientCompositionInfo.mLastIndex; i++) {
                 if (mLayers[i]->mOverlayPriority >= ePriorityHigh)
                     continue;
-                mLayers[i]->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+                mLayers[i]->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT);
             }
         }
     }
@@ -4987,8 +4992,7 @@ int32_t ExynosDisplay::validateDisplay(
         mExynosCompositionInfo.initializeInfos(this);
         for (uint32_t i = 0; i < mLayers.size(); i++) {
             ExynosLayer *layer = mLayers[i];
-            layer->mOverlayInfo |= eResourceAssignFail;
-            layer->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+            layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT, eResourceAssignFail);
             addClientCompositionLayer(i);
         }
         mResourceManager->assignCompositionTarget(this, COMPOSITION_CLIENT);
@@ -5041,8 +5045,8 @@ int32_t ExynosDisplay::startPostProcessing()
 
     // loop for all layer
     for (size_t i=0; i < mLayers.size(); i++) {
-        if((mLayers[i]->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) &&
-           (mLayers[i]->mM2mMPP != NULL)) {
+        if ((mLayers[i]->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE) &&
+            (mLayers[i]->mM2mMPP != NULL)) {
             /* mAcquireFence is updated, Update image info */
             struct exynos_image srcImg, dstImg, midImg;
             mLayers[i]->setSrcExynosImage(&srcImg);
@@ -5103,7 +5107,23 @@ void ExynosDisplay::dumpConfig(const exynos_win_config_data &c)
     }
 }
 
-void ExynosDisplay::dump(String8& result) {
+void ExynosDisplay::miniDump(String8& result)
+{
+    Mutex::Autolock lock(mDRMutex);
+    result.appendFormat("=======================  Mini dump  ================================\n");
+    TableBuilder tb;
+    ExynosSortedLayer allLayers = mLayers;
+    for (auto layer : mIgnoreLayers)
+        allLayers.push_back(layer);
+    allLayers.vector_sort();
+
+    for (auto layer : allLayers)
+        layer->miniDump(tb);
+
+    result.appendFormat("%s", tb.buildForMiniDump().c_str());
+}
+
+void ExynosDisplay::dump(String8 &result, const std::vector<std::string>& args) {
     Mutex::Autolock lock(mDisplayMutex);
     dumpLocked(result);
 }
@@ -5276,7 +5296,7 @@ int32_t ExynosDisplay::initializeValidateInfos()
     mCursorIndex = -1;
     for (uint32_t i = 0; i < mLayers.size(); i++) {
         ExynosLayer *layer = mLayers[i];
-        layer->mValidateCompositionType = HWC2_COMPOSITION_INVALID;
+        layer->updateValidateCompositionType(HWC2_COMPOSITION_INVALID);
         layer->mOverlayInfo = 0;
         if ((mDisplayControl.cursorSupport == true) &&
             (mLayers[i]->mCompositionType == HWC2_COMPOSITION_CURSOR))
@@ -5334,17 +5354,16 @@ int32_t ExynosDisplay::addClientCompositionLayer(uint32_t layerIndex)
                          layer->mOverlayPriority);
             continue;
         }
-        if (layer->mValidateCompositionType != HWC2_COMPOSITION_CLIENT)
-        {
+        if (layer->getValidateCompositionType() != HWC2_COMPOSITION_CLIENT) {
             DISPLAY_LOGD(eDebugResourceManager, "\t[%d] layer changed", i);
-            if (layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS)
+            if (layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS)
                 exynosCompositionChanged = true;
             else {
-                if (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) mWindowNumUsed--;
+                if (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE)
+                    mWindowNumUsed--;
             }
             layer->resetAssignedResource();
-            layer->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
-            layer->mOverlayInfo |= eSandwitchedBetweenGLES;
+            layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT, eSandwichedBetweenGLES);
         }
     }
 
@@ -5368,7 +5387,7 @@ int32_t ExynosDisplay::addClientCompositionLayer(uint32_t layerIndex)
         for (uint32_t i = 0; i < mLayers.size(); i++)
         {
             ExynosLayer *exynosLayer = mLayers[i];
-            if (exynosLayer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS) {
+            if (exynosLayer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS) {
                 newFirstIndex = min(newFirstIndex, i);
                 newLastIndex = max(newLastIndex, (int32_t)i);
             }
@@ -5511,8 +5530,7 @@ int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float tota
             continue;
         }
 
-        if (layer->mValidateCompositionType == HWC2_COMPOSITION_EXYNOS)
-            continue;
+        if (layer->getValidateCompositionType() == HWC2_COMPOSITION_EXYNOS) continue;
 
         exynos_image src_img;
         exynos_image dst_img;
@@ -5523,24 +5541,22 @@ int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float tota
         if ((layer->mSupportedMPPFlag & m2mMPP->mLogicalType) != 0)
             isAssignable = m2mMPP->isAssignable(this, src_img, dst_img, totalUsedCapa);
 
-        if (layer->mValidateCompositionType == HWC2_COMPOSITION_CLIENT)
-        {
+        if (layer->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT) {
             DISPLAY_LOGD(eDebugResourceManager, "\t[%d] layer is client composition", i);
             invalidFlag = true;
         } else if (((layer->mSupportedMPPFlag & m2mMPP->mLogicalType) == 0) ||
-                   (isAssignable == false))
-        {
+                   (isAssignable == false)) {
             DISPLAY_LOGD(eDebugResourceManager, "\t[%d] layer is not supported by G2D", i);
             invalidFlag = true;
             layer->resetAssignedResource();
-            layer->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+            layer->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT);
             if ((ret = addClientCompositionLayer(i)) < 0)
                 return ret;
             changeFlag |= ret;
-        } else if ((layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) ||
-                   (layer->mValidateCompositionType == HWC2_COMPOSITION_INVALID)) {
+        } else if ((layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE) ||
+                   (layer->getValidateCompositionType() == HWC2_COMPOSITION_INVALID)) {
             DISPLAY_LOGD(eDebugResourceManager, "\t[%d] layer changed", i);
-            layer->mOverlayInfo |= eSandwitchedBetweenEXYNOS;
+            layer->mOverlayInfo |= eSandwichedBetweenEXYNOS;
             layer->resetAssignedResource();
             if ((ret = m2mMPP->assignMPP(this, layer)) != NO_ERROR)
             {
@@ -5548,13 +5564,13 @@ int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float tota
                         __func__, m2mMPP->mName.c_str(), ret);
                 return ret;
             }
-            if (layer->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) mWindowNumUsed--;
-            layer->mValidateCompositionType = HWC2_COMPOSITION_EXYNOS;
+            if (layer->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE) mWindowNumUsed--;
+            layer->updateValidateCompositionType(HWC2_COMPOSITION_EXYNOS);
             mExynosCompositionInfo.mFirstIndex = min(mExynosCompositionInfo.mFirstIndex, (int32_t)i);
             mExynosCompositionInfo.mLastIndex = max(mExynosCompositionInfo.mLastIndex, (int32_t)i);
         } else {
             DISPLAY_LOGD(eDebugResourceManager, "\t[%d] layer has known type (%d)", i,
-                         layer->mValidateCompositionType);
+                         layer->getValidateCompositionType());
         }
     }
 
@@ -5570,18 +5586,18 @@ int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float tota
 
             for (int32_t i = startIndex; i <= endIndex; i++) {
                 if (mLayers[i]->mOverlayPriority == ePriorityMax ||
-                        mLayers[i]->mValidateCompositionType == HWC2_COMPOSITION_CLIENT)
+                    mLayers[i]->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT)
                     continue;
                 mLayers[i]->resetAssignedResource();
-                mLayers[i]->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+                mLayers[i]->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT);
                 if ((ret = addClientCompositionLayer(i)) < 0)
                     return ret;
                 changeFlag |= ret;
             }
 
-            if (mLayers[maxPriorityIndex]->mValidateCompositionType
-                    != HWC2_COMPOSITION_EXYNOS) {
-                mLayers[maxPriorityIndex]->mValidateCompositionType = HWC2_COMPOSITION_EXYNOS;
+            if (mLayers[maxPriorityIndex]->getValidateCompositionType() !=
+                HWC2_COMPOSITION_EXYNOS) {
+                mLayers[maxPriorityIndex]->updateValidateCompositionType(HWC2_COMPOSITION_EXYNOS);
                 mLayers[maxPriorityIndex]->resetAssignedResource();
                 if ((ret = m2mMPP->assignMPP(this, mLayers[maxPriorityIndex])) != NO_ERROR)
                 {
@@ -5605,14 +5621,16 @@ int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float tota
             if ((mClientCompositionInfo.mFirstIndex - mExynosCompositionInfo.mFirstIndex) <
                 (mExynosCompositionInfo.mLastIndex - mClientCompositionInfo.mLastIndex)) {
                 mLayers[mExynosCompositionInfo.mFirstIndex]->resetAssignedResource();
-                mLayers[mExynosCompositionInfo.mFirstIndex]->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+                mLayers[mExynosCompositionInfo.mFirstIndex]->updateValidateCompositionType(
+                        HWC2_COMPOSITION_CLIENT);
                 if ((ret = addClientCompositionLayer(mExynosCompositionInfo.mFirstIndex)) < 0)
                     return ret;
                 mExynosCompositionInfo.mFirstIndex = mClientCompositionInfo.mLastIndex + 1;
                 changeFlag |= ret;
             } else {
                 mLayers[mExynosCompositionInfo.mLastIndex]->resetAssignedResource();
-                mLayers[mExynosCompositionInfo.mLastIndex]->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+                mLayers[mExynosCompositionInfo.mLastIndex]->updateValidateCompositionType(
+                        HWC2_COMPOSITION_CLIENT);
                 if ((ret = addClientCompositionLayer(mExynosCompositionInfo.mLastIndex)) < 0)
                     return ret;
                 mExynosCompositionInfo.mLastIndex = (mClientCompositionInfo.mFirstIndex - 1);
@@ -5654,8 +5672,10 @@ int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float tota
     if (highPriorityCheck && (m2mMPP->mLogicalType != MPP_LOGICAL_G2D_COMBO)) {
         startIndex = mExynosCompositionInfo.mFirstIndex;
         endIndex = mExynosCompositionInfo.mLastIndex;
-        DISPLAY_LOGD(eDebugResourceManager, "\texynos composition is disabled because of sandwitched max priority layer (%d, %d)",
-                mExynosCompositionInfo.mFirstIndex, mExynosCompositionInfo.mLastIndex);
+        DISPLAY_LOGD(eDebugResourceManager,
+                     "\texynos composition is disabled because of sandwiched max priority layer "
+                     "(%d, %d)",
+                     mExynosCompositionInfo.mFirstIndex, mExynosCompositionInfo.mLastIndex);
         for (int32_t i = startIndex; i <= endIndex; i++) {
             int32_t checkPri = 0;
             for (uint32_t j = 0; j < highPriorityNum; j++) {
@@ -5669,7 +5689,7 @@ int32_t ExynosDisplay::addExynosCompositionLayer(uint32_t layerIndex, float tota
                 continue;
 
             mLayers[i]->resetAssignedResource();
-            mLayers[i]->mValidateCompositionType = HWC2_COMPOSITION_CLIENT;
+            mLayers[i]->updateValidateCompositionType(HWC2_COMPOSITION_CLIENT);
             if ((ret = addClientCompositionLayer(i)) < 0)
                 HWC_LOGE(this, "%d layer: addClientCompositionLayer() fail", i);
         }
@@ -5963,9 +5983,8 @@ void ExynosDisplay::closeFencesForSkipFrame(rendering_state renderingState)
             for (size_t i = 0; i < mLayers.size(); i++) {
                 exynos_image outImage;
                 ExynosMPP* m2mMPP = mLayers[i]->mM2mMPP;
-                if ((mLayers[i]->mValidateCompositionType == HWC2_COMPOSITION_DEVICE) &&
-                    (m2mMPP != NULL) &&
-                    (m2mMPP->mAssignedDisplay == this) &&
+                if ((mLayers[i]->getValidateCompositionType() == HWC2_COMPOSITION_DEVICE) &&
+                    (m2mMPP != NULL) && (m2mMPP->mAssignedDisplay == this) &&
                     (m2mMPP->getDstImageInfo(&outImage) == NO_ERROR)) {
                     if (m2mMPP->mPhysicalType == MPP_MSC) {
                         fence_close(outImage.releaseFenceFd, this, FENCE_TYPE_DST_RELEASE, FENCE_IP_MSC);
@@ -6447,34 +6466,6 @@ nsecs_t ExynosDisplay::getPredictedPresentTime(nsecs_t startTime) {
     return expectedPresentTime;
 }
 
-nsecs_t ExynosDisplay::getSignalTime(int32_t fd) const {
-    if (fd == -1) {
-        return SIGNAL_TIME_INVALID;
-    }
-
-    struct sync_file_info *finfo = sync_file_info(fd);
-    if (finfo == nullptr) {
-        return SIGNAL_TIME_INVALID;
-    }
-
-    if (finfo->status != 1) {
-        const auto status = finfo->status;
-        sync_file_info_free(finfo);
-        return status < 0 ? SIGNAL_TIME_INVALID : SIGNAL_TIME_PENDING;
-    }
-
-    uint64_t timestamp = 0;
-    struct sync_fence_info *pinfo = sync_get_fence_info(finfo);
-    for (size_t i = 0; i < finfo->num_fences; i++) {
-        if (pinfo[i].timestamp_ns > timestamp) {
-            timestamp = pinfo[i].timestamp_ns;
-        }
-    }
-
-    sync_file_info_free(finfo);
-    return nsecs_t(timestamp);
-}
-
 std::optional<nsecs_t> ExynosDisplay::getPredictedDuration(bool duringValidation) {
     AveragesKey beforeFenceKey(mLayers.size(), duringValidation, true);
     AveragesKey afterFenceKey(mLayers.size(), duringValidation, false);
@@ -6940,7 +6931,7 @@ void ExynosDisplay::resetColorMappingInfoForClientComp() {
     for (uint32_t i = 0; i < mLayers.size(); i++) {
         ExynosLayer *layer = mLayers[i];
         if (layer->mPrevValidateCompositionType != HWC2_COMPOSITION_CLIENT &&
-            layer->mValidateCompositionType == HWC2_COMPOSITION_CLIENT) {
+            layer->getValidateCompositionType() == HWC2_COMPOSITION_CLIENT) {
             if ((ret = resetColorMappingInfo(layer)) != NO_ERROR) {
                 DISPLAY_LOGE("%s:: resetColorMappingInfo() idx=%d error(%d)", __func__, i, ret);
             }
@@ -6959,12 +6950,12 @@ void ExynosDisplay::resetColorMappingInfoForClientComp() {
 void ExynosDisplay::storePrevValidateCompositionType() {
     for (uint32_t i = 0; i < mIgnoreLayers.size(); i++) {
         ExynosLayer *layer = mIgnoreLayers[i];
-        layer->mPrevValidateCompositionType = layer->mValidateCompositionType;
+        layer->mPrevValidateCompositionType = layer->getValidateCompositionType();
     }
 
     for (uint32_t i = 0; i < mLayers.size(); i++) {
         ExynosLayer *layer = mLayers[i];
-        layer->mPrevValidateCompositionType = layer->mValidateCompositionType;
+        layer->mPrevValidateCompositionType = layer->getValidateCompositionType();
     }
     mClientCompositionInfo.mPrevHasCompositionLayer = mClientCompositionInfo.mHasCompositionLayer;
 }

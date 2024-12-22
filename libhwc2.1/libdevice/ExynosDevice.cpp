@@ -417,7 +417,7 @@ void ExynosDevice::dump(uint32_t *outSize, char *outBuffer) {
     }
 }
 
-void ExynosDevice::dump(String8 &result) {
+void ExynosDevice::dump(String8& result, const std::vector<std::string>& args) {
     result.append("\n\n");
 
     struct tm* localTime = (struct tm*)localtime((time_t*)&updateTimeInfo.lastUeventTime.tv_sec);
@@ -455,10 +455,14 @@ void ExynosDevice::dump(String8 &result) {
     }
     result.append("\n");
 
+    for (size_t i = 0; i < mDisplays.size(); i++) {
+        ExynosDisplay* display = mDisplays[i];
+        if (display->mPlugState == true) display->miniDump(result);
+    }
+
     for (size_t i = 0;i < mDisplays.size(); i++) {
         ExynosDisplay *display = mDisplays[i];
-        if (display->mPlugState == true)
-            display->dump(result);
+        if (display->mPlugState == true) display->dump(result, args);
     }
 }
 
@@ -703,6 +707,23 @@ void ExynosDevice::onVsyncPeriodTimingChanged(uint32_t displayId,
 
 void ExynosDevice::onContentProtectionUpdated(uint32_t displayId, HdcpLevels hdcpLevels) {
     Mutex::Autolock lock(mDeviceCallbackMutex);
+
+    // If the new HdcpLevelsChanged HAL API is available, use it, otherwise fall back
+    // to the old V2 API with onVsync hack, if necessary.
+    const auto& hdcpLevelsChangedCallback =
+            mHwc3CallbackInfos.find(IComposerCallback::TRANSACTION_onHdcpLevelsChanged);
+    if (hdcpLevelsChangedCallback != mHwc3CallbackInfos.end()) {
+        const auto& callbackInfo = hdcpLevelsChangedCallback->second;
+        if (callbackInfo.funcPointer != nullptr && callbackInfo.callbackData != nullptr) {
+            auto callbackFunc = reinterpret_cast<
+                    void (*)(hwc2_callback_data_t callbackData, hwc2_display_t hwcDisplay,
+                             aidl::android::hardware::drm::HdcpLevels)>(callbackInfo.funcPointer);
+            ALOGD("%s: displayId=%u hdcpLevels=%s sending to SF via v3 HAL", __func__, displayId,
+                  hdcpLevels.toString().c_str());
+            callbackFunc(callbackInfo.callbackData, displayId, hdcpLevels);
+            return;
+        }
+    }
 
     // Workaround to pass content protection updates to SurfaceFlinger
     // without changing HWC HAL interface.
