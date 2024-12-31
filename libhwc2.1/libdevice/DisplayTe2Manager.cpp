@@ -193,7 +193,8 @@ void DisplayTe2Manager::ProximitySensorStateNotifierWorker::Routine() {
     ATRACE_NAME("StateNotifierWorker");
     int ret;
     Lock();
-    ret = WaitForSignalOrExitLocked(ms2ns(kDebounceTimeMs));
+    ret = WaitForSignalOrExitLocked(
+            (mReceivedFirstStateAfterTimeout ? ms2ns(kDebounceTimeMs) : -1));
     if (ret == -EINTR) {
         ALOGE("ProximitySensorStateNotifierWorker: failed to wait for signal");
         mReceivedFirstStateAfterTimeout = false;
