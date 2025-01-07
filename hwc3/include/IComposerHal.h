@@ -62,6 +62,7 @@
 #include <aidl/android/hardware/graphics/composer3/LayerBrightness.h>
 #include <aidl/android/hardware/graphics/composer3/LayerCommand.h>
 #include <aidl/android/hardware/graphics/composer3/LayerLifecycleBatchCommandType.h>
+#include <aidl/android/hardware/graphics/composer3/Luts.h>
 #include <aidl/android/hardware/graphics/composer3/OverlayProperties.h>
 #include <aidl/android/hardware/graphics/composer3/ParcelableBlendMode.h>
 #include <aidl/android/hardware/graphics/composer3/ParcelableComposition.h>
@@ -254,6 +255,8 @@ class IComposerHal {
     virtual int32_t setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool enabled) = 0;
     virtual int32_t layerSf2Hwc(int64_t display, int64_t layer, hwc2_layer_t& outMappedLayer) = 0;
     virtual int32_t getMaxLayerPictureProfiles(int64_t display, int32_t* outMaxProfiles) = 0;
+    virtual int32_t getLuts(int64_t display, const std::vector<Buffer>& buffers,
+                            std::vector<Luts>* luts) = 0;
 };
 
 } // namespace aidl::android::hardware::graphics::composer3::detail

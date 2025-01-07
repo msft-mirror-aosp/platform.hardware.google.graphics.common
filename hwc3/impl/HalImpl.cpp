@@ -1328,4 +1328,10 @@ int32_t HalImpl::getMaxLayerPictureProfiles([[maybe_unused]] int64_t display,
     return HWC2_ERROR_UNSUPPORTED;
 }
 
+int32_t HalImpl::getLuts([[maybe_unused]] int64_t display,
+                         [[maybe_unused]] const std::vector<Buffer>& buffers,
+                         [[maybe_unused]] std::vector<Luts>* luts) {
+    return HWC2_ERROR_UNSUPPORTED;
+}
+
 } // namespace aidl::android::hardware::graphics::composer3::impl

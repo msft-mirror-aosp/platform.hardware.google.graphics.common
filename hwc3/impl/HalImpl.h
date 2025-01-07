@@ -187,6 +187,8 @@ class HalImpl : public IComposerHal {
       int32_t layerSf2Hwc(int64_t display, int64_t layer, hwc2_layer_t& outMappedLayer) override;
       void setHwcBatchingSupport(bool supported);
       int32_t getMaxLayerPictureProfiles(int64_t display, int32_t* outMaxProfiles) override;
+      int32_t getLuts(int64_t display, const std::vector<Buffer>& buffers,
+                      std::vector<Luts>* luts) override;
 
   private:
       void initCaps(bool batchingSupported);
