@@ -382,11 +382,14 @@ struct LtmParams {
 
     Display display;
     Roi roi;
+    bool ltm_hist_enabled{};
+    bool ltm_render_enabled{};
     // for debug purpose
-    bool force_enable{};
     bool sr_in_gtm{true};
     bool ConfigUpdateNeeded(const LtmParams &rhs) const {
-        return display == rhs.display && roi == rhs.roi && force_enable == rhs.force_enable;
+        return display == rhs.display && roi == rhs.roi &&
+                ltm_hist_enabled == rhs.ltm_hist_enabled &&
+                ltm_render_enabled == rhs.ltm_render_enabled;
     }
 };
 
