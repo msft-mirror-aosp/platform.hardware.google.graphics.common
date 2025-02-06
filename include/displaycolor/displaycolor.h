@@ -79,6 +79,11 @@ constexpr struct DisplayColorIntfVer {
 /// A map associating supported RenderIntents for each supported ColorMode
 using ColorModesMap = std::map<hwc::ColorMode, std::vector<hwc::RenderIntent>>;
 
+/// precision of convert app gain lut to DPU TM LUT
+static constexpr int32_t kAppGainLutPrecisionBit = 11;
+/// expected application's gain lut size
+static constexpr int32_t kAppGainLutSize = (1 << kAppGainLutPrecisionBit) + 1;
+
 /// Image data bit depths.
 enum class BitDepth { kEight, kTen };
 
@@ -334,6 +339,17 @@ struct LayerColorData {
      * colordata if its false. true by default for backward compatibility.
      */
     bool enabled = true;
+
+    /**
+     * @brief gain lut from app. valid lut must have at least two items
+     */
+    std::vector<float> gain_lut;
+
+    /**
+     * gain lut could change w/o triggering ValidateDisplay. HWC tracks lut
+     * change between frames.
+     */
+    mutable bool gain_lut_dirty{};
 };
 
 struct LtmParams {
@@ -366,11 +382,14 @@ struct LtmParams {
 
     Display display;
     Roi roi;
+    bool ltm_hist_enabled{};
+    bool ltm_render_enabled{};
     // for debug purpose
-    bool force_enable{};
     bool sr_in_gtm{true};
     bool ConfigUpdateNeeded(const LtmParams &rhs) const {
-        return display == rhs.display && roi == rhs.roi && force_enable == rhs.force_enable;
+        return display == rhs.display && roi == rhs.roi &&
+                ltm_hist_enabled == rhs.ltm_hist_enabled &&
+                ltm_render_enabled == rhs.ltm_render_enabled;
     }
 };
 
@@ -615,8 +634,8 @@ class IDisplayColorGeneric {
      * @return true for yes.
      */
     //deprecated by the 'int64_t display' version
-    virtual bool IsEarlyPowerOnNeeded(const DisplayType display) = 0;
-    virtual bool IsEarlyPowerOnNeeded(const int64_t display) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const DisplayType display, const DisplayInfo& info) = 0;
+    virtual bool IsEarlyPowerOnNeeded(const int64_t display, const DisplayInfo& info) = 0;
 
     /**
      * @brief a debug call from command line with arguments, output will show on screen.
@@ -632,6 +651,14 @@ class IDisplayColorGeneric {
                               const std::string& obj_sel,
                               const std::string& action,
                               const std::vector<std::string>& args) = 0;
+
+    /**
+     * @brief compute TM gain lut based on the input layer color data
+     * @return OK if successful, error otherwise.
+     */
+    virtual int32_t ComputeTmLut(const int64_t display,
+                                 const LayerColorData &layer_color_data,
+                                 std::vector<float> &lut) const = 0;
 };
 
 extern "C" {

@@ -11,9 +11,8 @@ using FrameworkPlaneLayout = aidl::android::hardware::graphics::common::PlaneLay
 
 namespace pixel::graphics::utils {
 
-std::optional<std::vector<FrameworkPlaneLayout>> get_plane_layouts(FrameworkFormat format,
-                                                                   uint64_t usage, uint32_t width,
-                                                                   uint32_t height);
+std::optional<std::vector<uint16_t>> get_stride_alignment(FrameworkFormat format, uint64_t usage,
+                                                          uint32_t width, uint32_t height);
 
 enum class Compression {
     UNCOMPRESSED,

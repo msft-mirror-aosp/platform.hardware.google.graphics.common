@@ -6,7 +6,7 @@
 #include "metadata.h"
 #include "utils-internal.h"
 
-namespace pixel::graphics::mapper {
+namespace pixel::graphics::mapper::v4 {
 
 namespace {
 
@@ -14,7 +14,7 @@ using android::hardware::graphics::mapper::V4_0::Error;
 using android::hardware::graphics::mapper::V4_0::IMapper;
 using namespace ::pixel::graphics;
 
-static inline android::sp<IMapper> get_mapper() {
+inline android::sp<IMapper> get_mapper() {
     static android::sp<IMapper> mapper = []() {
         auto mapper = IMapper::getService();
         if (!mapper) {
@@ -37,13 +37,10 @@ std::optional<typename metadata::ReturnType<meta>::type> get(buffer_handle_t han
     };
 
     android::hardware::hidl_vec<uint8_t> vec;
-    Error error;
-    auto ret = mapper->get(const_cast<native_handle_t*>(handle), type,
-                           [&](const auto& tmpError,
-                               const android::hardware::hidl_vec<uint8_t>& tmpVec) {
-                               error = tmpError;
-                               vec = tmpVec;
-                           });
+    auto ret =
+            mapper->get(const_cast<native_handle_t*>(handle), type,
+                        [&](const auto& /*tmpError*/,
+                            const android::hardware::hidl_vec<uint8_t>& tmpVec) { vec = tmpVec; });
     if (!ret.isOk()) {
         return {};
     }
@@ -65,4 +62,4 @@ int32_t set(buffer_handle_t handle, typename metadata::ReturnType<meta>::type da
     return static_cast<int32_t>(err);
 }
 
-} // namespace pixel::graphics::mapper
+} // namespace pixel::graphics::mapper::v4

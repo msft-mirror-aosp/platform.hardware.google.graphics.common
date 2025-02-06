@@ -11,13 +11,13 @@
 #include "metadata.h"
 #include "utils-internal.h"
 
-namespace pixel::graphics::mapper {
+namespace pixel::graphics::mapper::v5 {
 
 namespace {
 
 using namespace ::pixel::graphics;
 
-AIMapper* get_mapper() {
+inline AIMapper* get_mapper() {
     static AIMapper* mMapper = []() {
         AIMapper* mapper = nullptr;
         std::string_view so_name = "mapper.pixel.so";
@@ -47,6 +47,9 @@ std::optional<typename metadata::ReturnType<meta>::type> get(buffer_handle_t han
     };
 
     auto mapper = get_mapper();
+    if (!mapper) {
+        return {};
+    }
     android::hardware::hidl_vec<uint8_t> vec;
     std::vector<uint8_t> metabuf;
     auto ret = mapper->v5.getMetadata(handle, type, metabuf.data(), 0);
@@ -67,6 +70,9 @@ template <MetadataType meta>
 int64_t set(buffer_handle_t handle, typename metadata::ReturnType<meta>::type data) {
     auto encoded_data = utils::encode<typename metadata::ReturnType<meta>::type>(data);
     auto mapper = get_mapper();
+    if (!mapper) {
+        return AIMapper_Error::AIMAPPER_ERROR_UNSUPPORTED;
+    }
     AIMapper_MetadataType type = {
             .name = kPixelMetadataTypeName,
             .value = static_cast<int64_t>(meta),
@@ -77,4 +83,4 @@ int64_t set(buffer_handle_t handle, typename metadata::ReturnType<meta>::type da
     return ret;
 }
 
-} // namespace pixel::graphics::mapper
+} // namespace pixel::graphics::mapper::v5

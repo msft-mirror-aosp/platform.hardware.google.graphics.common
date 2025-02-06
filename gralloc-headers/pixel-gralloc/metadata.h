@@ -82,6 +82,9 @@ enum class MetadataType : int64_t {
 
     // This is a experimental feature
     VIDEO_GMV,
+
+    // Returns: std::vector<uint16_t>
+    STRIDE_ALIGNMENT,
 };
 
 struct VideoGMV {
@@ -133,6 +136,7 @@ DEFINE_TYPE(VIDEO_GMV, VideoGMV);
 DEFINE_TYPE(COMPRESSED_PLANE_LAYOUTS, std::vector<CompressedPlaneLayout>);
 DEFINE_TYPE(PIXEL_FORMAT_ALLOCATED, Format);
 DEFINE_TYPE(FORMAT_TYPE, FormatType);
+DEFINE_TYPE(STRIDE_ALIGNMENT, std::vector<uint16_t>);
 
 #undef DEFINE_TYPE
 

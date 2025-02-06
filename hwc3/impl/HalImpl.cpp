@@ -17,6 +17,7 @@
 #include "HalImpl.h"
 
 #include <aidl/android/hardware/graphics/composer3/IComposerCallback.h>
+#include <aidl/android/hardware/graphics/composer3/OutputType.h>
 #include <android-base/logging.h>
 #include <hardware/hwcomposer2.h>
 
@@ -528,6 +529,7 @@ int32_t HalImpl::getDisplayConfigurations(int64_t display, int32_t,
             }
             config.vrrConfig = std::make_optional(hwc3VrrConfig);
         }
+        config.hdrOutputType = OutputType::SYSTEM;
         outConfigs->push_back(config);
     }
 
@@ -1323,6 +1325,12 @@ int32_t HalImpl::setRefreshRateChangedCallbackDebugEnabled(int64_t display, bool
 
 int32_t HalImpl::getMaxLayerPictureProfiles([[maybe_unused]] int64_t display,
                                             [[maybe_unused]] int32_t* outMaxProfiles) {
+    return HWC2_ERROR_UNSUPPORTED;
+}
+
+int32_t HalImpl::getLuts([[maybe_unused]] int64_t display,
+                         [[maybe_unused]] const std::vector<Buffer>& buffers,
+                         [[maybe_unused]] std::vector<Luts>* luts) {
     return HWC2_ERROR_UNSUPPORTED;
 }
 
